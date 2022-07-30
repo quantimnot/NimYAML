@@ -1,0 +1,38 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+
+name: Test VSCode Action
+
+concurrency:
+  group: Test VSCode Action
+  cancel-in-progress: true
+
+on:
+  pull_request:
+    paths:
+      - '.github/actions/vscode/action.yml'
+      - '.github/workflows/test-vscode-action.yml'
+  push:
+    paths:
+      - '.github/actions/vscode/action.yml'
+      - '.github/workflows/test-vscode-action.yml'
+
+jobs:
+  test:
+    name: test ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+    steps:
+      - uses: actions/checkout@v3
+      - id: vscode
+        uses: './.github/actions/vscode'
+      - uses: './.github/actions/tunnel'
+        with:
+          src: ${{ steps.vscode.outputs.bind-address }}
+          dest: 80
+      - run: sleep 200

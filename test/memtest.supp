@@ -1,0 +1,14 @@
+{
+    gc.nim Cond
+    Memcheck:Cond
+    ...
+    src:gc.nim
+    ...
+}
+{
+    gc.nim Value
+    Memcheck:Value8
+    ...
+    src:gc.nim
+    ...
+}

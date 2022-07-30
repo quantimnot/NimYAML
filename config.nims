@@ -1,3 +1,5 @@
+--warningAsError:CycleCreated
+
 task build, "Compile the YAML module into a library":
   --app:lib
   --d:release
@@ -38,6 +40,11 @@ task quickstartTests, "Run quickstart tests":
   --verbosity:0
   setCommand "c", "test/tquickstart"
 
+task memoryTests, "Run memory tests":
+  --r
+  --verbosity:0
+  setCommand "c", "test/tmemory"
+
 task documentation, "Generate documentation":
   exec "mkdir -p docout"
   withDir "doc":
@@ -67,8 +74,7 @@ task bench, "Benchmarking":
   setCommand "c", "bench/bench"
 
 task clean, "Remove all generated files":
-  exec "rm -rf libyaml.* test/tests test/parsing test/lexing bench/json docout"
-  setCommand "nop"
+  exec "git clean -fdx"
 
 task server, "Compile server daemon":
   --d:release

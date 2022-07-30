@@ -1,0 +1,46 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-action.json
+
+name: Docker
+
+inputs:
+  name:
+    type: string
+    required: true
+  dockerfile:
+    type: boolean
+    required: true
+  nocache:
+    type: boolean
+    default: false
+  provision:
+    type: string
+  run:
+    type: string
+
+runs:
+  using: "composite"
+  steps:
+    - id: cache
+      if: inputs.nocache != 'true'
+      uses: actions/cache@v3
+      with:
+        path: docker_${{ inputs.name }}.tar
+        key: docker_${{ inputs.name }}-${{ hashFiles('${{ inputs.dockerfile }}') }}
+
+    - run: |
+        docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+      shell: bash
+
+    - if: inputs.nocache != 'true' || steps.cache.outputs.cache-hit != 'true'
+      run: |
+        docker build -t nim:${{ inputs.name }} - < .github/workflows/${{ inputs.name }}.Dockerfile
+        docker save nim:${{ inputs.name }} > docker_${{ inputs.name }}.tar
+      shell: bash
+
+    - run: |
+        docker load -i docker_${{ inputs.name }}.tar
+        cat <<"EOF" > run.sh
+        ${{ inputs.run }}
+        EOF
+        docker run --mount type=bind,src=`pwd`,dst=`pwd` -w `pwd` nim:${{ inputs.name }} bash -e run.sh
+      shell: bash

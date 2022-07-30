@@ -1,5 +1,5 @@
 import "../yaml"
-import unittest
+import commonTestUtils
 
 type
   Config = ref object

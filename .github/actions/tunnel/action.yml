@@ -1,0 +1,36 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-action.json
+#
+# https://docs.microsoft.com/en-us/microsoft-365/security/defender-endpoint/command-line-arguments-microsoft-defender-antivirus?view=o365-worldwide
+#
+# TODO:
+#   - [ ]
+
+name: Tunnel
+description: Create network tunnels.
+
+inputs:
+  src:
+    description: Source 'host:port' or 'port'.
+    required: true
+  dest:
+    description: Destination 'port'.
+    required: true
+  kind:
+    description: Tunnel kind.
+    required: true
+    default: localhost.run
+
+runs:
+  using: "composite"
+  steps:
+    - shell: bash
+      run: |
+        case ${{ inputs.kind }} in
+          localhost.run)
+            ssh -o StrictHostKeyChecking=no -R ${{ inputs.dest }}:${{ inputs.src }} nokey@localhost.run &
+            ;;
+          *)
+            echo "Unknown tunnel kind: '${{ inputs.kind }}'"
+            exit 1
+            ;;
+        esac

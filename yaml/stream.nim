@@ -112,7 +112,12 @@ proc peek*(s: YamlStream): Event {.raises: [YamlStreamError].} =
   if not s.peeked:
     s.cached = s.next()
     s.peeked = true
-  shallowCopy(result, s.cached)
+  when defined(gcArc) or defined(gcOrc):
+    # `system.shallowCopy` removed for ARC/ORC in
+    # https://github.com/nim-lang/Nim/pull/20070
+    result = s.cached
+  else:
+    shallowCopy(result, s.cached)
 
 proc `peek=`*(s: YamlStream, value: Event) {.raises: [].} =
   ## Set the next item of the stream. Will replace a previously peeked item,

@@ -4,16 +4,12 @@
 #    See the file "copying.txt", included in this
 #    distribution, for details about the copyright.
 
-import os, terminal, strutils, streams, macros, unittest, sets
+import os, terminal, strutils, streams, macros
 import testEventParser, commonTestUtils
 import ../yaml, ../yaml/data
 
-const
-  testSuiteFolder = "yaml-test-suite"
-
 proc echoError(msg: string) =
   styledWriteLine(stdout, fgRed, "[error] ", fgWhite, msg, resetStyle)
-
 
 proc parserTest(path: string, errorExpected : bool): bool =
   var
@@ -65,29 +61,43 @@ proc parserTest(path: string, errorExpected : bool): bool =
       else: echo e.msg
 
 macro genTests(): untyped =
-  let
-    pwd = staticExec("pwd").strip
-    absolutePath = '"' & (pwd / testSuiteFolder) & '"'
-  echo "[tparser] Generating tests from " & absolutePath
-  discard staticExec("git submodule init && git submodule update --remote")
+  const
+    testSuiteFolder = "yaml-test-suite"
+    absoluteTestSuiteDirPath = currentSourcePath.parentDir / testSuiteFolder
 
-  let errorTests = toHashSet(staticExec("cd " & (absolutePath / "tags" / "error") &
-                         " && ls -1d *").splitLines())
-  var ignored = toHashSet([".git", "name", "tags", "meta"])
+  if dirExists absoluteTestSuiteDirPath / "tags":
+    echo "[tparser] Generating tests from " & testSuiteFolder
+  else:
+    try:
+      discard staticExec"git submodule update --init --depth 1"
+    except CatchableError:
+      error "Failed to get " & testSuiteFolder
+
+  proc getTestIds(path = "", exclusions: openArray[string] = []): seq[string] =
+    let cmd = "git -C " & testSuiteFolder / path & " ls-tree --name-only HEAD"
+    for testIdPath in splitLines(staticExec(cmd)):
+      let testId = extractFilename(testIdPath)
+      if testId.len > 0 and testId notin exclusions:
+        result.add testId
+
+  let testIds = getTestIds(exclusions = [".git", "name", "tags", "meta"])
+
+  proc genTest(testId, path: string): NimNode =
+    let
+      title = strip(staticRead(path / "===")) & " [" & testId & ']'
+      expectError = fileExists(path / "error")
+    quote do:
+      test `title`:
+        doAssert parserTest(`path`, bool `expectError`)
 
   result = newStmtList()
-  # walkDir for some crude reason does not work with travis build
-  let dirItems = staticExec("ls -1d " & absolutePath / "*")
-  for dirPath in dirItems.splitLines():
-    if dirPath.strip.len == 0: continue
-    let testId = dirPath[^4..^1]
-    if ignored.contains(testId): continue
-    let title = slurp(dirPath / "===")
-
-    result.add(newCall("test",
-        newLit(strip(title) & " [" &
-        testId & ']'), newCall("doAssert", newCall("parserTest",
-        newLit(dirPath), newLit(errorTests.contains(testId))))))
+  for testId in testIds:
+    let testBaseDirPath = absoluteTestSuiteDirPath / testId
+    if fileExists(testBaseDirPath / "==="):
+      result.add genTest(testId, testBaseDirPath)
+    else:
+      for subTestId in getTestIds(testId):
+        result.add genTest(testId & '_' & subTestId, testBaseDirPath / subTestId)
   result = newCall("suite", newLit("Parser Tests (from yaml-test-suite)"), result)
 
 genTests()

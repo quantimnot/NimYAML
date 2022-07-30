@@ -1,0 +1,4 @@
+--define:release
+--define:ssl
+--threads:on
+--verbosity:0

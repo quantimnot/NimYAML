@@ -1,6 +1,6 @@
 import ../yaml/private/lex
 
-import unittest, strutils
+import commonTestUtils, strutils
 
 const
   tokensWithValue =

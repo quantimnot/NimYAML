@@ -1,0 +1,42 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+
+name: Test Windows Defender Action
+
+concurrency:
+  group: Test Windows Defender Action
+  cancel-in-progress: true
+
+on:
+  pull_request:
+    paths:
+      - '.github/actions/windows-defender/action.yml'
+      - '.github/workflows/test-windows-defender-action.yml'
+  push:
+    paths:
+      - '.github/actions/windows-defender/action.yml'
+      - '.github/workflows/test-windows-defender-action.yml'
+
+jobs:
+  test:
+    name: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v3
+      - run: curl -LO https://secure.eicar.org/eicar.com
+      - id: windows-defender
+        uses: './.github/actions/windows-defender'
+        with:
+          target: eicar.com
+
+      - id: vscode
+        if: failure()
+        uses: './.github/actions/vscode'
+      - id: vscode-tunnel
+        if: steps.vscode.outcome == 'success'
+        uses: './.github/actions/tunnel'
+        with:
+          src: 127.0.0.1:5000
+          dest: 80
+      - if: steps.vscode-tunnel.outcome == 'success'
+        shell: bash
+        run: sleep $((60*30)) # 30 minutes

@@ -1,0 +1,123 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-action.json
+
+name: Platform
+
+inputs:
+  nocache:
+    type: boolean
+    default: false
+  platform:
+    type: choice
+    required: true
+    options:
+      - linux-amd64
+      - linux-i386
+      - darwin-amd64
+      - macos-amd64
+      - windows-amd64
+  provision:
+    type: string
+  run:
+    type: string
+
+runs:
+  using: "composite"
+  steps:
+    - id: platform
+      shell: bash
+      run: |
+        setvar() {
+          echo "::set-output name=$1::$2"
+          echo "PLATFORM_`echo $1 | tr "[:lower:]" "[:upper:]"`=$2" >> $GITHUB_ENV
+        }
+        case ${{ inputs.platform }} in
+          linux-amd64)
+            setvar family linux
+            setvar os linux
+            setvar arch amd64
+            setvar runner ubuntu-latest
+            setvar native true
+            ;;
+          linux-i386)
+            setvar family linux
+            setvar os linux
+            setvar arch i386
+            setvar dockerfile './.github/linux_i386.Dockerfile'
+            setvar runner ubuntu-latest
+            ;;
+          linux-arm)
+            setvar family linux
+            setvar os linux
+            setvar arch arm
+            setvar dockerfile './.github/linux_arm.Dockerfile'
+            setvar runner ubuntu-latest
+            ;;
+          darwin-amd64)
+            setvar family darwin
+            setvar os darwin
+            setvar arch amd64
+            setvar runner macos-latest
+            setvar native true
+            ;;
+          macos-amd64)
+            setvar family darwin
+            setvar os macos
+            setvar arch amd64
+            setvar runner macos-latest
+            setvar native true
+            ;;
+          windows-amd64)
+            setvar family windows
+            setvar os windows
+            setvar arch amd64
+            setvar runner windows-latest
+            setvar native true
+            ;;
+          openbsd-amd64)
+            setvar family bsd
+            setvar os openbsd
+            setvar arch amd64
+            setvar runner macos-latest
+            setvar vm true
+            setvar version 7.1
+            ;;
+          *)
+            echo "Error: unrecognized platform: '${{ inputs.platform }}'"
+            quit 1
+            ;;
+        esac
+
+    - if: steps.platform.output.native == 'true'
+      shell: bash
+      run: |
+        ${{ inputs.provision }}
+        ${{ inputs.run }}
+
+    - if: steps.platform.output.dockerfile
+      uses: ./.github/actions/docker
+      with:
+        dockerfile: ${{ steps.platform.output.dockerfile }}
+        nocache: ${{ inputs.nocache }}
+        provision: ${{ inputs.provision }}
+        run: ${{ inputs.run }}
+
+    - if: steps.platform.output.vm == 'true'
+      uses: cross-platform-actions/action@v0.6.2
+      with:
+        operating_system: ${{ steps.platform.output.os }}
+        version: ${{ steps.platform.output.version }}
+        shell: bash
+        run: |
+          ${{ inputs.provision }}
+          ${{ inputs.run }}
+
+    # - if: steps.platform.output.native != 'true'
+    #   shell: bash
+    #   run: |
+    #     cat > ${{ runner.temp }}/platform-run <<EOF
+    #     #!/bin/bash
+    #     while read line
+    #     do echo $line
+    #     done
+    #     EOF
+    #     chmod +x ${{ runner.temp }}/platform-run

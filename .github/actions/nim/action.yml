@@ -1,0 +1,130 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-action.json
+
+name: Nim
+description: Install a Nim environment.
+
+inputs:
+  install-method:
+    description: ''
+    required: false
+    default: choosenim
+
+  # Common Inputs
+  version:
+    description: ''
+    required: false
+    default: stable
+  stable:
+    description: ''
+    required: false
+    default: 'v1.6.6'
+  devel:
+    description: ''
+    required: false
+    default: 'devel'
+  nimble-path:
+    description: Directory path where nimble is installed.
+    required: false
+    default: '~/.nimble'
+
+  choosenim-path:
+    description: Directory path where choosenim is installed.
+    required: false
+    default: '~/.choosenim'
+
+  # Repo Inputs
+  repository:
+    description: Repository to install from
+    required: false
+    default: https://github.com/nim-lang/nim
+  config:
+    description: |
+      The contents of a `config.nims` file placed in the root of the Nim source.
+      This is used to customize the Nim compiler compilation.
+
+      Example:
+      ```nim
+      # config.nims
+      when defined release:
+        --passc:"-flto"
+      ````
+    required: false
+  path:
+    description: Directory path where the repository is cloned.
+    required: false
+    default: nim
+  always-boostrap:
+    description: Always bootstrap the compiler from the csources.
+    required: false
+    default: 'false'
+
+  # CI Platform Inputs
+  platform-os:
+    description: CI build host operating system
+    required: false
+    default: ${{ runner.os }}
+  platform-arch:
+    description: CI build host CPU architecture
+    required: false
+    default: ${{ runner.arch }}
+
+  # CI Cache Inputs
+  nocache:
+    description: Disable CI caching if set to 'true'
+    required: false
+    default: 'false'
+  cache-key-prefix:
+    description: An additional cache key to prefix the default key with.
+    required: false
+
+runs:
+  using: "composite"
+  steps:
+    - if: inputs.nocache != 'true'
+      id: cache-nimble
+      uses: actions/cache@v3
+      with:
+        path: ${{ inputs.nimble-path }}
+        key: ${{ inputs.cache-key-prefix }}${{ inputs.platform-os }}-${{ inputs.platform-arch }}-nimble
+
+    - if: inputs.install-method == 'choosenim'
+      uses: './.github/actions/nim/choosenim'
+      with:
+        platform-os: ${{ inputs.platform-os }}
+        platform-arch: ${{ inputs.platform-arch }}
+        nocache: ${{ inputs.nocache }}
+        cache-key-prefix: ${{ inputs.cache-key-prefix }}
+        version: ${{ inputs.version }}
+        choosenim-path: ${{ inputs.choosenim-path }}
+        nimble-path: ${{ inputs.nimble-path }}
+
+    - if: inputs.install-method == 'repo'
+      uses: './.github/actions/nim/repo'
+      with:
+        platform-os: ${{ inputs.platform-os }}
+        platform-arch: ${{ inputs.platform-arch }}
+        nocache: ${{ inputs.nocache }}
+        cache-key-prefix: ${{ inputs.cache-key-prefix }}
+        version: ${{ inputs.version }}
+        stable: ${{ inputs.stable }}
+        devel: ${{ inputs.devel }}
+        repository: ${{ inputs.repository }}
+        config: ${{ inputs.config }}
+        path: ${{ inputs.path }}
+        always-boostrap: ${{ inputs.always-boostrap }}
+
+    ####################
+    ## release-source ##
+    ####################
+
+    #############
+    ## release ##
+    #############
+
+    #############
+    ## package ##
+    #############
+
+    - shell: bash
+      run: |
+        nim --version

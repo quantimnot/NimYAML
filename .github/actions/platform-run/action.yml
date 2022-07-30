@@ -1,0 +1,16 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-action.json
+
+name: Platform Run
+
+inputs:
+  run:
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - shell: bash
+      run: |
+        ${{ runner.temp }}/platform-run <<"platform-run-EOF"
+        ${{ inputs.run }}
+        platform-run-EOF

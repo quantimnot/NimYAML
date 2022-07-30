@@ -28,7 +28,7 @@ type
     refs*: Table[pointer, tuple[a: Anchor, referenced: bool]]
     style: AnchorStyle
     nextAnchorId*: string
-    put*: proc(e: Event) {.raises: [], closure.}
+    put* {.cursor.}: proc(e: Event) {.raises: [], closure.}
 
   ConstructionContext* = ref object
     ## Context information for the process of constructing Nim values from YAML.

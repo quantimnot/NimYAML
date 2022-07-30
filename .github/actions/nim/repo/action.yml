@@ -1,0 +1,131 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-action.json
+
+name: Nim (from repo)
+description: Install a Nim build environment using a git repo.
+
+inputs:
+  # Specific Inputs:
+  version:
+    description: Nim version
+    required: false
+    default: stable
+  stable:
+    description: Stable Nim version git ref
+    required: false
+    default: 'v1.6.6'
+  devel:
+    description: Devel Nim version git ref
+    required: false
+    default: 'devel'
+  repository:
+    description: Repository to install from
+    required: false
+    default: https://github.com/nim-lang/nim
+  config:
+    description: |
+      The contents of a `config.nims` file placed in the root of the Nim source.
+      This is used to customize the Nim compiler compilation.
+
+      Example:
+      ```nim
+      # config.nims
+      when defined release:
+        --passc:"-flto"
+      ````
+    required: false
+  path:
+    description: Directory path where the repository is cloned.
+    required: false
+    default: nim
+  nimble-path:
+    description: Directory path where nimble is installed.
+    required: false
+    default: '~/.nimble'
+  always-boostrap:
+    description: Always bootstrap the compiler from the csources.
+    required: false
+    default: 'false'
+
+  # CI Platform Inputs:
+  platform-os:
+    description: CI build host operating system
+    required: false
+    default: ${{ runner.os }}
+  platform-arch:
+    description: CI build host CPU architecture
+    required: false
+    default: ${{ runner.arch }}
+
+  # CI Cache Inputs:
+  nocache:
+    description: Disable CI caching if set to 'true'
+    required: false
+    default: 'false'
+  cache-key-prefix:
+    description: An additional cache key to prefix the default key with.
+    required: false
+
+runs:
+  using: "composite"
+  steps:
+    - id: setup
+      shell: bash
+      run: |
+        sh "$GITHUB_ACTION_PATH/setup.sh" \
+          "${{ inputs.platform-os }}" \
+          "${{ inputs.path }}" \
+          "${{ inputs.nimble-path }}" \
+          "${{ inputs.repository }}" \
+          "${{ inputs.version }}" \
+          "${{ inputs.stable }}" \
+          "${{ inputs.devel }}"
+
+    - if: inputs.nocache != 'true'
+      id: cache
+      uses: actions/cache@v3
+      with:
+        path: ${{ inputs.path }}
+        key: |
+          ${{ inputs.cache-key-prefix }}nim-repo-${{ steps.setup.outputs.version }}-${{ steps.setup.outputs.sha }}-${{ steps.hash.outputs.hash }}
+        restore-keys: |
+          ${{ inputs.cache-key-prefix }}nim-repo-${{ steps.setup.outputs.version }}
+
+    - if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/checkout@v3
+      with:
+        clean: false
+        repository: ${{ inputs.repository }}
+        ref: ${{ steps.setup.outputs.version }}
+        path: ${{ inputs.path }}
+
+    - shell: bash
+      run: |
+        echo "SOURCE_DATE_EPOCH=$(git log -n 1 --format=%at)" >> $GITHUB_ENV
+        echo ${{ steps.setup.outputs.export }} >> $GITHUB_ENV
+        rm -rf ./${{ inputs.path }}/config.nims
+
+    - if: inputs.always-boostrap == 'true' || !hashFiles('${{ inputs.path }}/bin/nim')
+      id: bootstrap
+      shell: ${{ steps.setup.outputs.shell }}
+      run: |
+        cd ${{ inputs.path }}
+        ${{ steps.setup.outputs.bootstrap }}
+
+    - shell: bash
+      run: |
+        cat >> '${{ inputs.path }}/config.nims' << "EOF"
+        ${{ inputs.config }}
+        EOF
+
+    - if: inputs.config || (!inputs.always-boostrap == 'true' && steps.boostrap.outcome == 'skipped' && steps.cache.outputs.cache-hit != 'true')
+      shell: ${{ steps.setup.outputs.shell }}
+      run: |
+        cd ${{ inputs.path }}
+        ${{ steps.setup.outputs.build-nim }}
+        ${{ steps.setup.outputs.build-tools }}
+
+    - id: hash
+      shell: bash
+      run: |
+        cd ${{ inputs.path }}
+        echo "::set-output name=hash::${{ hashFiles('bin/*', 'lib/*') }}"

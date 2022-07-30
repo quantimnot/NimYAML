@@ -1,0 +1,87 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-action.json
+#
+# TODO:
+#   - [ ] Cache extensions.
+#   - [ ] Implement bind to next available port.
+
+name: VSCode
+description: Install and run VSCode.
+
+inputs:
+  github_token:
+    description: A GitHub token to get the latest coder/code-server release version.
+    required: true
+  extensions:
+    description: An ordered list of extensions to install.
+    required: false
+    default: nimsaem.nimvscode
+  bind-address:
+    description: The address to bind code-server to.
+    required: false
+    default: 127.0.0.1:5000
+  workspace:
+    description: Workspace path.
+    required: false
+    default: .
+  install-path:
+    description: Directory path where `code-server` is installed.
+    required: false
+    default: '~/.code-server'
+
+  # CI Platform Inputs
+  platform-os:
+    description: CI build host operating system
+    required: false
+    default: ${{ runner.os }}
+  platform-arch:
+    description: CI build host CPU architecture
+    required: false
+    default: ${{ runner.arch }}
+
+  # CI Cache Inputs
+  nocache:
+    description: Disable CI caching if set to 'true'
+    required: false
+    default: 'false'
+  cache-key-prefix:
+    description: An additional cache key to prefix the default key with.
+    required: false
+
+outputs:
+  bind-address:
+    description: The address code-server is bound to.
+    value: ${{ steps.run.outputs.bind-address }}
+
+runs:
+  using: "composite"
+  steps:
+    - id: setup
+      shell: bash
+      env:
+        # Used to fetch latest release version info.
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        sh "$GITHUB_ACTION_PATH/setup.sh" \
+          "${{ inputs.platform-os }}" \
+          "${{ inputs.platform-arch }}" \
+          "${{ inputs.install-path }}"
+
+    - if: inputs.nocache != 'true'
+      id: cache
+      uses: actions/cache@v3
+      with:
+        path: ${{ inputs.install-path }}
+        key: |
+          ${{ inputs.cache-key-prefix }}${{ inputs.platform-os }}-${{ inputs.platform-arch }}-code-server-${{ steps.setup.outputs.version }}
+
+    - if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: ${{ steps.setup.outputs.install }}
+
+    - id: run
+      shell: bash
+      run: |
+        sh "$GITHUB_ACTION_PATH/run.sh" \
+          "${{ inputs.bind-address }}" \
+          "${{ inputs.extensions }}" \
+          "${{ inputs.workspace }}"

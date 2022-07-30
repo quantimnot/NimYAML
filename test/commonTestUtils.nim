@@ -4,7 +4,14 @@
 #    See the file "copying.txt", included in this
 #    distribution, for details about the copyright.
 
+import std/unittest
+export unittest
+
 import ../yaml, ../yaml/data
+
+when defined(jsonOutputFormatter):
+  import jsonOutputFormatter
+  addOutputFormatter(JsonOutputFormatter())
 
 proc escapeNewlines(s: string): string =
   result = ""

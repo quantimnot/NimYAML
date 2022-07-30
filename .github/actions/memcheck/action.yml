@@ -1,0 +1,65 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-action.json
+
+name: Memcheck
+
+inputs:
+  source-path:
+    type: string
+    required: true
+  compile-args:
+    type: string
+  program-path:
+    type: string
+    required: true
+  args:
+    type: string
+  suppress:
+    type: string
+
+runs:
+  using: "composite"
+  steps:
+    # - if: inputs.nocache != 'true'
+    #   id: cache
+    #   uses: actions/cache@v3
+    #   with:
+    #     path: |
+    #       memcheck-cover
+    #     key: ${{ runner.os }}-${{ runner.arch }}-${{ steps.setup.outputs.version }}-${{ steps.setup.outputs.sha }}-${{ steps.final-build.outputs.hash }}
+    #     restore-keys: ${{ inputs.cache-key }}-${{ steps.setup.outputs.version }}
+
+    - shell: bash
+      run: |
+        valgrind --version || sudo apt-get install -qq valgrind
+        which valgrind
+
+        if [ ! -d 'memcheck-cover' ]; then
+          mkdir -p memcheck-cover
+          cd memcheck-cover
+          curl -L https://github.com/Farigh/memcheck-cover/releases/download/release-1.2/memcheck-cover-1.2.tar.bz2 | tar xjf -
+          cd -
+        fi
+
+        PATH="$PWD/memcheck-cover/bin:$PATH"
+
+        cat > memcheck.supp << "EOF"
+        ${{ inputs.suppress }}
+        EOF
+
+        nim c -d:release -d:useMalloc --debugger:native --stacktrace:on ${{ inputs.compile-args }} ${{ inputs.source-path }}
+
+        memcheck_runner.sh --fullpath-after= --output-name ${{ inputs.program-path }} --ignore memcheck.supp -- ${{ inputs.program-path }}
+
+        cat > memcheck-cover.config << EOF
+        memcheck_url_prefix_replacement["$PWD/nim"]="https://github.com/nim-lang/nim/blob/devel"
+        memcheck_url_prefix_replacement_type["$PWD/nim"]="github"
+        memcheck_url_prefix_replacement["$PWD"]="https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}"
+        memcheck_url_prefix_replacement_type["$PWD"]="github"
+        EOF
+
+        generate_html_report.sh -c memcheck-cover.config -i . -o memcheck
+
+    - uses: actions/upload-artifact@v3
+      with:
+        name: memcheck-${{ github.ref_name }}
+        path: memcheck

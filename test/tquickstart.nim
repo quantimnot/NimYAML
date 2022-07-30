@@ -1,11 +1,8 @@
-import unittest, os, osproc, macros, strutils, streams
+import commonTestUtils, os, osproc, macros, strutils, streams
 
-const baseDir = parentDir(staticExec("pwd"))
-let (nimPathRaw, nimPathRet) =
-    execCmdEx("which nim", {poStdErrToStdOut, poUsePath})
-if nimPathRet != 0: quit "could not locate nim executable:\n" & nimPathRaw
-let nimPath =
-    if nimPathRaw[0] == '/': nimPathRaw.strip else: baseDir / nimPathRaw.strip
+const
+  baseDir = getProjectPath().parentDir
+  nimPath = getCurrentCompilerExe()
 
 proc inputTest(basePath, path: string): bool =
   let
@@ -107,7 +104,7 @@ proc outputTest(basePath, path: string): bool =
       result = true
 
 proc testsFor(path: string, root: bool = true, titlePrefix: string = ""):
-    NimNode {.compileTime.} =
+    NimNode =
   result = newStmtList()
   let
     title = titlePrefix & slurp(baseDir / path / "title").splitLines()[0]

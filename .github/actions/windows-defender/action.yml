@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-action.json
+
+# https://docs.microsoft.com/en-us/powershell/module/defender/?view=windowsserver2022-ps
+# https://docs.microsoft.com/en-us/microsoft-365/security/defender-endpoint/command-line-arguments-microsoft-defender-antivirus?view=o365-worldwide
+
+name: Windows Defender
+description: Run Windows Defender on a file with updated signatures.
+
+inputs:
+  target:
+    description: File to scan.
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - uses: './.github/actions/nim'
+    - shell: bash
+      run: |
+        nim r "$GITHUB_ACTION_PATH/virus_scan" "$(cygpath -aw ${{ inputs.target }})"
+
+    # - shell: bash
+    #   run: |
+    #     PATH="/c/Program Files/Windows Defender:$PATH"
+    #     ls -l "/c/ProgramData/Microsoft/Windows Defender/Platform/4.18.2205.7-0"
+    #     MpCmdRun -Scan -ScanType 3 -DisableRemediation -File ""

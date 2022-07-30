@@ -1,0 +1,77 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-action.json
+
+name: Nim (from choosenim)
+description: Install a Nim build environment using `choosenim`.
+
+inputs:
+  # Specific Inputs:
+  version:
+    description: Nim version
+    required: false
+    default: stable
+  choosenim-path:
+    description: Directory path where `choosenim` is installed.
+    required: false
+    default: ~/.choosenim
+  nimble-path:
+    description: Directory path where nimble packages are installed.
+    required: false
+    default: ~/.nimble
+
+  # CI Platform Inputs:
+  platform-os:
+    description: CI build host operating system
+    required: false
+    default: ${{ runner.os }}
+  platform-arch:
+    description: CI build host CPU architecture
+    required: false
+    default: ${{ runner.arch }}
+
+  # CI Cache Inputs:
+  nocache:
+    description: Disable CI caching if set to 'true'
+    required: false
+    default: 'false'
+  cache-key-prefix:
+    description: An additional cache key to prefix the default key with.
+    required: false
+
+runs:
+  using: "composite"
+  steps:
+    - id: setup
+      shell: bash
+      env:
+        # `GITHUB_TOKEN` needed to use GitHub API for getting latest release
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        sh "$GITHUB_ACTION_PATH/setup.sh" \
+          ${{ inputs.platform-os }} \
+          ${{ inputs.platform-arch }} \
+          ${{ inputs.choosenim-path }} \
+          ${{ inputs.nimble-path }} \
+          ${{ inputs.version }}
+
+    - if: inputs.nocache != 'true'
+      id: cache
+      uses: actions/cache@v3
+      with:
+        path: ${{ inputs.choosenim-path }}
+        key: ${{ inputs.cache-key-prefix }}${{ inputs.platform-os }}-${{ inputs.platform-arch }}-nim-choosenim-${{ steps.setup.outputs.choosenim-version }}
+        restore-keys: |
+          ${{ inputs.cache-key-prefix }}${{ inputs.platform-os }}-${{ inputs.platform-arch }}-nim-choosenim-
+
+    - if: steps.cache.outputs.cache-hit != 'true' && contains(inputs.platform-os, 'Windows')
+      shell: bash
+      run: sh "$GITHUB_ACTION_PATH/install_windows.sh" "${{ steps.setup.outputs.choosenim-version }}" "${{ inputs.choosenim-path }}"
+
+    - if: steps.cache.outputs.cache-hit != 'true' && !contains(inputs.platform-os, 'Windows')
+      shell: bash
+      run: sh "$GITHUB_ACTION_PATH/install_posix.sh"
+
+    - shell: bash
+      run: |
+        choosenim --version
+        choosenim ${{ inputs.version }}
+        choosenim versions --installed

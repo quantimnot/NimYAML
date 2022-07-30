@@ -6,7 +6,7 @@
 
 import "../yaml"
 
-import unittest, json
+import commonTestUtils, json
 
 proc ensureEqual(yamlIn, jsonIn: string) =
   try:
