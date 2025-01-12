@@ -1,4 +1,6 @@
 import yaml, yaml/data, yaml/parser, yaml/hints, streams
+when defined(nimPreviewSlimSystem):
+  import std/assertions
 type Person = object
   name: string
 

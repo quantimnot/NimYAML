@@ -6,6 +6,9 @@
 
 import ../yaml/private/lex
 
+when defined(nimPreviewSlimSystem):
+  import std/assertions
+
 import unittest, strutils
 
 const

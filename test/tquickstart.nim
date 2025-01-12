@@ -6,6 +6,9 @@
 
 import unittest, os, osproc, macros, strutils, streams
 
+when defined(nimPreviewSlimSystem):
+  import std/[assertions, syncio]
+
 const baseDir = parentDir(staticExec("pwd"))
 let (nimPathRaw, nimPathRet) =
     execCmdEx("which nim", {poStdErrToStdOut, poUsePath})

@@ -5,6 +5,8 @@
 #    distribution, for details about the copyright.
 
 import "../yaml"
+when defined(nimPreviewSlimSystem):
+  import std/assertions
 import unittest
 
 type

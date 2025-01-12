@@ -20,6 +20,8 @@
 ## website for more information.
 
 import std / [tables, typetraits, strutils, macros, streams, times, parseutils, options]
+when defined(nimPreviewSlimSystem):
+  import std/formatfloat
 import data, taglib, stream, private/internal, hints, annotations
 export data, stream, macros, annotations, options
   # *something* in here needs externally visible `==`(x,y: AnchorId),

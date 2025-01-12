@@ -6,6 +6,9 @@
 
 import ../yaml/[ parser, stream, tojson]
 
+when defined(nimPreviewSlimSystem):
+  import std/assertions
+
 import unittest, json
 
 proc ensureEqual(yamlIn, jsonIn: string) =

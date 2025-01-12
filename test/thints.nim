@@ -5,6 +5,8 @@
 #    distribution, for details about the copyright.
 
 import unittest
+when defined(nimPreviewSlimSystem):
+  import std/assertions
 import ../yaml/hints
 
 suite "Hints":

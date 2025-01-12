@@ -5,6 +5,8 @@
 #    distribution, for details about the copyright.
 
 import ../yaml, ../yaml/data
+when defined(nimPreviewSlimSystem):
+  import std/assertions
 
 proc escapeNewlines(s: string): string =
   result = ""

@@ -26,6 +26,9 @@ import data, stream, taglib, private/internal, parser, loading
 when defined(gcArc) and not defined(gcOrc):
   {.error: "NimYAML's DOM API only supports ORC because ARC can't deal with cycles".}
 
+when defined(nimPreviewSlimSystem):
+  import std/assertions
+
 when defined(nimNoNil):
     {.experimental: "notnil".}
 type

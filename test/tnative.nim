@@ -8,6 +8,9 @@ import "../yaml"
 import unittest, strutils, tables, times, math, options
 import commonTestUtils
 
+when defined(nimPreviewSlimSystem):
+  import std/assertions
+
 type
   MyTuple = tuple
     str: string

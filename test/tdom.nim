@@ -6,6 +6,8 @@
 
 import "../yaml"
 import unittest, commonTestUtils, streams, tables
+when defined(nimPreviewSlimSystem):
+  import std/assertions
 
 suite "DOM":
   test "Composing simple Scalar":

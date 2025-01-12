@@ -5,6 +5,8 @@
 #    distribution, for details about the copyright.
 
 import os, terminal, strutils, streams, macros, unittest, sets
+when defined(nimPreviewSlimSystem):
+  import std/[syncio, assertions]
 import testEventParser, commonTestUtils
 import ../yaml/[ data, parser, stream ]
 
