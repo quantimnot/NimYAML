@@ -110,8 +110,12 @@ proc atEmptyPairKey(ctx: Context, e: var Event): bool {.hint[XCannotRaiseY]: off
 proc afterFlowMapValue(ctx: Context, e: var Event): bool
 proc afterFlowSeqSepProps(ctx: Context, e: var Event): bool
 proc afterFlowSeqItem(ctx: Context, e: var Event): bool
-proc afterPairValue(ctx: Context, e: var Event): bool {.hint[XCannotRaiseY]: off.}
-proc emitCached(ctx: Context, e: var Event): bool {.hint[XCannotRaiseY]: off.}
+{.pop.}
+{.push gcSafe, raises: [].}
+proc atStreamEnd(ctx: Context, e : var Event): bool
+proc atEmptyPairKey(ctx: Context, e: var Event): bool
+proc afterPairValue(ctx: Context, e: var Event): bool
+proc emitCached(ctx: Context, e: var Event): bool
 {.pop.}
 
 template pushLevel(ctx: Context, newState: State, newIndent: int) =
