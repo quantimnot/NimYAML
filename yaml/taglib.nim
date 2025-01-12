@@ -26,7 +26,7 @@ template setTag*(t: typedesc, tag: Tag) =
   ## Associate the given uri with a certain type. This uri is used as YAML tag
   ## when loading and dumping values of this type.
   when $tag in registeredUris:
-    {. fatal: "[NimYAML] URI \"" & uri & "\" registered twice!" .}
+    {. fatal: "[NimYAML] URI \"" & $tag & "\" registered twice!" .}
   const tconst {.genSym.} = tag
   static:
     registeredUris.add($tag)
