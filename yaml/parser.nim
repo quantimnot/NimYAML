@@ -25,7 +25,7 @@ type
     ## only until the document goes out of scope (i.e. until
     ## ``yamlEndDocument`` is yielded).
     issueWarnings: bool
-  
+
   YamlParserError* = object of YamlLoadingError
     ## A parser error is raised if the character stream that is parsed is
     ## not a valid YAML character stream. This stream cannot and will not be

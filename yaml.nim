@@ -7,7 +7,7 @@
 ## .. importdoc::
 ##   yaml/loading.nim, yaml/dumping.nim, yaml/annotations.nim, yaml/taglib.nim,
 ##   yaml/style.nim, yaml/dom.nim, yaml/tojson.nim,
-##   yaml/parser.nim, yaml/presenter.nim, yaml/data.nim, yaml/stream.nim  
+##   yaml/parser.nim, yaml/presenter.nim, yaml/data.nim, yaml/stream.nim
 ##
 ## This is the root module of NimYAML, a package that provides facilities to
 ## generate and interpret `YAML <http://yaml.org>`_ character streams. Importing
@@ -110,7 +110,7 @@
 ##   import yaml / [parser, presenter, stream, data]
 ##
 ## Provides `parse`_, a proc that feeds a ``YamlStream`` from YAML input,
-## and `present`_, which consumes a ``YamlStream`` and writes out YAML. 
+## and `present`_, which consumes a ``YamlStream`` and writes out YAML.
 ## You can use a `BufferYamlStream`_ to supply manually generated events.
 ##
 ## Native API

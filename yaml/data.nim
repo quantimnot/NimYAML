@@ -78,7 +78,7 @@ type
     column*: Positive = 1
 
   Properties* = tuple[anchor: Anchor, tag: Tag]
-  
+
   YamlLoadingError* = object of ValueError
     ## Base class for all exceptions that may be raised during the process
     ## of loading a YAML character stream.

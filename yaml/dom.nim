@@ -149,7 +149,7 @@ proc newYamlNode*(
 
 proc newYamlNode*(
   fields  : openarray[(YamlNode, YamlNode)],
-  tag     : Tag  = yTagQuestionMark, 
+  tag     : Tag  = yTagQuestionMark,
   style   : CollectionStyle = csAny,
   startPos: Mark = Mark(),
   endPos  : Mark = Mark(),
@@ -226,7 +226,7 @@ proc constructChild*(
   else: internalError("Malformed YamlStream")
 
 proc representChild*(
-  ctx  : var SerializationContext, 
+  ctx  : var SerializationContext,
   value: YamlNodeObj,
 ) {.raises: [YamlSerializationError].} =
   case value.kind
