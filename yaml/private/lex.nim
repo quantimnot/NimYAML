@@ -1079,13 +1079,13 @@ proc insideLine(lex: var Lexer): bool =
   return true
 
 proc indentationSettingToken(lex: var Lexer): bool =
-  let cachedIntentation = lex.currentIndentation()
+  let cachedIndentation = lex.currentIndentation()
   result = lex.insideLine()
   if result and lex.flowDepth == 0:
     if lex.cur in nodePropertyKind:
-      lex.propertyIndentation = cachedIntentation
+      lex.propertyIndentation = cachedIndentation
     else:
-      lex.indentation = cachedIntentation
+      lex.indentation = cachedIndentation
 
 proc afterToken(lex: var Lexer): bool =
   while lex.c in space: lex.advance()

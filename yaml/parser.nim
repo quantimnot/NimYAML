@@ -127,7 +127,7 @@ template transition(ctx: Context, newState: State) =
   ctx.levels[^1].state = newState
 
 template transition(ctx: Context, newState: State, newIndent) =
-  debug("parser: transtion " & newState.astToStr & ", indent = " & $newIndent)
+  debug("parser: transition " & newState.astToStr & ", indent = " & $newIndent)
   ctx.levels[^1] = Level(state: newState, indentation: newIndent)
 
 template updateIndentation(ctx: Context, newIndent: int) =

@@ -47,7 +47,7 @@ type
     ## - ``asTidy``: Anchors will only be generated for objects that
     ##   actually occur more than once in the content to be serialized.
     ##   This is a bit slower and needs more memory than ``asAlways``.
-    ## - ``asAlways``: Achors will be generated for every ref object in the
+    ## - ``asAlways``: Anchors will be generated for every ref object in the
     ##   content that is serialized, regardless of whether the object is
     ##   referenced again afterwards.
     asNone, asTidy, asAlways
@@ -77,7 +77,7 @@ type
     ## `YamlStream <#YamlStream>`_. The fields ``line``, ``column`` and
     ## ``lineContent`` are only available if the costructing proc also does
     ## parsing, because otherwise this information is not available to the
-    ## costruction proc.
+    ## construction proc.
 
   YamlSerializationError* = object of ValueError
     ## Exception that may be raised when serializing Nim values into YAML

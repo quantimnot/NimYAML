@@ -167,7 +167,7 @@ proc constructJson*(s: var YamlStream): seq[JsonNode] {.raises: [
                         $levels[levels.high].node.kind)
       else: discard # wait for yamlEndDocument
     of yamlAlias:
-      # we can savely assume that the alias exists in anchors
+      # we can safely assume that the alias exists in anchors
       # (else the parser would have already thrown an exception)
       case levels[levels.high].node.kind
       of JArray:
