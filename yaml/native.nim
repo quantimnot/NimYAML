@@ -23,7 +23,7 @@ import std / [tables, typetraits, strutils, macros, streams, times, parseutils, 
 when defined(nimPreviewSlimSystem):
   import std/formatfloat
 import data, taglib, stream, private/internal, hints, annotations
-export data, stream, macros, annotations, options
+export data, stream, annotations
   # *something* in here needs externally visible `==`(x,y: AnchorId),
   # but I cannot figure out what. binding it would be the better option.
 
