@@ -760,7 +760,8 @@ proc next*(lex: var Lexer) {.raises: [LexerError].}=
       "-" & $lex.curEndPos.line & "," & $lex.curEndPos.column & "] " & $lex.cur)
 
 proc init*(lex: var Lexer, source: Stream) {.raises: [IOError, OSError].} =
-  lex.source.open(source)
+  {.cast(raises: [IOError, OSError]).}:
+    lex.source.open(source)
   lex.basicInit()
 
 proc init*(lex: var Lexer, source: string) {.raises: [].} =

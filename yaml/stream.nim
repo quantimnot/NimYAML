@@ -38,7 +38,7 @@ type
     ## well-formed if they take it as input parameter.
     nextImpl*: proc(s: YamlStream, e: var Event): bool {.gcSafe, raises: [CatchableError] .}
     lastTokenContextImpl*:
-        proc(s: YamlStream, lineContent: var string): bool {.raises: [].}
+        proc(s: YamlStream, lineContent: var string): bool {.gcsafe, raises: [].}
     peeked: bool
     cached: Event
 
@@ -47,7 +47,7 @@ proc noLastContext(s: YamlStream, lineContent: var string): bool {.raises: [].} 
 
 proc basicInit*(s: YamlStream, lastTokenContextImpl:
     proc(s: YamlStream, lineContent: var string): bool
-    {.raises: [].} = noLastContext) {.raises: [].} =
+    {.raises: [], gcsafe, closure.} = noLastContext) {.raises: [].} =
   ## initialize basic values of the YamlStream. Call this in your constructor
   ## if you subclass YamlStream.
   s.peeked = false
@@ -64,7 +64,7 @@ when not defined(JS):
     result = new(IteratorYamlStream)
     result.basicInit()
     IteratorYamlStream(result).backend = backend
-    result.nextImpl = proc(s: YamlStream, e: var Event): bool {.gcSafe, raises: [CatchableError].} =
+    result.nextImpl = proc(s: YamlStream, e: var Event): bool {.gcsafe, raises: [CatchableError], closure.} =
       e = IteratorYamlStream(s).backend()
       result = true
 
@@ -78,7 +78,7 @@ proc newBufferYamlStream*(): BufferYamlStream =
   result.basicInit()
   result.buf = @[]
   result.pos = 0
-  result.nextImpl = proc(s: YamlStream, e: var Event): bool =
+  result.nextImpl = proc(s: YamlStream, e: var Event): bool {.gcsafe, raises: [CatchableError], closure.} =
     let bys = BufferYamlStream(s)
     e = bys.buf[bys.pos]
     inc(bys.pos)

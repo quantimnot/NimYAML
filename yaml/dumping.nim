@@ -12,7 +12,7 @@
 ## YAML character stream. Along with the loading API, this
 ## forms the highest-level API of NimYAML.
 
-import std/streams
+import std/[streams, options]
 import parser, presenter, native, private/internal, taglib
 export native
 
@@ -120,7 +120,7 @@ proc dump*[K](
   dumper: Dumper,
   value: K,
   target: Stream,
-) {.raises: [
+) {.gcsafe, raises: [
   YamlPresenterJsonError, YamlPresenterOutputError,
   YamlSerializationError
 ].} =
@@ -133,7 +133,7 @@ proc dump*[K](
 proc dump*[K](
   dumper: Dumper,
   value: K,
-): string {.hint[XCannotRaiseY]: off, raises: [
+): string {.gcsafe, hint[XCannotRaiseY]: off, raises: [
   YamlPresenterJsonError, YamlPresenterOutputError,
   YamlSerializationError
 ].} =

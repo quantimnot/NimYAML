@@ -31,3 +31,4 @@ result
 vendor
 .vscode
 *.swp
+/.aider.*

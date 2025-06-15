@@ -1,3 +1,12 @@
+--define:nimPreviewSlimSystem
+# --experimental:"strictDefs"
+# --experimental:"strictFuncs"
+# --experimental:"views"
+
+# switch("warning", "UnusedImport:off")
+switch("warning", "Uninit:off")
+switch("warning", "ProveInit:off")
+
 task build, "Compile the YAML module into a library":
   --app:lib
   --d:release

@@ -228,7 +228,7 @@ proc constructChild*(
 proc representChild*(
   ctx  : var SerializationContext,
   value: YamlNodeObj,
-) {.raises: [YamlSerializationError].} =
+) {.gcsafe, raises: [YamlSerializationError].} =
   case value.kind
   of yScalar:
     ctx.put(scalarEvent(value.content, value.tag, style = value.scalarStyle,
@@ -245,6 +245,18 @@ proc representChild*(
       ctx.representChild(key)
       ctx.representChild(value)
     ctx.put(endMapEvent())
+
+proc hasKey*(node: YamlNode, key: string): bool =
+  ## Checks if the given key exists in a mapping. *node* must be a *yMapping*.
+  assert node.kind == yMapping
+  var keyNode = YamlNode(kind: yScalar, tag: yTagExclamationMark, content: key)
+  result = node.fields.hasKey(keyNode)
+  if not result:
+    keyNode.tag = yTagQuestionMark
+    result = node.fields.hasKey(keyNode)
+    if not result:
+      keyNode.tag = nimTag(yamlTagRepositoryPrefix & "str")
+      result = node.fields.hasKey(keyNode)
 
 proc `[]`*(node: YamlNode, i: int): YamlNode =
   ## Get the node at index *i* from a sequence. *node* must be a *ySequence*.

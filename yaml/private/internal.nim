@@ -94,3 +94,9 @@ proc process*(context: var AnchorContext,
 
 proc map*(context: AnchorContext, anchor: Anchor): Anchor =
   return context.mapping.getOrDefault(anchor)
+
+
+type Optional* = concept o
+  o.isSome is bool
+  o.isNone is bool
+  o.get

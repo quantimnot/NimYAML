@@ -82,7 +82,6 @@ const defaultProperties = (yAnchorNone, yTagQuestionMark)
 
 {.push gcSafe, raises: [CatchableError].}
 proc atStreamStart(ctx: Context, e: var Event): bool
-proc atStreamEnd(ctx: Context, e : var Event): bool {.hint[XCannotRaiseY]: off.}
 proc beforeDoc(ctx: Context, e: var Event): bool
 proc beforeDocEnd(ctx: Context, e: var Event): bool
 proc afterDirectivesEnd(ctx: Context, e: var Event): bool
@@ -106,7 +105,6 @@ proc afterBlockParent(ctx: Context, e: var Event): bool
 proc afterBlockParentProps(ctx: Context, e: var Event): bool
 proc afterImplicitPairStart(ctx: Context, e: var Event): bool
 proc beforePairValue(ctx: Context, e: var Event): bool
-proc atEmptyPairKey(ctx: Context, e: var Event): bool {.hint[XCannotRaiseY]: off.}
 proc afterFlowMapValue(ctx: Context, e: var Event): bool
 proc afterFlowSeqSepProps(ctx: Context, e: var Event): bool
 proc afterFlowSeqItem(ctx: Context, e: var Event): bool
@@ -150,10 +148,10 @@ proc resolveHandle(ctx: Context, handle: string): string {.raises: [].} =
 
 proc init[T](ctx: Context, p: YamlParser, source: T) {.inline.} =
   ctx.pushLevel(atStreamStart, -2)
-  ctx.nextImpl = proc(s: YamlStream, e: var Event): bool {.raises: [CatchableError].} =
+  ctx.nextImpl = proc(s: YamlStream, e: var Event): bool {.raises: [CatchableError], gcsafe, closure.} =
     let c = Context(s)
     return c.levels[^1].state(c, e)
-  ctx.lastTokenContextImpl = proc(s: YamlStream, lineContent: var string): bool =
+  ctx.lastTokenContextImpl = proc(s: YamlStream, lineContent: var string): bool {.gcsafe, raises: [], closure.} =
     lineContent = Context(s).lex.currentLine()
     return true
   ctx.headerProps = defaultProperties
