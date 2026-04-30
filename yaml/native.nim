@@ -870,13 +870,6 @@ proc hasSparse(t: typedesc): bool {.compileTime.} =
   else:
     return false
 
-proc getOptionInner(fType: NimNode): NimNode {.compileTime.} =
-  if fType.kind == nnkBracketExpr and len(fType) in {2, 3} and
-      fType[0].kind == nnkSym:
-    return fType[1]
-  else:
-    return nil
-
 proc checkMissing(
   s, t   : NimNode,
   tName  : string,
@@ -884,22 +877,19 @@ proc checkMissing(
   i      : int,
   matched: NimNode,
   o, m   : NimNode,
-):
-    NimNode {.compileTime.} =
-  let
-    fType = getTypeInst(field)
-    fName = escape($field)
-    optionInner = getOptionInner(fType)
+): NimNode =
+  let fName = escape($field)
   result = quote do:
     when not `o`.`field`.hasCustomPragma(transient):
       if not `matched`[`i`]:
         when `o`.`field`.hasCustomPragma(defaultVal):
           `o`.`field` = `o`.`field`.getCustomPragmaVal(defaultVal)
         elif hasSparse(`t`) and `o`.`field` is Optional:
-          # when not compiles(`o`.`field` = none(`optionInner`)):
-          #   {.error: "Cannot set " & `fName` & " to none".}
-          # else:
-          `o`.`field` = none(`optionInner`)
+          `o`.`field` = default(type `o`.`field`) # NOTE: This used to be a `none` call,
+            # but I was having ambiguous symbol errors when using an optional type that
+            # is different from `std/options`'s `Option` type. This workaround assumes
+            # that the default value assignment is equivalent to `none` for the optional
+            # type.
         else:
           raise constructionError(`s`, `m`, "While constructing " & `tName` &
               ": Missing field: " & `fName`)

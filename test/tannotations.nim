@@ -7,39 +7,9 @@
 import "../yaml"
 when defined(nimPreviewSlimSystem):
   import std/assertions
-import unittest # , options
+import unittest , options
 import minlib/misc/option
 
-
-# proc none*[T](t: typedesc[Result[T, void]]): Result[T, void] =
-#   Result[T, void].err()
-
-proc constructChild*[T](
-  ctx   : var ConstructionContext,
-  result: var Result[T, void],
-) =
-  ## constructs an optional value. A value with a !!null tag will be loaded
-  ## an empty value.
-  let event = ctx.input.peek()
-  if event.kind == yamlScalar and event.scalarProperties.tag == yTagNull:
-    result = none(T)
-    discard ctx.input.next()
-  else:
-    var inner: T
-    ctx.constructChild(inner)
-    result = some(inner)
-
-proc representChild*[T](
-  ctx  : var SerializationContext,
-  value: Option[T],
-  # value: Result[T, void],
-) {.raises: [YamlSerializationError].} =
-  ## represents an optional value. If the value is missing, a !!null scalar
-  ## will be produced.
-  if value.isSome:
-    ctx.representChild(value.get())
-  # else:
-  #   ctx.put(scalarEvent("~", yTagNull, style = ctx.scalarStyleFor(Result[T, void])))
 
 type
   Config = ref object
@@ -67,8 +37,8 @@ type
        intVal: int
 
   Sparse {.sparse.} = ref object of RootObj
-     name*: Opt[string]
-     description*: Opt[string]
+     name*: ?string # `?` creates a `minlib/misc/option` optional type. This tests disperate optional types as defined by the concept `type Optional` in `yaml/private/internal.nim`.
+     description*: options.Option[string] # Confirms the std/options type is also supported simultaneously with another optional type.
 
   DifferentKeys = object
     xx {.yamlKey: "xy".}: string

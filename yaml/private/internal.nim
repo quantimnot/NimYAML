@@ -95,8 +95,11 @@ proc process*(context: var AnchorContext,
 proc map*(context: AnchorContext, anchor: Anchor): Anchor =
   return context.mapping.getOrDefault(anchor)
 
-
-type Optional* = concept o
-  o.isSome is bool
-  o.isNone is bool
-  o.get
+type Optional* = concept o, type T
+  ## A type that can be used as an optional value.
+  ## This is a concept so that more than one optional type can be used as long as
+  ## they define these minimal requirements.
+  isSome(o) is bool
+  isNone(o) is bool
+  isNone(default(T)) == true
+  get(o)
