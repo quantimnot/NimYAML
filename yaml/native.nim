@@ -870,6 +870,69 @@ proc hasSparse(t: typedesc): bool {.compileTime.} =
   else:
     return false
 
+proc fieldIdent(n: NimNode): string {.compileTime.} =
+  ## Extracts the field name from a node that may be wrapped in
+  ## Postfix (for export) and/or PragmaExpr (for pragmas).
+  case n.kind
+  of nnkIdent, nnkSym: return $n
+  of nnkPostfix: return fieldIdent(n[1])
+  of nnkPragmaExpr: return fieldIdent(n[0])
+  else: return ""
+
+proc recFieldHasDefault(recList: NimNode, fieldName: string): bool {.compileTime.} =
+  ## Walks a RecList (from getImpl) to check whether `fieldName` has a
+  ## default value assignment in its type definition.
+  for child in recList:
+    case child.kind
+    of nnkIdentDefs:
+      # IdentDefs may declare multiple names before the type and default.
+      # Layout: name1, name2, ..., type, defaultVal
+      for i in 0 ..< child.len - 2:
+        if fieldIdent(child[i]) == fieldName:
+          return child[^1].kind != nnkEmpty
+    of nnkRecCase:
+      # Discriminant is child[0] (an IdentDefs)
+      let disc = child[0]
+      if fieldIdent(disc[0]) == fieldName:
+        return disc[^1].kind != nnkEmpty
+      # Check branches
+      for bIndex in 1 ..< child.len:
+        let branch = child[bIndex]
+        let content = branch[branch.len - 1]
+        if content.kind == nnkRecList:
+          if recFieldHasDefault(content, fieldName):
+            return true
+        elif content.kind == nnkIdentDefs:
+          for i in 0 ..< content.len - 2:
+            if fieldIdent(content[i]) == fieldName:
+              return content[^1].kind != nnkEmpty
+    else: discard
+  return false
+
+proc hasFieldDefault(tDecl: NimNode, fieldName: string): bool {.compileTime.} =
+  ## Given a typedesc NimNode (BracketExpr[typeDesc, Sym]), checks whether
+  ## the field `fieldName` has a default value in the type definition.
+  ## Walks parent types for inherited fields.
+  let impl = tDecl[1].getImpl()
+  if impl.kind != nnkTypeDef: return false
+  let objTy = impl[2]
+  # Handle `object of Parent`
+  if objTy.kind == nnkObjectTy:
+    # Check parent first
+    if objTy[1].kind != nnkEmpty:
+      var parentSym: NimNode
+      if objTy[1].kind == nnkOfInherit:
+        parentSym = objTy[1][0]
+      else:
+        parentSym = objTy[1]
+      let parentDecl = newNimNode(nnkBracketExpr).add(bindSym("typeDesc"), parentSym)
+      if hasFieldDefault(parentDecl, fieldName):
+        return true
+    # Check own fields
+    if objTy[2].kind == nnkRecList:
+      return recFieldHasDefault(objTy[2], fieldName)
+  return false
+
 proc checkMissing(
   s, t   : NimNode,
   tName  : string,
@@ -879,6 +942,7 @@ proc checkMissing(
   o, m   : NimNode,
 ): NimNode =
   let fName = escape($field)
+  let useFieldDefault = hasFieldDefault(t, $field)
   result = quote do:
     when not `o`.`field`.hasCustomPragma(transient):
       if not `matched`[`i`]:
@@ -890,6 +954,8 @@ proc checkMissing(
             # is different from `std/options`'s `Option` type. This workaround assumes
             # that the default value assignment is equivalent to `none` for the optional
             # type.
+        elif `useFieldDefault`:
+          `o`.`field` = default(type `o`).`field`
         else:
           raise constructionError(`s`, `m`, "While constructing " & `tName` &
               ": Missing field: " & `fName`)

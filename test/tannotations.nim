@@ -45,6 +45,17 @@ type
     xy {.yamlKey: "zz".}: int
     xz {.yamlKey: "a".}, xa {.yamlKey: "y".}: string
 
+  WithFieldDefaults = object
+    a: string
+    b: int = 42
+    c = "hello"
+
+  WithBothDefaults = object
+    ## When both a field default and defaultVal pragma are present,
+    ## the pragma value takes precedence.
+    a: string
+    b {.defaultVal: 100.}: int = 42
+
 suite "Serialization Annotations":
   test "load default value":
     let input = "draftsRoot: foo"
@@ -106,3 +117,35 @@ suite "Serialization Annotations":
     var dumper = minimalDumper()
     let result = dumper.dump(input)
     assert result == "{xy: foo, zz: 42, a: bar, y: baz}\n"
+
+  test "load with field defaults":
+    let input = "a: provided"
+    var result: WithFieldDefaults
+    load(input, result)
+    assert result.a == "provided"
+    assert result.b == 42, "b should use field default, got " & $result.b
+    assert result.c == "hello", "c should use field default, got " & result.c
+
+  test "load with field defaults, partial override":
+    let input = "a: provided\nb: 7"
+    var result: WithFieldDefaults
+    load(input, result)
+    assert result.a == "provided"
+    assert result.b == 7, "b should be overridden, got " & $result.b
+    assert result.c == "hello", "c should use field default, got " & result.c
+
+  test "defaultVal pragma takes precedence over field default":
+    let input = "a: provided"
+    var result: WithBothDefaults
+    load(input, result)
+    assert result.a == "provided"
+    assert result.b == 100, "b should use pragma value (100), got " & $result.b
+
+  test "defaultVal pragma takes precedence over missing optional field value":
+    type WithOptional {.sparse.} = object
+      a {.defaultVal: some(1).}: options.Option[int]
+      b: int
+    var result: WithOptional
+    load("b: 2", result)
+    assert result.a.isSome
+    assert result.a.get == 1
