@@ -1,4 +1,7 @@
 --define:nimPreviewSlimSystem
+--experimental:typeBoundOps
+--processing:off
+switch "import", "minlib/test/test/assertions"
 # --experimental:"strictDefs"
 # --experimental:"strictFuncs"
 # --experimental:"views"

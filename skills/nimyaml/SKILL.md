@@ -63,13 +63,30 @@ All annotations are pragmas on object types or fields.
 | `{.ignore: ["key1", "key2"].}` | Ignore listed keys during loading. `{.ignore: [].}` ignores all unknown keys |
 | `{.implicit.}` | Variant object where each case branch has exactly one field (or zero in one branch). Serialized as value directly instead of sequence-of-pairs |
 
+### Nim Field Default Values
+
+Nim's native field default values (e.g. `field: int = 42`) are also honored during deserialization. When a field is absent from YAML input, NimYAML uses the field's default value instead of raising a missing-field error.
+
+Precedence when a field is missing from input:
+1. `{.defaultVal: value.}` pragma (highest priority)
+2. `{.sparse.}` type + `Optional` field (defaults to none)
+3. Nim field default value (e.g. `port: int = 8080`)
+4. Raise "Missing field" error
+
+If both `{.defaultVal.}` and a Nim field default are present, the pragma value wins.
+
 ### Examples
 
 ```nim
 type
   Config = object
     host*: string
-    port* {.defaultVal: 8080.}: int
+    port*: int = 8080               # Nim field default, used when absent
+    logLevel* {.defaultVal: "info".}: string  # pragma default
+
+  ServerConfig = object
+    host*: string
+    port* {.defaultVal: 9090.}: int = 8080  # pragma (9090) wins over field default (8080)
 
   Metadata {.sparse.} = object
     title*: Option[string]
@@ -452,7 +469,7 @@ nim docs              # generate documentation
 |---|---|
 | Using ARC without ORC for `YamlNode` | Compile with `--gc:orc` or `--mm:orc` |
 | Providing a `{.transient.}` field value in YAML input | Remove the key from input; transient fields cannot be set from YAML |
-| Missing field error on optional fields | Add `{.sparse.}` to type or `{.defaultVal: none(T).}` to field |
+| Missing field error on optional fields | Add `{.sparse.}` to type, `{.defaultVal: none(T).}` to field, or use a Nim field default |
 | Unknown field error on extra keys | Add `{.ignore: ["key"].}` or `{.ignore: [].}` to type |
 | Expecting `OrderedTable` from a YAML mapping | `OrderedTable` serializes as sequence of single-pair mappings, not a flat mapping |
 | `YamlPresenterJsonError` on dump | JSON cannot represent non-scalar keys, NaN, or Inf. Use YAML output or sanitize values |

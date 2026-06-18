@@ -172,7 +172,7 @@ proc initConstructionContext*(input: YamlStream): ConstructionContext =
 
 proc initSerializationContext*(
   options: SerializationOptions,
-  putImpl: proc(ctx: var SerializationContext, e: Event) {.gcsafe, raises: [], closure.}
+  putImpl: proc(ctx: var SerializationContext, e: Event) {.gcsafe, raises: [], closure, noSideEffect.}
 ): SerializationContext =
   result = SerializationContext(
     refs: initTable[pointer, tuple[a: Anchor, referenced: bool]](),
@@ -184,6 +184,7 @@ proc initSerializationContext*(
 
 proc presentTag*(ctx: var SerializationContext, t: typedesc): Tag {.inline.} =
   ## Get the Tag that represents the given type in the given style
+  mixin yamlTag
   if ctx.emitTag:
     result = yamlTag(t)
     if ctx.options.tagStyle == tsRootOnly: ctx.emitTag = false
@@ -1905,7 +1906,7 @@ proc represent*[T](
     bys = newBufferYamlStream()
     context = initSerializationContext(
       options,
-      proc(ctx: var SerializationContext, e: Event) = bys.put(e)
+      proc(ctx: var SerializationContext, e: Event) {.gcsafe, raises: [], closure.} = bys.put(e)
     )
   bys.put(startStreamEvent())
   bys.put(startDocEvent(handles = options.handles))
