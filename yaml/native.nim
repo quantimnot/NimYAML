@@ -778,6 +778,14 @@ proc recListNode(n: NimNode): NimNode {.compileTime.} =
   if n.kind == nnkRecList: result = n[0]
   else: result = n
 
+proc getImpl(symOrBrktExpr: NimNode): NimNode =
+  # TODO: I had to add this after rebasing upstream changes. I'm not sure if this
+  # is only needed for compatibility with Min
+  if unlikely(symOrBrktExpr.kind == nnkBracketExpr):
+    macros.getImpl(symOrBrktExpr[0])
+  else:
+    macros.getImpl(symOrBrktExpr)
+
 proc parentType(tDesc: NimNode): NimNode {.compileTime.} =
   var name: NimNode
   case tDesc[1].kind
@@ -1100,6 +1108,7 @@ proc addFieldCases(
   if tParent != nil:
     addFieldCases(tParent, context, name, o, matched, failOnUnknown, m, tName, caseStmt, fieldIndex)
 
+  debugEcho treerepr tDesc.getTypeInst
   # we need the type impl declaration to check for the yamlKey pragma
   let
     tInst = tDesc.getTypeInst
