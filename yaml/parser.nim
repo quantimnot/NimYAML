@@ -195,21 +195,36 @@ type
     ## `finish` once all input has been fed.
     ##
     ## Event production is all-or-nothing: an attempt that runs out of input
-    ## is rolled back, so no event is ever based on incomplete input.
-    ## Consumed input is discarded, so memory use is bounded by the size of
-    ## the largest event rather than by the size of the whole input.
+    ## is rolled back, so no event and no error is ever based on incomplete
+    ## input. The next attempt starts over from the beginning of the event,
+    ## so feeding many small chunks into one large event (a long scalar, or a
+    ## flow collection, which is parsed as a whole) costs time quadratic in
+    ## the size of that event. Feed chunks of a few KiB or more.
+    ##
+    ## Consumed input is discarded between events. The buffer holds the
+    ## input of the event in progress (for flow collections: the whole
+    ## collection) plus whatever has been fed but not yet parsed; `feed`
+    ## never blocks, so drain `events` after each `feed` to keep it small.
+    ##
+    ## Unlike the parser returned by `parse`, a ``YamlFeedParser`` is not a
+    ## `YamlStream`; it yields plain events.
     ctx: Context
     started, ended: bool
+    # buffered input length of the last attempt that ran out of input,
+    # -1 if the last attempt did not. Unchanged length = nothing new to try.
+    starvedAt: int
+    error: ref YamlParserError
 
 proc newYamlFeedParser*(p: YamlParser): YamlFeedParser =
   ## Creates a feed parser using the settings of ``p``.
   let ctx = new(Context)
   ctx.initCommon(p)
   ctx.lex.initFeed()
-  result = YamlFeedParser(ctx: ctx)
+  result = YamlFeedParser(ctx: ctx, starvedAt: -1)
 
-proc feed*(fp: YamlFeedParser, data: openArray[char]) =
-  ## Appends ``data`` to the input. Must not be called after `finish`.
+proc feed*(fp: YamlFeedParser, data: openArray[char]) {.raises: [ValueError].} =
+  ## Appends ``data`` to the input. Raises ``ValueError`` if called after
+  ## `finish`.
   fp.ctx.lex.feed(data)
 
 proc finish*(fp: YamlFeedParser) =
@@ -227,30 +242,46 @@ proc tryNext*(fp: YamlFeedParser, e: var Event): bool
   ## event could be produced. Returns ``false`` if more input must be fed
   ## first, or if the stream has already ended (see `finished`).
   ##
-  ## Raises `YamlParserError` if the input is invalid. Errors are only
-  ## raised for input that is known to be complete enough to be invalid;
-  ## the parser must not be used further after an error.
+  ## Raises `YamlParserError` if the input is invalid. An error is only
+  ## raised once the input fed so far proves it, and once the line it
+  ## occurs in is complete, so its position and line content equal those
+  ## reported for the same input given as a string. After an error, every
+  ## further call raises the same error.
+  if not fp.error.isNil: raise fp.error
   if fp.ended: return false
   let ctx = fp.ctx
-  ctx.lex.compact()
   let final = ctx.lex.inputFinished()
+  if not final and fp.starvedAt == ctx.lex.bufferedLen(): return false
+  # no lexer state is held here, so the feed buffer may be compacted.
+  ctx.lex.compact(allowFeed = true)
   var snapshot: typeof(ctx[])
   if not final:
     snapshot = ctx[]
     ctx.lex.resetStarved()
+  template rollback() =
+    ctx[] = move(snapshot)
+    fp.starvedAt = ctx.lex.bufferedLen()
+    return false
   try:
     if not fp.started:
       ctx.lex.start()
     while not ctx.levels[^1].state(ctx, e): discard
   except CatchableError as ce:
-    if not final and ctx.lex.starved():
-      ctx[] = move(snapshot)
-      return false
-    if ce of YamlParserError: raise (ref YamlParserError)(ce)
-    raise (ref YamlParserError)(msg: ce.msg, parent: ce)
-  if not final and ctx.lex.starved():
-    ctx[] = move(snapshot)
-    return false
+    if not final and (ctx.lex.starved() or not ctx.lex.lineComplete()):
+      rollback()
+    var pe: ref YamlParserError
+    if ce of YamlParserError:
+      pe = (ref YamlParserError)(ce)
+    elif ce of YamlStreamError and ce.parent of YamlParserError:
+      # raised by a nested ``next`` while caching a flow collection
+      pe = (ref YamlParserError)(ce.parent)
+    else:
+      pe = (ref YamlParserError)(msg: ce.msg, parent: ce,
+          mark: ctx.lex.curStartPos, lineContent: ctx.lex.currentLine())
+    fp.error = pe
+    raise pe
+  if not final and ctx.lex.starved(): rollback()
+  fp.starvedAt = -1
   fp.started = true
   if e.kind == yamlEndStream: fp.ended = true
   result = true
@@ -277,7 +308,7 @@ proc safeNext(ctx: Context) =
     ctx.lex.next()
   except LexerError as e:
     raise (ref YamlParserError)(
-      msg: e.msg, parent: nil, mark: Mark(line: e.line, column: e.column),
+      msg: e.msg, parent: e.parent, mark: Mark(line: e.line, column: e.column),
       lineContent: e.lineContent)
 
 proc parseTag(ctx: Context): Tag =
@@ -380,7 +411,8 @@ proc beforeDoc(ctx: Context, e: var Event): bool =
       ctx.safeNext()
     of UnknownDirective:
       seenDirectives = true
-      # TODO: issue warning
+      # TODO: issue warning. Warnings must be buffered in the Context rather
+      # than emitted directly, so that a YamlFeedParser rollback discards them.
       while true:
         ctx.safeNext()
         if ctx.lex.cur != Token.DirectiveParam: break

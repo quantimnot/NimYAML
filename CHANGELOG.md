@@ -5,9 +5,18 @@ Features:
  * added `YamlFeedParser`, a push-style parser for input that arrives in
    chunks (`newYamlFeedParser`, `feed`, `finish`, `tryNext`, `events`).
    `tryNext` returns `false` when more input is needed and resumes once more
-   input has been fed.
+   input has been fed. See the README for caveats: events lag behind the
+   input by up to one token, and feeding small chunks into large events
+   (long scalars, flow collections) costs time quadratic in the event size.
  * the lexer no longer depends on `std/lexbase`; consumed input is dropped
    between events, so memory use for `Stream` input stays bounded.
+
+Changes:
+
+ * `parse(Stream)` no longer reads from the stream itself. Errors raised by
+   the `Stream` are reported by the first `next` that needs the data, as
+   "Encountered stream error" with the original exception in the cause
+   chain, also when the read fails in the middle of a token.
 
 ## 2.2.1
 

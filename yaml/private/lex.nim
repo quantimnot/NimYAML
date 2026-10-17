@@ -122,7 +122,7 @@ proc fetch(b: SourceBuffer, i: int): char {.noinline, raises: [].} =
     b.data.setLen(oldLen + sourceChunkSize)
     var n = 0
     try:
-      n = b.stream.readData(addr b.data[oldLen], sourceChunkSize)
+      n = b.stream.readDataStr(b.data, oldLen ..< oldLen + sourceChunkSize)
     except CatchableError as ce:
       b.error = ce
     b.data.setLen(oldLen + n)
@@ -181,11 +181,7 @@ proc advance(lex: var Lexer, step: int = 1) {.inline.} =
 
 template checkStreamError(lex: var Lexer) =
   if not lex.source.buf.error.isNil:
-    let ce = lex.source.buf.error
-    lex.source.buf.error = nil
-    var e = generateError(lex, "Encountered stream error: " & ce.msg)
-    e.parent = ce
-    raise e
+    raise generateError(lex, "")
 
 template lexCR(lex: var Lexer) =
   lex.source.bufpos = lex.source.handleCR(lex.source.bufpos - 1)
@@ -249,8 +245,13 @@ template debug*(message: string) =
 
 proc generateError(lex: Lexer, message: string):
     ref LexerError {.raises: [].} =
+  # a failed refill makes the input look truncated. Whatever error that
+  # provokes, the stream error is the actual cause.
+  let streamError = lex.source.buf.error
   result = (ref LexerError)(
-    msg: message, line: lex.lineNumber(), column: lex.columnNumber(),
+    msg: (if streamError.isNil: message
+          else: "Encountered stream error: " & streamError.msg),
+    parent: streamError, line: lex.lineNumber(), column: lex.columnNumber(),
     lineContent: lex.currentLine())
 
 proc startToken(lex: var Lexer) {.inline.} =
@@ -863,9 +864,10 @@ proc initFeed*(lex: var Lexer) {.raises: [].} =
 proc start*(lex: var Lexer) {.raises: [].} =
   lex.basicInit()
 
-proc feed*(lex: var Lexer, data: openArray[char]) {.raises: [].} =
-  ## Appends input. Must not be called after ``finish``.
-  assert not lex.source.buf.final, "feed after finish"
+proc feed*(lex: var Lexer, data: openArray[char]) {.raises: [ValueError].} =
+  ## Appends input. Raises ``ValueError`` after ``finish``.
+  if lex.source.buf.final:
+    raise newException(ValueError, "cannot feed input after finish")
   let oldLen = lex.source.buf.data.len
   lex.source.buf.data.setLen(oldLen + data.len)
   if data.len > 0:
@@ -901,10 +903,28 @@ proc compactBuffer(lex: var Lexer) {.noinline, raises: [].} =
   lex.tokenStart = max(0, lex.tokenStart - keep)
   lex.source.compactAt = lex.source.bufpos + compactThreshold div 4
 
-proc compact*(lex: var Lexer) {.inline, raises: [].} =
+proc compact*(lex: var Lexer, allowFeed = false) {.inline, raises: [].} =
   ## Drops consumed input from the buffer. Must only be called between
   ## tokens, never while a token is being read.
-  if lex.source.bufpos >= lex.source.compactAt: lex.compactBuffer()
+  ##
+  ## Compacting a non-final feed buffer shifts the buffer under any lexer
+  ## state saved for rollback, so it is skipped unless ``allowFeed`` is set,
+  ## which the caller may only do when no such state is held.
+  if lex.source.bufpos >= lex.source.compactAt and
+      (allowFeed or lex.source.buf.final or not lex.source.buf.stream.isNil):
+    lex.compactBuffer()
+
+proc bufferedLen*(lex: Lexer): int {.raises: [].} =
+  ## Number of input characters currently held in the buffer.
+  lex.source.buf.data.len
+
+proc lineComplete*(lex: Lexer): bool {.raises: [].} =
+  ## ``true`` if the buffer holds the current line up to its terminator, or
+  ## if no more input will arrive.
+  if lex.source.buf.final: return true
+  for i in lex.source.lineStart ..< lex.source.buf.data.len:
+    if lex.source.buf.data[i] in {'\l', '\c'}: return true
+  return false
 
 # states
 
