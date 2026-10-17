@@ -1,0 +1,54 @@
+%YAML 1.2
+---
+- id: schema
+  with:
+    - id: tag
+      feature:
+      - read schema tag
+      - write (configurable/optional) schema tag
+    - id: database
+      feature:
+      - abstract schema database interface
+      - add this schema db: https://www.schemastore.org/
+      - add local sqlite schema database
+      - cache schemas in the local db
+
+- id: streaming-resumability
+  with:
+    - id: incremental-feed
+      status: done
+      feature:
+      - push-style parser fed in chunks (sockets, async, pipes)
+      - report "need more input" instead of treating an empty buffer as EOF
+      - explicit end-of-input signal
+    - id: checkpoint-restore
+      feature:
+      - snapshot parser/lexer state (byte offset, level stack, tag handles, anchors)
+      - serializable checkpoint value
+      - seek source and resume event emission from a checkpoint
+    - id: document-boundary-resume
+      feature:
+      - record byte offset / line at each document boundary
+      - start parse() at a given offset with %YAML / %TAG directives restored
+    - id: error-recovery
+      feature:
+      - after a parser error, skip to the next document marker
+      - continue parsing the remaining documents and collect errors
+
+- id: editor
+  with:
+    - id: syntax-highlighting
+
+    - id: multiline
+      info: [https://yaml-multiline.info/]
+      feature:
+      - tutorial
+      - visual aids
+
+    - id: embedded-lang
+      info: [https://github.com/harrydowning/vscode-yaml-embedded-languages]
+      feature:
+      - embedded-lang-region IDE integration
+      - syntax highlighting
+
+

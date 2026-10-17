@@ -146,10 +146,11 @@ proc resolveHandle(ctx: Context, handle: string): string {.raises: [].} =
       return item.uriPrefix
   return ""
 
-proc init[T](ctx: Context, p: YamlParser, source: T) {.inline.} =
+proc initCommon(ctx: Context, p: YamlParser) =
   ctx.pushLevel(atStreamStart, -2)
   ctx.nextImpl = proc(s: YamlStream, e: var Event): bool {.raises: [CatchableError], gcsafe, closure.} =
     let c = Context(s)
+    c.lex.compact()
     return c.levels[^1].state(c, e)
   ctx.lastTokenContextImpl = proc(s: YamlStream, lineContent: var string): bool {.gcsafe, raises: [], closure.} =
     lineContent = Context(s).lex.currentLine()
@@ -157,9 +158,12 @@ proc init[T](ctx: Context, p: YamlParser, source: T) {.inline.} =
   ctx.headerProps = defaultProperties
   ctx.inlineProps = defaultProperties
   ctx.issueWarnings = p.issueWarnings
-  ctx.lex.init(source)
   ctx.keyCachePos = 0
   ctx.caching = false
+
+proc init[T](ctx: Context, p: YamlParser, source: T) {.inline.} =
+  ctx.initCommon(p)
+  ctx.lex.init(source)
 
 # interface
 
@@ -180,6 +184,81 @@ proc parse*(p: YamlParser, s: string): YamlStream =
   let ctx = new(Context)
   ctx.init(p, s)
   return ctx
+
+type
+  YamlFeedParser* = ref object
+    ## A push-style parser for input that arrives in chunks, e.g. from a
+    ## socket or an async pipe. Input is supplied with `feed`, events are
+    ## pulled with `tryNext`. When the available input does not suffice to
+    ## produce the next event, `tryNext` returns ``false`` and the parser
+    ## resumes from the same point once more input has been fed. Call
+    ## `finish` once all input has been fed.
+    ##
+    ## Event production is all-or-nothing: an attempt that runs out of input
+    ## is rolled back, so no event is ever based on incomplete input.
+    ## Consumed input is discarded, so memory use is bounded by the size of
+    ## the largest event rather than by the size of the whole input.
+    ctx: Context
+    started, ended: bool
+
+proc newYamlFeedParser*(p: YamlParser): YamlFeedParser =
+  ## Creates a feed parser using the settings of ``p``.
+  let ctx = new(Context)
+  ctx.initCommon(p)
+  ctx.lex.initFeed()
+  result = YamlFeedParser(ctx: ctx)
+
+proc feed*(fp: YamlFeedParser, data: openArray[char]) =
+  ## Appends ``data`` to the input. Must not be called after `finish`.
+  fp.ctx.lex.feed(data)
+
+proc finish*(fp: YamlFeedParser) =
+  ## Signals that all input has been fed. Afterwards, `tryNext` returns
+  ## ``true`` until the ``yamlEndStream`` event has been returned.
+  fp.ctx.lex.finish()
+
+proc finished*(fp: YamlFeedParser): bool =
+  ## ``true`` once the ``yamlEndStream`` event has been returned.
+  fp.ended
+
+proc tryNext*(fp: YamlFeedParser, e: var Event): bool
+    {.raises: [YamlParserError].} =
+  ## Tries to produce the next event. Returns ``true`` and sets ``e`` if an
+  ## event could be produced. Returns ``false`` if more input must be fed
+  ## first, or if the stream has already ended (see `finished`).
+  ##
+  ## Raises `YamlParserError` if the input is invalid. Errors are only
+  ## raised for input that is known to be complete enough to be invalid;
+  ## the parser must not be used further after an error.
+  if fp.ended: return false
+  let ctx = fp.ctx
+  ctx.lex.compact()
+  let final = ctx.lex.inputFinished()
+  var snapshot: typeof(ctx[])
+  if not final:
+    snapshot = ctx[]
+    ctx.lex.resetStarved()
+  try:
+    if not fp.started:
+      ctx.lex.start()
+    while not ctx.levels[^1].state(ctx, e): discard
+  except CatchableError as ce:
+    if not final and ctx.lex.starved():
+      ctx[] = move(snapshot)
+      return false
+    if ce of YamlParserError: raise (ref YamlParserError)(ce)
+    raise (ref YamlParserError)(msg: ce.msg, parent: ce)
+  if not final and ctx.lex.starved():
+    ctx[] = move(snapshot)
+    return false
+  fp.started = true
+  if e.kind == yamlEndStream: fp.ended = true
+  result = true
+
+iterator events*(fp: YamlFeedParser): Event {.raises: [YamlParserError].} =
+  ## Yields all events that can be produced from the input fed so far.
+  var e: Event
+  while fp.tryNext(e): yield e
 
 # implementation
 

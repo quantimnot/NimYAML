@@ -1,3 +1,14 @@
+## Unreleased
+
+Features:
+
+ * added `YamlFeedParser`, a push-style parser for input that arrives in
+   chunks (`newYamlFeedParser`, `feed`, `finish`, `tryNext`, `events`).
+   `tryNext` returns `false` when more input is needed and resumes once more
+   input has been fed.
+ * the lexer no longer depends on `std/lexbase`; consumed input is dropped
+   between events, so memory use for `Stream` input stays bounded.
+
 ## 2.2.1
 
 Bugfixes:

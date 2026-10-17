@@ -30,6 +30,11 @@ task parserTests, "Run parser tests":
   --verbosity:0
   setCommand "c", "test/tparser"
 
+task feedTests, "Run feed parser tests":
+  --r
+  --verbosity:0
+  setCommand "c", "test/tfeed"
+
 task jsonTests, "Run JSON tests":
   --r
   --verbosity:0

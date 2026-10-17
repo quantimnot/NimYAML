@@ -4,13 +4,34 @@
 #    See the file "copying.txt", included in this
 #    distribution, for details about the copyright.
 
-import lexbase, streams, strutils, unicode
+import streams, strutils, unicode
 import ../data
 when defined(yamlDebug):
   import terminal
   export terminal
 
 type
+  SourceBuffer = ref object
+    ## Input characters. Data is only ever appended to the buffer, except by
+    ## ``compact`` which drops consumed input between parser events.
+    data: string
+    # refill backend. nil for string and feed input.
+    stream: Stream
+    # no more data will be appended. reading past the end yields EndOfFile.
+    final: bool
+    # a read went past the end of a non-final buffer without a stream to
+    # refill from. All results computed since the flag was reset are
+    # based on a fake EndOfFile and must be discarded.
+    starved: bool
+    # error raised by ``stream`` while refilling
+    error: ref CatchableError
+
+  Source = object
+    buf: SourceBuffer
+    bufpos, lineNumber, lineStart: int
+    # bufpos from which on compaction is attempted
+    compactAt: int
+
   Lexer* = object
     cur*: Token
     curStartPos*, curEndPos*: Mark
@@ -19,7 +40,7 @@ type
     evaluated*: string
     # internals
     indentation: int
-    source: BaseLexer
+    source: Source
     tokenStart: int
     state, lineStartState, jsonEnablingState: State
     c: char
@@ -66,6 +87,7 @@ type
 # consts
 
 const
+  EndOfFile      = '\0'
   space          = {' ', '\t'}
   lineEnd        = {'\l', '\c', EndOfFile}
   spaceOrLineEnd = {' ', '\t', '\l', '\c', EndOfFile}
@@ -86,6 +108,65 @@ const
 
   UnknownIndentation* = int.low
 
+  sourceChunkSize = 8192
+  compactThreshold = 65536
+
+# source buffer
+
+proc fetch(b: SourceBuffer, i: int): char {.noinline, raises: [].} =
+  while i >= b.data.len and not b.final:
+    if b.stream.isNil:
+      b.starved = true
+      return EndOfFile
+    let oldLen = b.data.len
+    b.data.setLen(oldLen + sourceChunkSize)
+    var n = 0
+    try:
+      n = b.stream.readData(addr b.data[oldLen], sourceChunkSize)
+    except CatchableError as ce:
+      b.error = ce
+    b.data.setLen(oldLen + n)
+    if n <= 0: b.final = true
+  result = if i < b.data.len: b.data[i] else: EndOfFile
+
+proc `[]`(b: SourceBuffer, i: int): char {.inline, raises: [].} =
+  if i < b.data.len: b.data[i] else: b.fetch(i)
+
+proc `[]`(b: SourceBuffer, s: HSlice[int, int]): string {.raises: [].} =
+  # characters past the end only exist as EndOfFile and are never part of
+  # a lexeme.
+  b.data[s.a .. min(s.b, b.data.len - 1)]
+
+proc handleCR(s: var Source, pos: int): int {.raises: [].} =
+  inc(s.lineNumber)
+  result = pos + 1
+  if s.buf[result] == '\l': inc(result)
+  s.lineStart = result
+
+proc handleLF(s: var Source, pos: int): int {.raises: [].} =
+  inc(s.lineNumber)
+  result = pos + 1
+  s.lineStart = result
+
+proc getColNumber(s: Source, pos: int): int {.raises: [].} =
+  result = abs(pos - s.lineStart)
+
+proc getCurrentLine(s: Source, marker: bool = true): string {.raises: [].} =
+  # never starves the buffer: this is only used for diagnostics.
+  result = ""
+  var i = s.lineStart
+  while true:
+    let c =
+      if i < s.buf.data.len: s.buf.data[i]
+      elif not s.buf.stream.isNil: s.buf.fetch(i)
+      else: EndOfFile
+    if c in {'\c', '\l', EndOfFile}: break
+    result.add(c)
+    inc(i)
+  result.add("\n")
+  if marker:
+    result.add(spaces(s.getColNumber(s.bufpos)) & "^\n")
+
 proc currentIndentation*(lex: Lexer): int =
   return lex.source.getColNumber(lex.source.bufpos) - 1
 
@@ -98,21 +179,23 @@ proc advance(lex: var Lexer, step: int = 1) {.inline.} =
   lex.c = lex.source.buf[lex.source.bufpos]
   lex.source.bufpos.inc(step)
 
-template lexCR(lex: var Lexer) =
-  try: lex.source.bufpos = lex.source.handleCR(lex.source.bufpos - 1)
-  except CatchableError as ce:
-    var e = lex.generateError("Encountered stream error: " & ce.msg)
-    e.parent = ce
-    raise e
-  lex.advance()
-
-template lexLF(lex: var Lexer) =
-  try: lex.source.bufpos = lex.source.handleLF(lex.source.bufpos - 1)
-  except CatchableError as ce:
+template checkStreamError(lex: var Lexer) =
+  if not lex.source.buf.error.isNil:
+    let ce = lex.source.buf.error
+    lex.source.buf.error = nil
     var e = generateError(lex, "Encountered stream error: " & ce.msg)
     e.parent = ce
     raise e
+
+template lexCR(lex: var Lexer) =
+  lex.source.bufpos = lex.source.handleCR(lex.source.bufpos - 1)
   lex.advance()
+  lex.checkStreamError()
+
+template lexLF(lex: var Lexer) =
+  lex.source.bufpos = lex.source.handleLF(lex.source.bufpos - 1)
+  lex.advance()
+  lex.checkStreamError()
 
 template lineNumber(lex: Lexer): Positive =
   lex.source.lineNumber
@@ -756,20 +839,72 @@ proc currentLine*(lex: Lexer): string =
 
 proc next*(lex: var Lexer) {.raises: [LexerError].}=
   while not lex.state(lex): discard
+  lex.checkStreamError()
   debug("lexer -> [" & $lex.curStartPos.line & "," & $lex.curStartPos.column &
       "-" & $lex.curEndPos.line & "," & $lex.curEndPos.column & "] " & $lex.cur)
 
 proc init*(lex: var Lexer, source: Stream) {.raises: [IOError, OSError].} =
-  {.cast(raises: [IOError, OSError]).}:
-    lex.source.open(source)
+  lex.source = Source(buf: SourceBuffer(stream: source), lineNumber: 1,
+                      compactAt: compactThreshold)
   lex.basicInit()
 
 proc init*(lex: var Lexer, source: string) {.raises: [].} =
-  try:
-    lex.source.open(newStringStream(source))
-  except CatchableError:
-    discard # can never happen with StringStream
+  lex.source = Source(buf: SourceBuffer(data: source, final: true),
+                      lineNumber: 1, compactAt: int.high) # in memory anyway
   lex.basicInit()
+
+proc initFeed*(lex: var Lexer) {.raises: [].} =
+  ## Initializes the lexer for input that is supplied via ``feed``.
+  ## ``start`` must be called before the first token is read; since it
+  ## reads the first character, it is subject to starvation like ``next``.
+  lex.source = Source(buf: SourceBuffer(), lineNumber: 1,
+                      compactAt: compactThreshold)
+
+proc start*(lex: var Lexer) {.raises: [].} =
+  lex.basicInit()
+
+proc feed*(lex: var Lexer, data: openArray[char]) {.raises: [].} =
+  ## Appends input. Must not be called after ``finish``.
+  assert not lex.source.buf.final, "feed after finish"
+  let oldLen = lex.source.buf.data.len
+  lex.source.buf.data.setLen(oldLen + data.len)
+  if data.len > 0:
+    copyMem(addr lex.source.buf.data[oldLen], unsafeAddr data[0], data.len)
+
+proc finish*(lex: var Lexer) {.raises: [].} =
+  ## Signals that no more input will be fed.
+  lex.source.buf.final = true
+
+proc inputFinished*(lex: Lexer): bool {.raises: [].} =
+  lex.source.buf.final
+
+proc starved*(lex: Lexer): bool {.raises: [].} =
+  ## ``true`` if a read went past the available input since the last call
+  ## to ``resetStarved``.
+  lex.source.buf.starved
+
+proc resetStarved*(lex: var Lexer) {.raises: [].} =
+  lex.source.buf.starved = false
+
+proc compactBuffer(lex: var Lexer) {.noinline, raises: [].} =
+  let b = lex.source.buf
+  var keep = min(lex.source.lineStart, lex.source.bufpos - 1)
+  if lex.tokenStart > 0: keep = min(keep, lex.tokenStart - 1)
+  if keep < compactThreshold or keep * 2 < b.data.len:
+    lex.source.compactAt = lex.source.bufpos + compactThreshold div 4
+    return
+  let rest = b.data.len - keep
+  if rest > 0: moveMem(addr b.data[0], addr b.data[keep], rest)
+  b.data.setLen(rest)
+  lex.source.bufpos -= keep
+  lex.source.lineStart -= keep
+  lex.tokenStart = max(0, lex.tokenStart - keep)
+  lex.source.compactAt = lex.source.bufpos + compactThreshold div 4
+
+proc compact*(lex: var Lexer) {.inline, raises: [].} =
+  ## Drops consumed input from the buffer. Must only be called between
+  ## tokens, never while a token is being read.
+  if lex.source.bufpos >= lex.source.compactAt: lex.compactBuffer()
 
 # states
 
