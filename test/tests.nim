@@ -8,4 +8,4 @@
 import tlex, tjson, tnative, tparser, tquickstart, tannotations, thints, tpresenter
 
 when not defined(gcArc) or defined(gcOrc):
-  import tdom
+  import tdom, tfragment

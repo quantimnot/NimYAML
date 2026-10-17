@@ -1,3 +1,19 @@
+## Unreleased
+
+Features:
+
+ * new module `yaml/fragment` resolves RFC 9512 fragment identifiers
+   (`#`, `#/json/pointer`, `#*anchor`) against YAML input
+ * added `dumpMultiDoc`, which dumps several values as documents of a single
+   YAML stream (counterpart of `loadMultiDoc`)
+
+Bugfixes:
+
+ * loading YAML with a redefined anchor into a `YamlNode` no longer crashes;
+   aliases refer to the latest definition
+ * `==` on `YamlNode` now returns `true` when comparing a cyclic node with
+   itself
+
 ## 2.2.1
 
 Bugfixes:

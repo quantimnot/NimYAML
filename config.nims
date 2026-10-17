@@ -40,6 +40,11 @@ task domTests, "Run DOM tests":
   --verbosity:0
   setCommand "c", "test/tdom"
 
+task fragmentTests, "Run fragment identifier and multi-document tests":
+  --r
+  --verbosity:0
+  setCommand "c", "test/tfragment"
+
 task nativeTests, "Run native value tests":
   --r
   --verbosity:0

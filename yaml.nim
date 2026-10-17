@@ -6,7 +6,7 @@
 
 ## .. importdoc::
 ##   yaml/loading.nim, yaml/dumping.nim, yaml/annotations.nim, yaml/taglib.nim,
-##   yaml/style.nim, yaml/dom.nim, yaml/tojson.nim,
+##   yaml/style.nim, yaml/dom.nim, yaml/tojson.nim, yaml/fragment.nim,
 ##   yaml/parser.nim, yaml/presenter.nim, yaml/data.nim, yaml/stream.nim
 ##
 ## This is the root module of NimYAML, a package that provides facilities to
@@ -90,6 +90,18 @@
 ## JSON input. Mind that the loading & dumping API is able to read & write
 ## JSON files (since YAML  is a superset of JSON), you don't need the JSON
 ## API for that.
+##
+## Fragment API
+## ------------
+##
+## .. code-block::
+##
+##   # needs explicit import to use:
+##   import yaml/fragment
+##
+## The `module yaml/fragment`_ resolves URI fragment identifiers like
+## ``file.yaml#/a/b`` (JSON Pointer) or ``file.yaml#*anchor`` (alias node)
+## against YAML input as defined by RFC 9512, yielding ``YamlNode`` objects.
 ##
 ##
 ## Low Level Event Handling
