@@ -361,6 +361,17 @@ proc readHexSequence(lex: var Lexer, len: int) =
     else:
       raise lex.generateError("Invalid character in hex escape sequence: " &
           escape("" & lex.c))
+  # JSON escapes characters outside the BMP as UTF-16 surrogate pairs
+  # (U+1F4A9 as \uD83D\uDCA9); a low surrogate right after a high one
+  # forms a single code point with it
+  let n = lex.evaluated.len
+  if charPos >= 0xDC00 and charPos <= 0xDFFF and n >= 3 and
+      lex.evaluated[n - 3] == '\xED' and
+      (ord(lex.evaluated[n - 2]) and 0xF0) == 0xA0:
+    let high = 0xD000 or ((ord(lex.evaluated[n - 2]) and 0x3F) shl 6) or
+        (ord(lex.evaluated[n - 1]) and 0x3F)
+    lex.evaluated.setLen(n - 3)
+    charPos = 0x10000 + ((high - 0xD800) shl 10) + (charPos - 0xDC00)
   lex.evaluated.add(toUTF8(Rune(charPos)))
 
 proc readURI(lex: var Lexer, verbatim: bool) =
