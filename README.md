@@ -298,6 +298,128 @@ for err in events.errors:
    recover from errors, but you can process the recovering stream's events
    like those of `parse`.
 
+## Dumping Multiple Documents
+
+`dumpMultiDoc` is the counterpart of `loadMultiDoc`: it dumps each value as a
+document of its own, all in one YAML stream.
+
+```nim
+import yaml
+
+type Item = object
+  name: string
+  count: int
+
+let s = Dumper().dumpMultiDoc(@[Item(name: "a", count: 1),
+                                Item(name: "b", count: 2)])
+# name: a
+# count: 1
+# ...
+# name: b
+# count: 2
+var items: seq[Item]
+loadMultiDoc(s, items) # @[Item(name: "a", count: 1), Item(name: "b", count: 2)]
+```
+
+There is also a variant that writes to a `Stream`. Any `seq` or array of a
+type that `dump` accepts works, including `YamlNode`s.
+
+### Caveats
+
+ * **Documents are separated by `...`.** The presenter ends each document but
+   the last with a `...` line; `---` only appears where the dumper writes
+   directives anyway (e.g. `canonicalDumper`). This is valid YAML, but if you
+   need `---` separators, e.g. for tools that split on them, post-process the
+   output.
+ * **Not JSON.** With `jsonDumper()`, each document is JSON, but the result as
+   a whole is not, nor is it JSON Lines: the documents are pretty-printed and
+   separated by `...` lines.
+ * **Anchors are local to each document.** A `ref` that occurs in two values
+   gets an anchor and aliases within each document, but is written out in full
+   in every document it appears in. When loading, each document gets its own
+   copy, so identity across documents is lost.
+ * **An empty list yields an empty string**, a stream with no documents.
+   `loadMultiDoc` reads it back as an empty `seq`; `load` rejects it.
+
+## Fragment Identifiers
+
+`yaml/fragment` resolves URI fragment identifiers such as `doc.yaml#/a/b` or
+`doc.yaml#*anchor` against YAML input, as defined for the `application/yaml`
+media type by [RFC 9512][6]. Split the fragment off the URI and pass it with
+the content:
+
+```nim
+import yaml, yaml/fragment
+
+const doc = """
+servers:
+  - &prod {host: example.com, port: 443}
+  - {host: localhost, port: 8080}
+"""
+echo resolveFragment(doc, "/servers/1/host").content # localhost
+echo resolveFragment(doc, "#/servers/0/port").content # 443 (leading # is ignored)
+echo resolveFragment(doc, "*prod")["host"].content # example.com
+echo resolveFragment(doc, "").kind # yMapping: the root node
+```
+
+| Fragment | References | Defined for |
+|---|---|---|
+| empty | the root node | single-document streams |
+| `/a/0` | the node at that [JSON Pointer][7], traversing aliases | single-document streams |
+| `*name` | the first node with anchor `name`, in any document | all streams |
+
+`resolveFragment` percent-decodes the fragment first. If you already hold a
+`YamlNode`, `resolvePointer(root, "/a/0")` evaluates a JSON Pointer on it
+without parsing again, and `resolveAnchor(input, "name")` finds an anchor
+directly; neither of them percent-decodes. All three raise `YamlFragmentError`
+if the fragment is malformed or references no node; RFC 9512 leaves that case
+to the application. Parser errors are raised as usual.
+
+### Caveats
+
+ * **Requires ORC.** The module builds on the DOM API, which is not available
+   with `--mm:arc`. It is not imported by `import yaml`.
+ * **The input is parsed for every call.** `resolveFragment` and
+   `resolveAnchor` construct a `YamlNode` graph of the document (for anchors:
+   of each document up to the one with the anchor). To resolve many pointers
+   against the same content, load it once with `loadAs[YamlNode]` and use
+   `resolvePointer`.
+ * **JSON Pointers need a single document.** RFC 9512 defines the empty
+   fragment and JSON Pointers only for single-document streams, so they raise
+   `YamlFragmentError` for a stream with several documents (or none). To
+   reference a node in a multi-document stream, give it an anchor and use
+   `*name`. If you want to apply a pointer to a particular document anyway,
+   load the documents with `loadMultiDoc` and call `resolvePointer` on one.
+ * **JSON Pointers only match string keys.** A pointer can only traverse what
+   the JSON data model can express. A mapping key matches a pointer token if it
+   is a quoted scalar, has the tag `!!str`, or is a plain scalar that the core
+   schema does not resolve to null, a boolean, an integer or a float. So
+   `#/0` does not reach `0: x`, but does reach `"0": x`; timestamps such as
+   `2001-12-14` count as strings, because the core schema does not include
+   them. Nodes under complex keys (e.g. `? [a, b]`) cannot be reached with a
+   pointer at all; use an anchor.
+ * **Merge keys are not applied.** NimYAML does not resolve the YAML 1.1 merge
+   key `<<`, so `#/book/<<` references the merged mapping, and keys merged
+   into `book` are not visible at `#/book/…`. RFC 9512 notes that this differs
+   between implementations.
+ * **Cycles are fine, `-` is not.** A pointer follows aliases, also cyclic
+   ones; since every token takes one step, resolution always terminates. The
+   JSON Pointer token `-` (past the end of an array) references no node, and
+   indexes with leading zeros are rejected.
+ * **The first anchor wins.** If an anchor name is defined several times,
+   `*name` references the first definition in the stream, as RFC 9512
+   specifies, even though aliases after a redefinition refer to the later
+   node. RFC 9512 recommends unique anchor names and names that need no
+   percent-encoding.
+ * **The result is part of its document's graph.** The returned node shares
+   its children with the rest of the document, including nodes reached through
+   aliases; modifying it modifies those as well.
+ * **Only RFC 9512's fragment syntax.** Media types with the `+yaml` suffix
+   (e.g. `application/openapi+yaml`) define their own fragment syntax;
+   whether it matches is up to that type's specification. Other fragment forms,
+   such as JSONPath, raise `YamlFragmentError`. Splitting the URI and fetching
+   the resource are up to you.
+
 ## Linting
 
 `yaml/lint` lints YAML sources: `lint(source, config)` returns diagnostics
@@ -338,16 +460,20 @@ sync) that publishes the diagnostics of open documents. Build them with
 Nix users can `nix develop` to get a devshell with the required Nim version. You'll need to have Flakes enabled.
 
 ```bash
-nim test # runs all tests
-nim lexerTests # run lexer tests
-nim parserTests # run parser tests (git-clones yaml-dev-kit)
-nim feedTests # compare feed parser against the string parser on yaml-test-suite
-nim checkpointTests # resume from checkpoints after every event of yaml-test-suite
-nim documentTests # parse from document starts; error recovery
-nim nativeTests # runs native value tests
-nim quickstartTests # run tests for quickstart snippets from documentation
-nim clean # guess
-nim build # build a library
+nim test config.nims # runs all tests
+nim lexerTests config.nims # run lexer tests
+nim parserTests config.nims # run parser tests (git-clones yaml-dev-kit)
+nim feedTests config.nims # compare feed parser against the string parser on yaml-test-suite
+nim checkpointTests config.nims # resume from checkpoints after every event of yaml-test-suite
+nim documentTests config.nims # parse from document starts; error recovery
+nim lintTests config.nims # diagnostics, lint rules and lint config
+nim yamllintTests config.nims # yamllint command line tool
+nim lspTests config.nims # yamllsp language server
+nim fragmentTests config.nims # fragment identifiers; multi-document dumping
+nim nativeTests config.nims # runs native value tests
+nim quickstartTests config.nims # run tests for quickstart snippets from documentation
+nim clean config.nims # guess
+nim build config.nims # build a library
 ```
 
 When debugging crashes in this library, use the `d:debug` compile flag to enable printing of the internal stack traces for calls to `internalError` and `yAssert`.
@@ -385,3 +511,5 @@ If you want to support this project financially, there's a GitHub Sponsor button
  [3]: https://nixos.wiki/wiki/Flakes
  [4]: https://github.com/yaml/yaml-test-suite
  [5]: https://semver.org
+ [6]: https://www.rfc-editor.org/rfc/rfc9512.html#section-1.2
+ [7]: https://www.rfc-editor.org/rfc/rfc6901
