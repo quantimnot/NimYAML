@@ -159,6 +159,40 @@ proc feedCounting(input: string, chunkSize: int): (Outcome, int) =
     result[0].error = describe(e)
   result[1] = fp.attempts
 
+suite "Bounded buffering":
+  # consumed input must be dropped. A first version only compacted the
+  # buffer in feed mode, so parse(Stream) kept the whole input in memory.
+  var big = ""
+  for i in 0 ..< 80000: big.add("- {id: " & $i & ", name: \"item " & $i & "\"}\n")
+  const bound = 512 * 1024
+
+  test "Stream input":
+    check big.len > 4 * bound
+    let s = initYamlParser().parse(newStringStream(big))
+    privateAccess(Context)
+    var maxBuffered, count = 0
+    for e in s:
+      inc(count)
+      if count mod 500 == 0:
+        maxBuffered = max(maxBuffered, Context(s).lex.bufferedLen())
+    check count > 100000
+    check maxBuffered < bound
+
+  test "feed input":
+    let fp = newYamlFeedParser(initYamlParser())
+    privateAccess(YamlFeedParser)
+    privateAccess(Context)
+    var maxBuffered, pos = 0
+    while not fp.finished:
+      for e in fp.events: discard
+      maxBuffered = max(maxBuffered, fp.ctx.lex.bufferedLen())
+      if pos < big.len:
+        let last = min(pos + 4096, big.len) - 1
+        fp.feed(big.toOpenArray(pos, last))
+        pos = last + 1
+      elif not fp.finished: fp.finish()
+    check maxBuffered < bound
+
 suite "Feed Parser":
   test "completion gate never delays events or errors":
     const edgeCases = [

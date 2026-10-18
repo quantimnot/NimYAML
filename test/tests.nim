@@ -5,7 +5,7 @@
 #    distribution, for details about the copyright.
 
 {.warning[UnusedImport]: off.}
-import tlex, tjson, tnative, tparser, tfeed, tcheckpoint, tdocuments, tquickstart, tannotations, thints, tpresenter
+import tlex, tjson, tnative, tparser, tfeed, tcheckpoint, tdocuments, tinternal, tquickstart, tannotations, thints, tpresenter
 
 when not defined(gcArc) or defined(gcOrc):
   import tdom, tfragment

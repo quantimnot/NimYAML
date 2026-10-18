@@ -35,8 +35,9 @@ template yAssert*(e: typed) =
         echo "[NimYAML] Stacktrace:"
         try:
           writeStackTrace()
+          # nil unless the assertion fails within an exception handler
           let exc = getCurrentException()
-          if not isNil(exc.parent):
+          if not isNil(exc) and not isNil(exc.parent):
             echo "Internal stacktrace:"
             echo getStackTrace(exc.parent)
         except CatchableError: discard

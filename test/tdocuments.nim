@@ -286,3 +286,23 @@ suite "Document starts":
   test "not a parser":
     expect ValueError:
       discard newBufferYamlStream().documentStart()
+
+  test "root collection position in a document starting with ---":
+    # the start position used to come from the previous document
+    for (input, line, column) in [
+        ("b: 2\n", 1, 1),               # no `---`, for comparison
+        ("a: 1\n---\nb: 2\n", 3, 1),
+        ("x: [y]\n---\n  - z\n", 3, 3),
+        ("a\n--- !!map\nb: c\n", 2, 5),  # node properties on the `---` line
+        ("a\n---\n!!map\nb: c\n", 3, 1)]:
+      # the root collection of the last document
+      var last, root: Event
+      for e in initYamlParser().parse(input):
+        if e.kind in {yamlStartMap, yamlStartSeq} and last.kind == yamlStartDoc:
+          root = e
+        last = e
+      check last.kind == yamlEndStream
+      checkpoint(input.escape)
+      check root.kind in {yamlStartMap, yamlStartSeq}
+      check root.startPos.line == line
+      check root.startPos.column == column

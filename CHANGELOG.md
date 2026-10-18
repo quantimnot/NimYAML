@@ -36,6 +36,8 @@ Bugfixes:
 
  * the start position of the root collection of a document that begins with
    `---` on a line of its own referred to the previous document
+ * a failing internal assertion crashed with SIGSEGV (when not raised inside
+   an exception handler) instead of reporting the failure
  * loading YAML with a redefined anchor into a `YamlNode` no longer crashes;
    aliases refer to the latest definition
  * `==` on `YamlNode` now returns `true` when comparing a cyclic node with

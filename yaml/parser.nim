@@ -892,7 +892,9 @@ proc afterDirectivesEnd(ctx: Context, e: var Event): bool =
     # without node properties on the `---` line, the root node starts at the
     # first content character of the next line, like in beforeImplicitRoot
     # (inlineStart would otherwise be left over from the previous document).
-    if ctx.inlineProps.isEmpty(): ctx.inlineStart = ctx.lex.curEndPos
+    # (properties on that line have been merged into headerProps by now)
+    if ctx.inlineProps.isEmpty() and ctx.headerProps.isEmpty():
+      ctx.inlineStart = ctx.lex.curEndPos
     ctx.headerStart = ctx.inlineStart
     ctx.transition(atBlockIndentation)
     ctx.pushLevel(beforeBlockIndentation)
