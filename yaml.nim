@@ -102,6 +102,7 @@
 ## The `module yaml/fragment`_ resolves URI fragment identifiers like
 ## ``file.yaml#/a/b`` (JSON Pointer) or ``file.yaml#*anchor`` (alias node)
 ## against YAML input as defined by RFC 9512, yielding ``YamlNode`` objects.
+## It also evaluates Relative JSON Pointers like ``1/0`` or ``0#``.
 ##
 ##
 ## Low Level Event Handling

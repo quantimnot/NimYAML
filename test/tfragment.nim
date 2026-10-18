@@ -166,6 +166,93 @@ suite "Fragment identifiers (RFC 9512)":
     expect YamlParserError: discard resolveFragment("a: [", "/a")
     expect YamlParserError: discard resolveFragment("a: [", "*a")
 
+const
+  # draft-hha-relative-json-pointer-00, Section 5.1
+  relativeExample = """
+{
+  "foo": ["bar", "baz", "biz"],
+  "highly": {
+    "nested": {
+      "objects": true
+    }
+  }
+}
+"""
+
+proc relNode(root: YamlNode, origin, rel: string): YamlNode =
+  let r = resolveRelativePointer(root, origin, rel)
+  check r.kind == rprNode
+  r.node
+
+proc relKey(root: YamlNode, origin, rel: string): string =
+  let r = resolveRelativePointer(root, origin, rel)
+  check r.kind == rprKey
+  r.key
+
+proc relIndex(root: YamlNode, origin, rel: string): int =
+  let r = resolveRelativePointer(root, origin, rel)
+  check r.kind == rprIndex
+  r.index
+
+suite "Relative JSON Pointers":
+  setup:
+    let root = loadAs[YamlNode](relativeExample)
+
+  test "Examples starting from a sequence item (Section 5.1)":
+    check relNode(root, "/foo/1", "0").content == "baz"
+    check relNode(root, "/foo/1", "1/0").content == "bar"
+    check relNode(root, "/foo/1", "0-1").content == "bar"
+    check relNode(root, "/foo/1", "2/highly/nested/objects").content == "true"
+    check relIndex(root, "/foo/1", "0#") == 1
+    check relIndex(root, "/foo/1", "0+1#") == 2
+    check relKey(root, "/foo/1", "1#") == "foo"
+
+  test "Examples starting from a mapping value (Section 5.1)":
+    check relNode(root, "/highly/nested", "0/objects").content == "true"
+    check relNode(root, "/highly/nested", "1/nested/objects").content == "true"
+    check relNode(root, "/highly/nested", "2/foo/0").content == "bar"
+    check relKey(root, "/highly/nested", "0#") == "nested"
+    check relKey(root, "/highly/nested", "1#") == "highly"
+
+  test "Starting from and moving to the root":
+    check cast[pointer](relNode(root, "", "0")) == cast[pointer](root)
+    check cast[pointer](relNode(root, "/foo/2", "2")) == cast[pointer](root)
+    check relNode(root, "", "0/foo/2").content == "biz"
+
+  test "Index adjustment":
+    check relNode(root, "/foo/0", "0+2").content == "biz"
+    check relNode(root, "/foo/2", "0-2").content == "bar"
+    expect YamlFragmentError: discard resolveRelativePointer(root, "/foo/2", "0-2/")
+    expect YamlFragmentError: discard resolveRelativePointer(root, "/foo/0", "0-1")
+    expect YamlFragmentError: discard resolveRelativePointer(root, "/foo/2", "0+1")
+    expect YamlFragmentError: discard resolveRelativePointer(root, "/highly/nested", "0+1")
+    expect YamlFragmentError: discard resolveRelativePointer(root, "", "0+1")
+
+  test "Evaluation failures":
+    expect YamlFragmentError: discard resolveRelativePointer(root, "/foo/1", "3")
+    expect YamlFragmentError: discard resolveRelativePointer(root, "", "1")
+    expect YamlFragmentError: discard resolveRelativePointer(root, "", "0#")
+    expect YamlFragmentError: discard resolveRelativePointer(root, "/foo", "0/3")
+    expect YamlFragmentError: discard resolveRelativePointer(root, "/nope", "0")
+    expect YamlFragmentError: discard resolveRelativePointer(root, "foo", "0")
+
+  test "Invalid syntax":
+    for rel in ["", "#", "/foo", "01", "00#", "-1", "0+", "0+0", "0-01", "0#/a",
+        "0foo", "1x", "0+1+1", "99999999999999999999999"]:
+      expect YamlFragmentError: discard resolveRelativePointer(root, "/foo/1", rel)
+
+  test "Escaped tokens in the origin and the key result":
+    let doc = loadAs[YamlNode](pointers)
+    check relKey(doc, "/a~1b", "0#") == "a/b"
+    check relNode(doc, "/m~0n", "1/a~1b").content == "slash"
+
+  test "Moving up follows the origin path through alias nodes":
+    let doc = loadAs[YamlNode](cyclic)
+    check relKey(doc, "/foo/bar/baz", "1#") == "bar"
+    check relKey(doc, "/anchor/baz", "1#") == "anchor"
+    check relKey(doc, "/foo/bat/bat/bar", "1#") == "bat"
+    check relNode(doc, "/foo/bat/bar/baz", "4/anchor/baz").content == "you"
+
 type Item = object
   name: string
   count: int

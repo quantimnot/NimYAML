@@ -26,6 +26,9 @@ Features:
    between events, so memory use for `Stream` input stays bounded.
  * new module `yaml/fragment` resolves RFC 9512 fragment identifiers
    (`#`, `#/json/pointer`, `#*anchor`) against YAML input
+ * added `resolveRelativePointer` to `yaml/fragment`, which evaluates Relative
+   JSON Pointers (draft-hha-relative-json-pointer-00, e.g. `1/0`, `0+1#`)
+   from a starting location given as a JSON Pointer
  * added `dumpMultiDoc`, which dumps several values as documents of a single
    YAML stream (counterpart of `loadMultiDoc`)
 
