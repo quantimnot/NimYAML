@@ -64,6 +64,7 @@
 - id: rfc9535-jsonpath
   with:
   - id: rfc9535-jsonpath-implementation
+    status: done
     info:
     - https://datatracker.ietf.org/doc/rfc9535/
   - id: rfc9535-jsonpath-community-tests

@@ -29,6 +29,13 @@ Features:
  * added `resolveRelativePointer` to `yaml/fragment`, which evaluates Relative
    JSON Pointers (draft-hha-relative-json-pointer-00, e.g. `1/0`, `0+1#`)
    from a starting location given as a JSON Pointer
+ * new module `yaml/jsonpath` implements JSONPath (RFC 9535) on `YamlNode`
+   graphs: `parseJsonPath`, `query` and `queryLocated` (nodes with their
+   Normalized Paths). All selectors, filters and the standard functions
+   `length`, `count`, `match`, `search` and `value` are supported, and the
+   JSONPath Compliance Test Suite passes (added as a submodule). `match` and
+   `search` use a new built-in, linear-time I-Regexp (RFC 9485) engine with
+   Unicode General Category support, so there is still no dependency on PCRE.
  * added `dumpMultiDoc`, which dumps several values as documents of a single
    YAML stream (counterpart of `loadMultiDoc`)
 

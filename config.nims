@@ -83,6 +83,11 @@ task fragmentTests, "Run fragment identifier and multi-document tests":
   --verbosity:0
   setCommand "c", "test/tfragment"
 
+task jsonpathTests, "Run JSONPath and I-Regexp tests":
+  --r
+  --verbosity:0
+  setCommand "c", "test/tjsonpath"
+
 task nativeTests, "Run native value tests":
   --r
   --verbosity:0
@@ -116,7 +121,7 @@ task bench, "Benchmarking":
   setCommand "c", "bench/bench"
 
 task clean, "Remove all generated files":
-  exec "rm -rf libyaml.* test/tests test/parsing test/lexing bench/json docout"
+  exec "rm -rf libyaml.* test/tests test/tjsonpath test/parsing test/lexing bench/json docout"
   setCommand "nop"
 
 task testSuiteEvents, "Compile the testSuiteEvents tool":

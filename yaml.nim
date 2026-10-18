@@ -7,6 +7,7 @@
 ## .. importdoc::
 ##   yaml/loading.nim, yaml/dumping.nim, yaml/annotations.nim, yaml/taglib.nim,
 ##   yaml/style.nim, yaml/dom.nim, yaml/tojson.nim, yaml/fragment.nim,
+##   yaml/jsonpath.nim,
 ##   yaml/parser.nim, yaml/presenter.nim, yaml/data.nim, yaml/stream.nim
 ##
 ## This is the root module of NimYAML, a package that provides facilities to
@@ -103,6 +104,18 @@
 ## ``file.yaml#/a/b`` (JSON Pointer) or ``file.yaml#*anchor`` (alias node)
 ## against YAML input as defined by RFC 9512, yielding ``YamlNode`` objects.
 ## It also evaluates Relative JSON Pointers like ``1/0`` or ``0#``.
+##
+## JSONPath API
+## ------------
+##
+## .. code-block::
+##
+##   # needs explicit import to use:
+##   import yaml/jsonpath
+##
+## The `module yaml/jsonpath`_ selects nodes from a ``YamlNode`` graph with
+## RFC 9535 JSONPath queries like ``$.store.book[?@.price < 10].title``,
+## including filters and the standard function extensions.
 ##
 ##
 ## Low Level Event Handling

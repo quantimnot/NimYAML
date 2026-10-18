@@ -3,6 +3,8 @@ test/tests
 test/tannotations
 test/tlex
 test/tdom
+test/tjsonpath
+test/tfragment
 test/tnative
 test/thints
 test/tjson

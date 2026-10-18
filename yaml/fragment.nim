@@ -39,7 +39,7 @@
 ## location. They are not fragment identifiers.
 
 import std/[streams, strutils, tables]
-import data, stream, parser, native, loading, dom, hints, private/internal
+import data, stream, parser, native, loading, dom, private/[internal, jsonmodel]
 
 type
   YamlFragmentError* = object of ValueError
@@ -110,13 +110,6 @@ proc unescapeToken(token: string): string {.raises: [YamlFragmentError].} =
       result.add(token[i])
       inc(i)
 
-proc isStringKey(node: YamlNode, key: string): bool {.raises: [].} =
-  if node.kind != yScalar or node.content != key: return false
-  if node.tag == yTagString or node.tag == yTagExclamationMark: return true
-  if node.tag != yTagQuestionMark: return false
-  # timestamps are not part of the core schema and thus stay strings
-  result = guessType(node.content) in {yTypeUnknown, yTypeTimestamp}
-
 proc childAt(node: YamlNode, token, jsonPointer: string): tuple[child: YamlNode, index: int]
     {.raises: [YamlFragmentError].} =
   ## Evaluates the unescaped reference ``token`` on ``node``. ``index`` is the
@@ -125,9 +118,8 @@ proc childAt(node: YamlNode, token, jsonPointer: string): tuple[child: YamlNode,
     raise fragmentError("no node at " & jsonPointer)
   case node.kind
   of yMapping:
-    for key, value in node.pairs:
-      if key.isStringKey(token):
-        return (value, -1)
+    let value = node.member(token)
+    if not isNil(value): return (value, -1)
     raise fragmentError("no string key " & escape(token) & " at " &
         jsonPointer)
   of ySequence:

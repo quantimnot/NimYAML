@@ -417,8 +417,69 @@ to the application. Parser errors are raised as usual.
  * **Only RFC 9512's fragment syntax.** Media types with the `+yaml` suffix
    (e.g. `application/openapi+yaml`) define their own fragment syntax;
    whether it matches is up to that type's specification. Other fragment forms,
-   such as JSONPath, raise `YamlFragmentError`. Splitting the URI and fetching
+   such as JSONPath, raise `YamlFragmentError` (use `yaml/jsonpath` for
+   JSONPath queries). Splitting the URI and fetching
    the resource are up to you.
+
+## JSONPath
+
+`yaml/jsonpath` selects nodes from a `YamlNode` graph with [JSONPath][8]
+queries (RFC 9535). It implements the whole RFC (all selectors, the
+descendant segment, filters, the function well-typedness rules and the
+standard functions `length`, `count`, `match`, `search` and `value`) and
+passes the [JSONPath Compliance Test Suite][9]:
+
+```nim
+import yaml, yaml/[dom, jsonpath]
+
+let root = loadAs[YamlNode]("""
+store:
+  book:
+    - {title: Sayings of the Century, price: 8.95, tags: [quotes]}
+    - {title: Moby Dick, price: 22.99, isbn: 0-553-21311-3}
+""")
+for node in root.query("$.store.book[?@.price < 10].title"):
+  echo node.content                    # Sayings of the Century
+for found in root.queryLocated("$..book[?@.isbn]"):
+  echo found.path                      # $['store']['book'][1]
+echo root.query("$..book[?match(@.title, 'M.*')]").len  # 1
+```
+
+`parseJsonPath` parses and type-checks a query once, so it can be applied to
+many documents; malformed or ill-typed queries raise `YamlJsonPathError`
+with the byte offset of the problem in `pos`. `query` returns the selected
+nodes, `queryLocated` also their Normalized Paths (`$['store']['book'][1]`).
+Both accept a `JsonPath` or a query string.
+
+### Caveats
+
+ * **Requires ORC.** Like `yaml/fragment`, the module builds on the DOM API
+   and is not imported by `import yaml`.
+ * **Scalars are typed by their tag.** A query sees the document as JSON:
+   quoted scalars and `!!str` are strings, plain scalars are resolved with the
+   core schema (`1.5` is a number, `true` a boolean, `~` null), and scalars
+   with other tags are strings. So `$[?@.v == 1]` matches `v: 1` and
+   `v: !!float 1`, but not `v: "1"`.
+ * **Only string keys name members**, under the same rule as for JSON
+   Pointers above. Members with keys like `0`, `!custom k` or `[a, b]` are
+   not selected by any selector, not even `*` or `..`, because no Normalized
+   Path could name them.
+ * **Member order is unspecified.** `YamlNode` does not preserve mapping
+   order, so `*`, `..` and filters visit members in no particular order; RFC
+   9535 permits this. Sequence order is preserved.
+ * **Aliases are followed; cycles are cut.** A node reachable along several
+   paths is selected once per path. On a cyclic graph, `..` does not descend
+   into a node that is already an ancestor of the current one, so `$..*`
+   terminates. Merge keys (`<<`) are not applied.
+ * **Results are the document's nodes.** They are not copies; modifying one
+   modifies the document.
+ * **I-Regexp, with anchors.** `match` and `search` use NimYAML's own
+   [I-Regexp][10] engine (RFC 9485, including Unicode categories like
+   `\p{Lu}`). It runs in linear time, so untrusted patterns cannot cause
+   catastrophic backtracking. Following the compliance suite rather than the
+   letter of RFC 9485, `^` and `$` outside brackets anchor at the start and
+   end of the string; write `\^` or `[$]` for the literal characters. An
+   invalid pattern makes the function return false, as RFC 9535 specifies.
 
 ## Linting
 
@@ -513,3 +574,6 @@ If you want to support this project financially, there's a GitHub Sponsor button
  [5]: https://semver.org
  [6]: https://www.rfc-editor.org/rfc/rfc9512.html#section-1.2
  [7]: https://www.rfc-editor.org/rfc/rfc6901
+[8]: https://www.rfc-editor.org/rfc/rfc9535
+[9]: https://github.com/jsonpath-standard/jsonpath-compliance-test-suite
+[10]: https://www.rfc-editor.org/rfc/rfc9485
