@@ -31,7 +31,7 @@
 ## comparisons stay exact beyond 2^53. A plain integer too large for
 ## ``int64`` becomes a float.
 
-import std/[sets, strutils, tables]
+import std/[algorithm, sets, strutils, tables]
 import ../data, ../dom, ../hints
 
 type
@@ -113,6 +113,23 @@ iterator members*(node: YamlNode): tuple[name: string, value: YamlNode]
   assert node.kind == yMapping
   for key, value in node.fields.pairs:
     if key.isStringKey: yield (key.content, value)
+
+proc orderedMembers*(node: YamlNode): seq[tuple[name: string, value: YamlNode]]
+    {.raises: [].} =
+  ## Like ``members``, but in document order, as far as the positions of
+  ## the keys tell it (``YamlNode`` mappings do not keep order themselves).
+  ## Keys without position, as in constructed nodes, sort by name.
+  assert node.kind == yMapping
+  var keyed: seq[tuple[line, column: int, name: string, value: YamlNode]]
+  for key, value in node.fields.pairs:
+    if key.isStringKey:
+      keyed.add((int(key.startPos.line), int(key.startPos.column),
+          key.content, value))
+  keyed.sort(proc(a, b: auto): int =
+    result = cmp(a.line, b.line)
+    if result == 0: result = cmp(a.column, b.column)
+    if result == 0: result = cmp(a.name, b.name))
+  for k in keyed: result.add((k.name, k.value))
 
 proc member*(node: YamlNode, name: string): YamlNode {.raises: [].} =
   ## Returns the value of the member ``name`` of the mapping ``node``, or
