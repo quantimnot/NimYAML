@@ -83,20 +83,27 @@ and `false` when more input is required or the stream has already ended
    content events, up to the closing `yamlEndMap`/`yamlEndSeq`, right away;
    only `yamlEndDoc` itself then waits for the next byte. Even
    `yamlStartStream` requires at least one fed byte.
- * **Starved attempts are redone from the start of the event: small chunks
-   into large events are quadratic.** The parser saves its state before each
-   event and rolls back an attempt that runs out of input; after the next
-   `feed`, it parses that event again from its beginning. Flow collections
-   (`[...]`, `{...}`) are parsed as a whole before their first event is
-   produced, so a large flow collection counts as one large event. Measured
-   with `-d:release`: an 80 KB flow sequence takes 0.01 s when fed in 4 KiB
-   chunks, but 0.49 s in 64-byte chunks (a 40 KB one: 0.12 s); a 550 KB block
-   scalar takes 0.01 s in 64 KiB chunks, 0.1 s in 4 KiB chunks and 0.8 s in
-   512-byte chunks. **Feed chunks of a few KiB or more**; if your transport
-   delivers tiny pieces (e.g. small socket reads), buffer them before calling
+ * **Large scalars are cheap in any chunk size; large flow collections in
+   small chunks are not.** The parser saves its state before each event and
+   rolls back an attempt that runs out of input; it then parses that event
+   again from its beginning once there is reason to expect success. For
+   scalars (plain, quoted and block), a *completion gate* scans only the newly
+   fed bytes for anything that could end the scalar or make it invalid (a
+   closing quote, a less indented line, `: `, ` #`, a document marker, an
+   invalid escape, …) and skips the attempt until it finds one. This makes
+   feeding a large scalar linear: measured with `-d:release`, a 1 MB quoted
+   scalar fed one byte at a time takes 35 ms, and a 550 KB block scalar takes
+   under 10 ms in 512-byte chunks. The gate never holds back an event or an
+   error that could already be produced; it is disabled by `finish`.
+   Flow collections (`[...]`, `{...}`), however, are parsed as a whole before
+   their first event is produced, and every attempt re-parses the collection
+   so far: an 80 KB flow sequence takes 0.01 s when fed in 4 KiB chunks, but
+   0.5 s in 64-byte chunks (a 40 KB one: 0.13 s), growing quadratically.
+   **For large flow collections (e.g. JSON), feed chunks of a few KiB or
+   more**; if your transport delivers tiny pieces, buffer them before calling
    `feed`. Calling `tryNext` again without feeding anything is cheap: it
    returns `false` immediately. With reasonable chunks, feeding a document
-   made of many small events is about 1.75× slower than parsing it as a
+   made of many small events is about 1.8× slower than parsing it as a
    complete string.
  * **Memory is bounded by the event in progress, not by the input.** Consumed
    input is discarded between events, but everything from the start of the

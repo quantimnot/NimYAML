@@ -7,7 +7,10 @@
 import os, streams, strutils, unittest, algorithm
 when defined(nimPreviewSlimSystem):
   import std/[syncio, assertions]
-import ../yaml/[data, parser, stream]
+import std/importutils
+import ../yaml/[data, stream]
+import ../yaml/parser {.all.}
+import ../yaml/private/lex
 
 type Outcome = object
   events: seq[Event]
@@ -110,7 +113,123 @@ proc suiteInputs(): seq[string] =
       result.add(path)
   result.sort()
 
+proc newFeedParser(gate: bool): YamlFeedParser =
+  result = newYamlFeedParser(initYamlParser())
+  privateAccess(YamlFeedParser)
+  privateAccess(Context)
+  result.ctx.lex.completionGate = gate
+
+proc attempts(fp: YamlFeedParser): int =
+  privateAccess(YamlFeedParser)
+  fp.attempts
+
+proc availability(input: string, chunkSize: int, gate: bool): seq[string] =
+  ## after each chunk, the number of events produced so far, or the error.
+  let fp = newFeedParser(gate)
+  var count = 0
+  var pos = 0
+  try:
+    while true:
+      for e in fp.events: inc(count)
+      result.add($count)
+      if fp.finished: break
+      if pos >= input.len: fp.finish()
+      else:
+        let last = min(pos + chunkSize, input.len) - 1
+        fp.feed(input.toOpenArray(pos, last))
+        pos = last + 1
+  except YamlParserError as e:
+    result.add(describe(e))
+
+proc feedCounting(input: string, chunkSize: int): (Outcome, int) =
+  ## like feedChunked, also returns the number of parse attempts.
+  let fp = newFeedParser(true)
+  var pos = 0
+  try:
+    while true:
+      for e in fp.events: result[0].events.add(e)
+      if fp.finished: break
+      if pos >= input.len: fp.finish()
+      else:
+        let last = min(pos + chunkSize, input.len) - 1
+        fp.feed(input.toOpenArray(pos, last))
+        pos = last + 1
+  except YamlParserError as e:
+    result[0].failed = true
+    result[0].error = describe(e)
+  result[1] = fp.attempts
+
 suite "Feed Parser":
+  test "completion gate never delays events or errors":
+    const edgeCases = [
+      "a: \"x\\\"y\\\\\" z: \"\\x41\\u00e9\\U0001F600\\n\"\nb: c\n",
+      "a: \"bad \\q escape\"\n",
+      "a: \"bad \\xZZ hex\"\n",
+      "a: \"line\n---\n\"\n",
+      "a: \"line\n...\n\"\n",
+      "a: \"multi\n  line\n\n  text\"\nb: c\n",
+      "a: 'it''s' ''\nb: 'x\n  y'\n",
+      "a: 'x\n--- y'\n",
+      "url: http://example.com:80/x?y=z#frag\nb: c # comment\n",
+      "a: plain\n  continued\n  # comment\nb: c\n",
+      "a: plain\n# comment\n  more\n",
+      "- a\n  b\n- c\n---\nnext\n...\n",
+      "a: b\r\nc: d\r\n  e\r\n",
+      "a:\tb\n\tc: d\n",
+      "[a b\n c, d\n  e]\n{f: g\n h}\n",
+      "a: |+\n  x\n\n\nb: >-\n  y\n   z\n\n  w\nc: |2\n    deep\n",
+      "--- |\nzero indent\ncontent\n--- >\n folded\n...\n",
+      "a: |\n  x\n # less indented comment\n",
+      "a: |\n   x\n  y\n",
+      "top\n  level\n  plain\n---\n"]
+    var inputs: seq[(string, string)]
+    for i, input in edgeCases: inputs.add(("edge #" & $i, input))
+    for path in suiteInputs(): inputs.add((path, readFile(path)))
+    for (path, input) in inputs:
+      for chunkSize in [1, 2, 3, 5, 7]:
+        let withGate = availability(input, chunkSize, true)
+        let withoutGate = availability(input, chunkSize, false)
+        if withGate != withoutGate:
+          var i = 0
+          while i < min(withGate.len, withoutGate.len) and
+              withGate[i] == withoutGate[i]: inc(i)
+          checkpoint(path & " [chunk " & $chunkSize & "]: after chunk #" & $i &
+                     " with gate: " &
+                     (if i < withGate.len: withGate[i] else: "<end>") &
+                     ", without: " &
+                     (if i < withoutGate.len: withoutGate[i] else: "<end>"))
+          fail()
+
+  test "large scalars fed byte by byte take few attempts":
+    let words = repeat("lorem ipsum dolor sit amet ", 4000)
+    var multiline = ""
+    for i in 0 ..< 3000: multiline.add("  line number " & $i & "\n")
+    let cases = {
+      "double-quoted": "a: \"" & words & "\\n\\t\\x41\\u00e9 \\\"q\\\" " &
+          repeat("x", 50000) & "\"\nb: c\n",
+      "double-quoted multiline": "a: \"first\n" & multiline & "  \"\nb: c\n",
+      "single-quoted": "a: '" & words & " it''s '' " & repeat("y", 50000) &
+          "'\nb: c\n",
+      "plain": "a: " & words & repeat("z", 50000) & "\nb: c\n",
+      "plain multiline": "a: first\n" & multiline & "b: c\n",
+      "plain top-level": "first\n" & multiline & "...\n",
+      "literal": "a: |\n" & multiline & "b: c\n",
+      "folded keep": "a: >+\n" & multiline & "\n\nb: c\n",
+      "literal indicator": "a: |2\n" & multiline & "b: c\n",
+      "top-level literal": "--- |\n" & multiline & "--- end\n"}
+    for (name, input) in cases:
+      let expected = collect(initYamlParser().parse(input))
+      if expected.failed:
+        checkpoint(name & ": invalid test input: " & expected.error)
+        fail()
+      let (outcome, attempts) = feedCounting(input, 1)
+      compare(name, expected, outcome)
+      # without the gate, there is about one attempt per byte
+      if attempts > expected.events.len * 4 + 20:
+        checkpoint(name & ": " & $attempts & " attempts for " & $input.len &
+                   " bytes and " & $expected.events.len & " events")
+        fail()
+
   test "yields nothing before input, resumes after":
     let fp = newYamlFeedParser(initYamlParser())
     var e: Event

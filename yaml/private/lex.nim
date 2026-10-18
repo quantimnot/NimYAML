@@ -11,6 +11,37 @@ when defined(yamlDebug):
   export terminal
 
 type
+  ScalarKind = enum
+    skNone, skPlain, skSingleQuoted, skDoubleQuoted, skBlock,
+    skLineEnd # not a scalar: waiting for the end of the current line
+
+  ScalarContext = object
+    ## what the lexer is reading, for the completion gate.
+    kind: ScalarKind
+    # absolute offset of the first content character
+    contentStart: int
+    # plain: the indentation a continuation line must exceed.
+    # block: the content indentation, 0 while not yet known.
+    indentation: int
+    inFlow: bool
+
+  CompletionGate = object
+    ## After an attempt ran out of input inside a scalar, the gate scans only
+    ## newly fed input for anything that could end the scalar (or make it
+    ## invalid). Until it finds something, a new attempt would just run out
+    ## of input again, so it is skipped. This makes feeding a large scalar in
+    ## small chunks linear instead of quadratic.
+    ##
+    ## The gate is conservative: it may allow an attempt that runs out of
+    ## input again, but it must never hold back an attempt that would
+    ## succeed. ``finish`` disables it.
+    armed: bool
+    ctx: ScalarContext
+    # absolute offset of the next character to scan
+    scanPos: int
+    atLineStart, prevSpace: bool
+    col: int
+
   SourceBuffer = ref object
     ## Input characters. Data is only ever appended to the buffer, except by
     ## ``compact`` which drops consumed input between parser events.
@@ -27,6 +58,11 @@ type
     error: ref CatchableError
     # offset of data[0] in the whole input. Grows when input is compacted.
     base: int
+    # scalar currently being read, and its value at the first starvation of
+    # the current attempt. Kept here so that it survives a rollback.
+    scalar, starvedScalar: ScalarContext
+    gate: CompletionGate
+    gateDisabled: bool
 
   Source = object
     buf: SourceBuffer
@@ -118,7 +154,9 @@ const
 proc fetch(b: SourceBuffer, i: int): char {.noinline, raises: [].} =
   while i >= b.data.len and not b.final:
     if b.stream.isNil:
-      b.starved = true
+      if not b.starved:
+        b.starved = true
+        b.starvedScalar = b.scalar
       return EndOfFile
     let oldLen = b.data.len
     b.data.setLen(oldLen + sourceChunkSize)
@@ -260,6 +298,13 @@ proc generateError(lex: Lexer, message: string):
           else: "Encountered stream error: " & streamError.msg),
     parent: streamError, line: lex.lineNumber(), column: lex.columnNumber(),
     lineContent: lex.currentLine())
+
+template beginScalar(lex: var Lexer, k: ScalarKind, contentStartPos, indent: int) =
+  # tells the completion gate what is being read. Positions are buffer
+  # indexes; ``indent`` is described at ``ScalarContext.indentation``.
+  lex.source.buf.scalar = ScalarContext(kind: k,
+      contentStart: lex.source.buf.base + contentStartPos,
+      indentation: indent, inFlow: lex.flowDepth > 0)
 
 proc startToken(lex: var Lexer) {.inline.} =
   lex.curStartPos = Mark(line: lex.lineNumber(), column: lex.columnNumber())
@@ -415,6 +460,7 @@ proc readPlainScalar(lex: var Lexer) =
     lex.indentation = lex.propertyIndentation
     lex.propertyIndentation = -1
   lex.cur = Token.Plain
+  lex.beginScalar(skPlain, lex.source.bufpos - 1, lex.indentation)
   block multilineLoop:
     while true:
       lineStartPos = lex.source.bufpos - 1
@@ -580,6 +626,7 @@ proc readBlockScalar(lex: var Lexer) =
       raise lex.generateError("Illegal character in block scalar header: " &
           escape("" & lex.c))
   lex.endLine()
+  lex.beginScalar(skBlock, lex.source.bufpos - 1, if indent == 0: -1 else: indent)
 
   block body:
     # determining indentation and leading empty lines
@@ -607,6 +654,7 @@ proc readBlockScalar(lex: var Lexer) =
       else:
         if indent == 0:
           indent = lex.currentIndentation()
+          lex.source.buf.scalar.indentation = indent
           if indent <= lex.indentation or
               (indent == 0 and (lex.dirEndFollows() or lex.docEndFollows())):
             lex.state = lineIndentation
@@ -736,6 +784,7 @@ proc readSingleQuotedScalar(lex: var Lexer) =
     lex.indentation = lex.propertyIndentation
     lex.propertyIndentation = -1
   var literalStart = lex.source.bufpos
+  lex.beginScalar(skSingleQuoted, literalStart, 0)
   lex.advance()
   while true:
     case lex.c
@@ -766,6 +815,7 @@ proc readDoubleQuotedScalar(lex: var Lexer) =
     lex.indentation = lex.propertyIndentation
     lex.propertyIndentation = -1
   var literalStart = lex.source.bufpos
+  lex.beginScalar(skDoubleQuoted, literalStart, 0)
   lex.advance()
   while true:
     case lex.c
@@ -846,6 +896,7 @@ proc currentLine*(lex: Lexer): string =
   return lex.source.getCurrentLine(false)
 
 proc next*(lex: var Lexer) {.raises: [LexerError].}=
+  lex.source.buf.scalar.kind = skNone
   while not lex.state(lex): discard
   lex.checkStreamError()
   debug("lexer -> [" & $lex.curStartPos.line & "," & $lex.curStartPos.column &
@@ -940,6 +991,178 @@ proc lineComplete*(lex: Lexer): bool {.raises: [].} =
   for i in lex.source.lineStart ..< lex.source.buf.data.len:
     if lex.source.buf.data[i] in {'\l', '\c'}: return true
   return false
+
+# completion gate
+
+proc armGate*(lex: var Lexer, waitForLineEnd = false) {.raises: [].} =
+  ## Called after an attempt was rolled back because it ran out of input.
+  ## Arms the gate if the attempt ran out of input inside a scalar, or, with
+  ## ``waitForLineEnd``, if it raised an error in a line that is not complete
+  ## yet. The lexer may be in any state; only the buffer is used.
+  let b = lex.source.buf
+  b.gate.armed = false
+  if b.gateDisabled or b.final: return
+  let starvePos = b.base + b.data.len
+  var g = CompletionGate(armed: true)
+  if waitForLineEnd:
+    g.ctx = ScalarContext(kind: skLineEnd)
+    g.scanPos = starvePos
+    b.gate = g
+    return
+  if not b.starved or b.starvedScalar.kind == skNone: return
+  g.ctx = b.starvedScalar
+  template at(abs: int): char = b.data[abs - b.base]
+  let contentStart = max(g.ctx.contentStart, b.base)
+  # rescan the last few characters if they may belong to a construct that
+  # continues after them: an escape sequence, a quote that might be doubled,
+  # or a colon whose meaning depends on the next character.
+  var scanStart = starvePos
+  case g.ctx.kind
+  of skDoubleQuoted:
+    var i = starvePos - 1
+    while i >= contentStart and i >= starvePos - 10 and at(i) != '\\': dec(i)
+    if i >= contentStart and i >= starvePos - 10:
+      while i > contentStart and at(i - 1) == '\\': dec(i)
+      scanStart = i
+    elif starvePos > contentStart and at(starvePos - 1) == '"':
+      # the scalar has ended; the reader ran out of input looking past it
+      scanStart = starvePos - 1
+  of skSingleQuoted:
+    while scanStart > contentStart and at(scanStart - 1) == '\'': dec(scanStart)
+  of skPlain:
+    if scanStart > contentStart and at(scanStart - 1) == ':': dec(scanStart)
+  else: discard
+  # find out whether scanStart is at the start of a line, apart from spaces.
+  var lineStart = scanStart
+  while lineStart > contentStart and at(lineStart - 1) notin {'\l', '\c'}:
+    dec(lineStart)
+  g.atLineStart = lineStart > contentStart or
+      (lineStart == contentStart and g.ctx.kind == skBlock)
+  if g.atLineStart:
+    for i in lineStart ..< scanStart:
+      if at(i) != ' ':
+        # the line's first characters may still be under consideration
+        # (e.g. whether `-` starts a `---` marker), so check the line start
+        # again if they are only a few characters back.
+        if scanStart - i <= 4: scanStart = lineStart
+        else: g.atLineStart = false
+        break
+  if g.ctx.kind == skPlain:
+    # a comment line ends a plain scalar; the reader then consumes the comment
+    # and the line break after it. Without a gate for that, just retry.
+    proc startsWithComment(b: SourceBuffer, first, last: int): bool =
+      for i in first ..< last:
+        case b.data[i - b.base]
+        of ' ', '\t': discard
+        of '#': return true
+        else: return false
+      return false
+    if b.startsWithComment(lineStart, starvePos): return
+    if lineStart > contentStart:
+      var prevEnd = lineStart - 1
+      if prevEnd > contentStart and at(prevEnd) == '\l' and
+          at(prevEnd - 1) == '\c':
+        dec(prevEnd)
+      var prevStart = prevEnd
+      while prevStart > contentStart and at(prevStart - 1) notin {'\l', '\c'}:
+        dec(prevStart)
+      if prevStart > contentStart and b.startsWithComment(prevStart, prevEnd):
+        return
+  g.col = scanStart - lineStart
+  g.prevSpace = scanStart == lineStart or at(scanStart - 1) in {' ', '\t'}
+  g.scanPos = scanStart
+  b.gate = g
+
+proc gateBlocks*(lex: var Lexer): bool {.raises: [].} =
+  ## ``true`` if the input fed since the gate was armed cannot complete the
+  ## scalar, so that a new attempt would run out of input again. Scans only
+  ## input it has not scanned before.
+  let b = lex.source.buf
+  template g: untyped = b.gate
+  if not g.armed: return false
+  if b.final:
+    g.armed = false
+    return false
+  var i = g.scanPos - b.base
+  let data = addr b.data
+  template trigger() =
+    g.armed = false
+    return false
+  while i < data[].len:
+    let c = data[][i]
+    if c in {'\l', '\c'}:
+      if g.ctx.kind == skLineEnd: trigger()
+      g.atLineStart = true
+      g.col = 0
+      g.prevSpace = true
+      inc(i)
+      continue
+    if g.atLineStart:
+      if c == ' ':
+        inc(g.col)
+        inc(i)
+        continue
+      g.atLineStart = false
+      case g.ctx.kind
+      of skPlain:
+        # a continuation line must be more indented and must not start with
+        # a comment, a tab, or a document marker. In flow context, lines are
+        # not checked further.
+        if c in {'\t', '#'} or g.ctx.inFlow or g.col <= g.ctx.indentation or
+            (g.col == 0 and c in {'-', '.'}):
+          trigger()
+      of skSingleQuoted, skDoubleQuoted:
+        if g.col == 0 and c in {'-', '.'}: trigger()
+      of skBlock:
+        if g.ctx.indentation < 0 or g.col < g.ctx.indentation or
+            (g.col == 0 and c in {'-', '.'}):
+          trigger()
+        inc(i)
+        continue
+      else: discard
+    case g.ctx.kind
+    of skPlain:
+      if c == ':' or (c == '#' and g.prevSpace) or
+          (g.ctx.inFlow and c in flowIndicators):
+        trigger()
+      g.prevSpace = c in {' ', '\t'}
+      inc(i)
+    of skDoubleQuoted:
+      case c
+      of '"': trigger()
+      of '\\':
+        if i + 1 >= data[].len: break # need the escaped character
+        case data[][i + 1]
+        of '0', 'a', 'b', 't', '\t', 'n', 'v', 'f', 'r', 'e', ' ', '"', '/',
+           '\\', 'N', '_', 'L', 'P':
+          i += 2
+        of '\l', '\c':
+          inc(i) # escaped line break, handled as line break
+        of 'x', 'u', 'U':
+          let digits = case data[][i + 1]
+                       of 'x': 2
+                       of 'u': 4
+                       else: 8
+          if i + 1 + digits >= data[].len: break # need all digits
+          for j in i + 2 .. i + 1 + digits:
+            if data[][j] notin {'0'..'9', 'a'..'f', 'A'..'F'}: trigger()
+          i += 2 + digits
+        else: trigger() # invalid escape: the attempt will raise an error
+      else: inc(i)
+    of skSingleQuoted:
+      if c == '\'':
+        if i + 1 >= data[].len: break # might be a doubled quote
+        if data[][i + 1] != '\'': trigger()
+        i += 2
+      else: inc(i)
+    of skBlock, skLineEnd, skNone: inc(i)
+  g.scanPos = b.base + i
+  return true
+
+proc `completionGate=`*(lex: var Lexer, enabled: bool) {.raises: [].} =
+  ## Enables or disables the completion gate (for testing).
+  lex.source.buf.gateDisabled = not enabled
+  if not enabled: lex.source.buf.gate.armed = false
 
 # checkpoints
 

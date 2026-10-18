@@ -198,10 +198,12 @@ type
     ##
     ## Event production is all-or-nothing: an attempt that runs out of input
     ## is rolled back, so no event and no error is ever based on incomplete
-    ## input. The next attempt starts over from the beginning of the event,
-    ## so feeding many small chunks into one large event (a long scalar, or a
-    ## flow collection, which is parsed as a whole) costs time quadratic in
-    ## the size of that event. Feed chunks of a few KiB or more.
+    ## input. The next attempt starts over from the beginning of the event.
+    ## For scalars, a completion gate skips attempts until the new input can
+    ## end the scalar, so feeding a large scalar in small chunks is linear.
+    ## A flow collection is parsed as a whole and re-parsed by every attempt:
+    ## feeding a large one in small chunks costs time quadratic in its size,
+    ## so feed chunks of a few KiB or more.
     ##
     ## Consumed input is discarded between events. The buffer holds the
     ## input of the event in progress (for flow collections: the whole
@@ -219,6 +221,8 @@ type
     # event to return before parsing further: a peeked event restored from
     # the checkpoint of a YamlStream
     pending: seq[Event]
+    # number of parse attempts made (for testing the completion gate)
+    attempts: int
 
 proc newYamlFeedParser*(p: YamlParser): YamlFeedParser =
   ## Creates a feed parser using the settings of ``p``.
@@ -261,23 +265,29 @@ proc tryNext*(fp: YamlFeedParser, e: var Event): bool
   let ctx = fp.ctx
   let final = ctx.lex.inputFinished()
   if not final and fp.starvedAt == ctx.lex.bufferedLen(): return false
+  # skip the attempt if the new input cannot complete the scalar that the
+  # previous attempt ran out of input in.
+  if not final and ctx.lex.gateBlocks(): return false
   # no lexer state is held here, so the feed buffer may be compacted.
   ctx.lex.compact(allowFeed = true)
   var snapshot: typeof(ctx[])
   if not final:
     snapshot = ctx[]
     ctx.lex.resetStarved()
-  template rollback() =
+  template rollback(waitForLineEnd = false) =
     ctx[] = move(snapshot)
     fp.starvedAt = ctx.lex.bufferedLen()
+    ctx.lex.armGate(waitForLineEnd)
     return false
+  inc(fp.attempts)
   try:
     if not fp.started:
       ctx.lex.start()
     while not ctx.levels[^1].state(ctx, e): discard
   except CatchableError as ce:
-    if not final and (ctx.lex.starved() or not ctx.lex.lineComplete()):
-      rollback()
+    if not final:
+      if ctx.lex.starved(): rollback()
+      if not ctx.lex.lineComplete(): rollback(waitForLineEnd = true)
     var pe: ref YamlParserError
     if ce of YamlParserError:
       pe = (ref YamlParserError)(ce)

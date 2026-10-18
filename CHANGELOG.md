@@ -6,8 +6,9 @@ Features:
    chunks (`newYamlFeedParser`, `feed`, `finish`, `tryNext`, `events`).
    `tryNext` returns `false` when more input is needed and resumes once more
    input has been fed. See the README for caveats: events lag behind the
-   input by up to one token, and feeding small chunks into large events
-   (long scalars, flow collections) costs time quadratic in the event size.
+   input by up to one token, and feeding large flow collections in small
+   chunks costs time quadratic in the collection size. A completion gate
+   makes feeding large scalars in small chunks linear.
  * added checkpoints: `checkpoint` captures the state of a parser or feed
    parser between two events as plain, serializable data; `resume` and
    `newYamlFeedParser(parser, checkpoint)` continue parsing from it, given
