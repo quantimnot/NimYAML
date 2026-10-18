@@ -334,10 +334,14 @@ type
     ##
     ## All other fields are internal: they may change between NimYAML
     ## versions and must not be modified. A checkpoint can only be resumed by
-    ## the NimYAML version that created it (see ``version``).
+    ## a NimYAML version with the same ``version``. ``checksum`` covers all
+    ## other fields, so that a checkpoint corrupted in storage is rejected
+    ## instead of being resumed; it is not a protection against deliberate
+    ## manipulation.
     version*: int
+    checksum*: string
     offset*: int
-    started*: bool
+    started*, ended*: bool
     lexer*: LexerCheckpoint
     handles*: seq[YamlCheckpointHandle]
     levels*: seq[YamlCheckpointLevel]
@@ -453,6 +457,64 @@ proc fromCheckpoint(c: YamlCheckpointEvent): Event {.raises: [ValueError].} =
   result.startPos = startPos
   result.endPos = endPos
 
+proc enc(s: var string, x: int) = s.add($x & ";")
+proc enc(s: var string, x: bool) = s.add(if x: "1;" else: "0;")
+proc enc(s: var string, x: string) = s.add($x.len & ":" & x)
+proc enc[E: enum](s: var string, x: E) = s.enc(ord(x))
+
+proc enc(s: var string, h: YamlCheckpointHandle) =
+  s.enc(h.handle)
+  s.enc(h.uriPrefix)
+
+proc enc(s: var string, e: YamlCheckpointEvent) =
+  s.enc(e.kind)
+  for x in [e.startLine, e.startColumn, e.endLine, e.endColumn]: s.enc(x)
+  s.enc(e.anchor)
+  s.enc(e.tag)
+  s.enc(e.collectionStyle)
+  s.enc(e.scalarStyle)
+  s.enc(e.content)
+  s.enc(e.explicit)
+  s.enc(e.handles.len)
+  for h in e.handles: s.enc(h)
+
+proc digest(cp: YamlCheckpoint): string =
+  ## FNV-1a over a canonical encoding of all fields but ``checksum``.
+  var s = ""
+  s.enc(cp.version)
+  s.enc(cp.offset)
+  s.enc(cp.started)
+  s.enc(cp.ended)
+  let l = cp.lexer
+  for x in [l.offset, l.cur, l.curStartLine, l.curStartColumn, l.curEndLine,
+            l.curEndColumn, l.flowDepth, l.indentation, l.bufpos, l.lineNumber,
+            l.lineStart, l.tokenStart, l.state, l.lineStartState,
+            l.jsonEnablingState, l.c, l.propertyIndentation]:
+    s.enc(x)
+  s.enc(l.evaluated)
+  s.enc(l.seenMultiline)
+  s.enc(cp.handles.len)
+  for h in cp.handles: s.enc(h)
+  s.enc(cp.levels.len)
+  for level in cp.levels:
+    s.enc(level.state)
+    s.enc(level.indentation)
+  s.enc(cp.keyCache.len)
+  for e in cp.keyCache: s.enc(e)
+  s.enc(cp.keyCachePos)
+  s.enc(cp.caching)
+  for x in [cp.headerAnchor, cp.headerTag, cp.inlineAnchor, cp.inlineTag]:
+    s.enc(x)
+  for x in [cp.headerStartLine, cp.headerStartColumn, cp.inlineStartLine,
+            cp.inlineStartColumn, cp.blockIndentation]:
+    s.enc(x)
+  s.enc(cp.peeked.len)
+  for e in cp.peeked: s.enc(e)
+  var h = 0xcbf29ce484222325'u64
+  for c in s:
+    h = (h xor uint64(ord(c))) * 0x100000001b3'u64
+  result = toHex(h)
+
 proc checkpoint(ctx: Context, started: bool): YamlCheckpoint {.raises: [ValueError].} =
   result = YamlCheckpoint(version: checkpointVersion, started: started,
       handles: ctx.handles.toCheckpoint(), keyCachePos: ctx.keyCachePos,
@@ -479,8 +541,30 @@ proc restore(ctx: Context, cp: YamlCheckpoint) {.raises: [ValueError].} =
   if cp.version != checkpointVersion:
     raise newException(ValueError, "checkpoint has format version " &
         $cp.version & ", this NimYAML version requires " & $checkpointVersion)
-  if cp.levels.len == 0 or cp.keyCachePos < 0 or
-      cp.keyCachePos > cp.keyCache.len or cp.peeked.len > 1:
+  if cp.checksum != cp.digest():
+    raise newException(ValueError, "checkpoint is corrupted (checksum mismatch)")
+  # cheap structural checks, also for checkpoints with a matching checksum.
+  # Between two events, cached events are only pending while emitCached is
+  # on top of the stack.
+  let emitCachedId = stateId(emitCached)
+  var valid = cp.levels.len > 0 and cp.peeked.len <= 1 and not cp.caching and
+      cp.keyCachePos >= 0 and
+      (if cp.keyCache.len == 0:
+         cp.keyCachePos == 0 and cp.levels[^1].state != emitCachedId
+       else: cp.keyCachePos < cp.keyCache.len and
+             cp.levels[^1].state == emitCachedId)
+  if valid:
+    for i in 0 ..< cp.levels.len - 1:
+      if cp.levels[i].state == emitCachedId: valid = false
+  if valid and cp.started:
+    let l = cp.lexer
+    valid = l.offset == cp.offset and l.bufpos >= 1 and
+        l.lineStart <= l.bufpos - 1 and l.tokenStart <= l.bufpos and
+        l.bufpos < int.high div 4 and l.lineNumber < int.high div 4 and
+        l.flowDepth < int.high div 4
+  elif valid:
+    valid = cp.offset == 0
+  if not valid:
     raise newException(ValueError, "invalid checkpoint")
   ctx.handles = cp.handles.fromCheckpoint()
   ctx.levels.setLen(0)
@@ -499,26 +583,31 @@ proc restore(ctx: Context, cp: YamlCheckpoint) {.raises: [ValueError].} =
   if cp.peeked.len == 1: ctx.peek = cp.peeked[0].fromCheckpoint()
 
 proc checkpoint*(s: YamlStream): YamlCheckpoint {.raises: [ValueError].} =
-  ## Captures the state of a parser returned by `parse` or `resume`. Raises
-  ## ``ValueError`` if ``s`` is not such a parser, or if its input stream
-  ## failed. Must not be called while ``s`` is being iterated by another
-  ## caller in the middle of an event (it never is between two ``next``
-  ## calls).
+  ## Captures the state of a parser returned by `parse` or `resume`. Call it
+  ## only between two calls of ``next``, never from code that runs inside
+  ## ``next``. Raises ``ValueError`` if ``s`` is not such a parser, or if it
+  ## has raised an error (including a failure of its input stream).
   if not (s of Context):
     raise newException(ValueError, "checkpoint requires a YamlStream from parse or resume")
+  privateAccess(YamlStream)
+  if s.failed:
+    raise newException(ValueError, "cannot checkpoint after an error")
   let ctx = Context(s)
   result = ctx.checkpoint(true)
-  privateAccess(YamlStream)
   if s.peeked: result.peeked.add(s.cached.toCheckpoint())
+  result.checksum = result.digest()
 
 proc checkpoint*(fp: YamlFeedParser): YamlCheckpoint {.raises: [ValueError].} =
   ## Captures the state of a feed parser. Raises ``ValueError`` after an
-  ## error. Input that has been fed but not yet parsed is not part of the
-  ## checkpoint: when resuming, feed from ``offset`` on.
+  ## error. Neither input that has been fed but not yet parsed nor a call of
+  ## `finish` is part of the checkpoint: when resuming, feed from ``offset``
+  ## on and call `finish` again.
   if not fp.error.isNil:
     raise newException(ValueError, "cannot checkpoint after an error")
   result = fp.ctx.checkpoint(fp.started)
   for e in fp.pending: result.peeked.add(e.toCheckpoint())
+  result.ended = fp.ended
+  result.checksum = result.digest()
 
 proc resumeContext(p: YamlParser, cp: YamlCheckpoint): Context {.raises: [ValueError].} =
   result = new(Context)
@@ -529,8 +618,11 @@ proc resume*(p: YamlParser, cp: YamlCheckpoint, s: Stream): YamlStream
     {.raises: [ValueError].} =
   ## Resumes parsing from a checkpoint. ``s`` must deliver the original
   ## input from byte ``cp.offset`` on, e.g. after ``s.setPosition(cp.offset)``
-  ## on a file stream. Raises ``ValueError`` if the checkpoint is invalid or
-  ## was created by a different checkpoint format version.
+  ## on a file stream. Raises ``ValueError`` if the checkpoint is corrupted,
+  ## invalid or was created by a different checkpoint format version.
+  ##
+  ## Parser settings (e.g. ``issueWarnings``) are taken from ``p``, not from
+  ## the checkpoint.
   if not cp.started:
     raise newException(ValueError, "checkpoint of an unstarted feed parser; " &
         "use newYamlFeedParser to resume it")
@@ -541,10 +633,15 @@ proc resume*(p: YamlParser, cp: YamlCheckpoint, s: Stream): YamlStream
 proc resume*(p: YamlParser, cp: YamlCheckpoint, s: string): YamlStream
     {.raises: [ValueError].} =
   ## Resumes parsing from a checkpoint. ``s`` must be the original input
-  ## from byte ``cp.offset`` on, e.g. ``input[cp.offset .. ^1]``.
+  ## from byte ``cp.offset`` on, e.g. ``input[cp.offset .. ^1]``. Raises
+  ## ``ValueError`` like the `Stream` variant, and if ``s`` is shorter than
+  ## the input the checkpoint has already read.
   if not cp.started:
     raise newException(ValueError, "checkpoint of an unstarted feed parser; " &
         "use newYamlFeedParser to resume it")
+  if cp.lexer.bufpos > s.len + 1:
+    raise newException(ValueError, "input is shorter than the input the " &
+        "checkpoint has already read; it must start at offset " & $cp.offset)
   let ctx = p.resumeContext(cp)
   ctx.lex.restore(cp.lexer, s)
   result = ctx
@@ -556,7 +653,8 @@ proc newYamlFeedParser*(p: YamlParser, cp: YamlCheckpoint): YamlFeedParser
   let ctx = p.resumeContext(cp)
   if cp.started: ctx.lex.restoreFeed(cp.lexer)
   else: ctx.lex.initFeed()
-  result = YamlFeedParser(ctx: ctx, starvedAt: -1, started: cp.started)
+  result = YamlFeedParser(ctx: ctx, starvedAt: -1, started: cp.started,
+                          ended: cp.ended)
   privateAccess(YamlStream)
   if ctx.peeked:
     ctx.peeked = false

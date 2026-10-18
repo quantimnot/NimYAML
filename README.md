@@ -191,18 +191,36 @@ a feed parser, to which you feed the input from `cp.offset` on.
    49 KB top-level flow sequence of 5000 items, the dumped checkpoint is
    1.2 MB, about 24 times the input. For JSON-like input made of one huge
    array or object, checkpoints are therefore of little use.
- * **Same version only, trusted data only.** `YamlCheckpoint`'s fields are
-   internal. A checkpoint can only be resumed by a NimYAML version with the
-   same `checkpointVersion`; `resume` raises `ValueError` otherwise, and for
-   checkpoints that are obviously invalid. It does not detect tampering: do not
-   resume checkpoints from untrusted sources.
+ * **Same version only; corrupted checkpoints are rejected, crafted ones are
+   not.** `YamlCheckpoint`'s fields are internal; don't modify them. A
+   checkpoint can only be resumed by a NimYAML version with the same
+   `checkpointVersion`. Each checkpoint carries a checksum over all its
+   fields, so a checkpoint that was damaged in storage (or edited without
+   updating the checksum) is rejected with `ValueError`, as are a few
+   structurally impossible states. The checksum is not cryptographic: a
+   checkpoint crafted with a matching checksum can make `resume` produce wrong
+   events or even raise a `Defect` (e.g. `IndexDefect`), which aborts the
+   program with `--panics:on`. Do not resume checkpoints from untrusted
+   sources.
+ * **Short input is only partly detected.** `resume` with a `string` raises
+   `ValueError` if the string is shorter than the input the checkpoint has
+   already read. Otherwise, missing or wrong input yields wrong events or
+   errors (see the first caveat).
  * **When checkpointing fails.** `checkpoint` raises `ValueError` for a
-   `YamlStream` that does not come from `parse` or `resume`, after the input
-   `Stream` failed, and for a feed parser after an error. A feed parser's
-   checkpoint does not include input that was fed but not yet parsed; feed
-   from `cp.offset` on after resuming. A checkpoint of a feed parser that has
-   not produced any event yet can only be resumed with `newYamlFeedParser`.
-   A peeked event (see `peek`) is part of the checkpoint.
+   `YamlStream` that does not come from `parse` or `resume`, and for a parser
+   or feed parser that has raised an error (including a failure of its input
+   `Stream`): its state is inconsistent from that point on.
+ * **Feed parser specifics.** A feed parser's checkpoint does not include
+   input that was fed but not yet parsed, nor whether `finish` was called:
+   after resuming, feed from `cp.offset` on and call `finish` again. A
+   checkpoint taken after `yamlEndStream` resumes as a finished parser. A
+   checkpoint of a feed parser that has not produced any event yet can only be
+   resumed with `newYamlFeedParser`. A peeked event (see `peek`) is part of
+   the checkpoint, also when resuming a `YamlStream` checkpoint as feed
+   parser.
+ * **Settings come from the resuming parser.** `resume` uses the settings of
+   the `YamlParser` you call it on (e.g. `issueWarnings`), not those of the
+   parser the checkpoint was taken from.
 
 ## Developers
 

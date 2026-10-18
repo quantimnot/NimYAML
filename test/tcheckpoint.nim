@@ -82,7 +82,159 @@ proc compare(name: string, expected, actual: seq[string]): bool =
   fail()
   return false
 
+proc resumesCorrectly(name, input: string, expected: seq[string],
+                      k: int): bool =
+  ## checkpoints after ``k`` events and resumes from a string and from a
+  ## stream; both must yield the rest of ``expected``.
+  for viaStream in [false, true]:
+    let s =
+      if viaStream: initYamlParser().parse(newStringStream(input))
+      else: initYamlParser().parse(input)
+    var actual: seq[string]
+    for i in 0 ..< k: actual.add(describe(s.next()))
+    let cp = roundTrip(s.checkpoint())
+    check cp.offset >= 0 and cp.offset <= input.len
+    let rest = input[cp.offset .. ^1]
+    let resumed =
+      if viaStream: initYamlParser().resume(cp, newStringStream(rest))
+      else: initYamlParser().resume(cp, rest)
+    resumed.drain(actual)
+    if not compare(name & " [after " & $k & (if viaStream: ", stream]" else: "]"),
+                   expected, actual):
+      return false
+  return true
+
+proc feedResumesCorrectly(name, input: string, expected: seq[string],
+                          k, chunkSize: int): bool =
+  ## feeds until ``k`` events, checkpoints and resumes as feed parser.
+  var actual: seq[string]
+  var pos = 0
+  let fp = newYamlFeedParser(initYamlParser())
+  fp.drain(input, pos, chunkSize, actual, k)
+  if actual.len < k: return true # error before k events
+  let cp = roundTrip(fp.checkpoint())
+  check cp.offset <= pos
+  var resumePos = cp.offset
+  newYamlFeedParser(initYamlParser(), cp).drain(input, resumePos, chunkSize, actual)
+  compare(name & " [feed " & $chunkSize & ", after " & $k & "]", expected, actual)
+
+const extraInputs = [
+  "%YAML 1.2\n---\na: b\n...\n%YAML 1.2\n--- c\n",
+  "%TAG !e! tag:example.com,2000:app/\n%TAG ! !foo\n--- !e!x\n- !e!y z\n- !local q\n- !<tag:verb> v\n- !!str s\n",
+  "%FOO bar baz\n--- a\n",
+  "a: |2-\n    x\n   y\nb: >+1\n  z\n\n\nc: |\n  # not a comment\n\n",
+  "# c1\na: b # c2\n# c3\nc: # c4\n  - d # c5\n# end\n",
+  "a: {b: [c, {d: e}], f: g}\nh: [i, j: k, ? l : m]\n",
+  "{\"a\": [1, 2, {\"b\": null}], \"c\":\"d\", \"e\": true}",
+  "a: b\r\nc:\r\n  - d\r\n  - \"e\r\n   f\"\r\ng: |\r\n  h\r\n",
+  "a: b\rc: d\r",
+  "\xEF\xBB\xBFa: b\nc: d\n",
+  "\xEF\xBB\xBF--- a\n...\n\xEF\xBB\xBF--- b\n",
+  "a: &x 1\nb: *x\n&y c: *y\n? &z [d]\n: *z\n",
+  "a: b\n  c\n  d\ne: 'f\n  g'\nh: \"i\\\n  j\"\n",
+  "--- !!map &m\n!!str &k a: !!seq &s\n- !!str &v b\n",
+  "- - a\n  - b\n- c: d\n  e: f\n",
+  "a: b\n c: d\n",
+  "a: [b, c\n",
+  "a: \"b\\q\"\nc: d\n",
+  "",
+  "a:\t b\n-\t c\n",
+  "[a,\n b,\n {c: d,\n  e: f}\n]\n",
+  "{? a, b: c, : d, [e]: f}\n",
+  "a: " & repeat('x', 70000) & "\nb: [" & repeat('y', 70000) & ", z]\n"]
+
 suite "Checkpoints":
+  test "extra inputs: resume after every event, all modes":
+    for i, input in extraInputs:
+      let expected = expectedOf(input)
+      for k in 0 ..< expected.len:
+        if not resumesCorrectly("extra #" & $i, input, expected, k): break
+        for chunkSize in [1, 3, 64]:
+          if input.len > 1000 and chunkSize < 64: continue
+          if not feedResumesCorrectly("extra #" & $i, input, expected, k,
+                                      chunkSize): break
+
+  test "checkpoint after an error is refused":
+    let s = initYamlParser().parse("a: \"b\\q\"\nc: d\n")
+    expect YamlStreamError:
+      while true: discard s.next()
+    expect ValueError:
+      discard s.checkpoint()
+
+  test "finished feed parser stays finished":
+    let fp = newYamlFeedParser(initYamlParser())
+    fp.feed("a\n")
+    fp.finish()
+    for e in fp.events: discard
+    check fp.finished
+    let resumed = newYamlFeedParser(initYamlParser(), roundTrip(fp.checkpoint()))
+    check resumed.finished
+    var e: Event
+    check not resumed.tryNext(e)
+
+  test "too short input is rejected":
+    let input = "key: value\nother: x\n"
+    let s = initYamlParser().parse(input)
+    for i in 0 ..< 4: discard s.next()
+    let cp = s.checkpoint()
+    check cp.lexer.bufpos > 1
+    expect ValueError:
+      discard initYamlParser().resume(cp, "")
+
+  test "corrupted checkpoints are rejected without defects":
+    let input = "%TAG !e! tag:e,2000:\n--- !e!r\na: &x {b: [c, d], e: f}\ng:\n  - *x\n  - |2\n     h\n"
+    var total = 0
+    for e in initYamlParser().parse(input): inc(total)
+    const values = [int.low, -1000, -1, 0, 1, 2, 7, 30, 100000, int.high]
+    for k in [1, 4, 9, 13]:
+      if k >= total: continue
+      let s = initYamlParser().parse(input)
+      for i in 0 ..< k: discard s.next()
+      let base = s.checkpoint()
+      let rest = input[base.offset .. ^1]
+      var mutated: seq[YamlCheckpoint]
+      template mutate(field: untyped) =
+        for v in values:
+          var cp {.inject.} = base
+          field = v
+          if cp != base: mutated.add(cp)
+      mutate(cp.offset)
+      mutate(cp.lexer.offset)
+      mutate(cp.lexer.bufpos)
+      mutate(cp.lexer.lineStart)
+      mutate(cp.lexer.tokenStart)
+      mutate(cp.lexer.lineNumber)
+      mutate(cp.lexer.flowDepth)
+      mutate(cp.lexer.indentation)
+      mutate(cp.lexer.state)
+      mutate(cp.lexer.c)
+      mutate(cp.keyCachePos)
+      mutate(cp.blockIndentation)
+      mutate(cp.headerStartLine)
+      for li in 0 ..< base.levels.len:
+        mutate(cp.levels[li].state)
+        mutate(cp.levels[li].indentation)
+      block:
+        var cp = base
+        cp.levels.setLen(1)
+        mutated.add(cp)
+      block:
+        var cp = base
+        cp.keyCache.add(YamlCheckpointEvent(kind: yamlEndMap))
+        mutated.add(cp)
+      check mutated.len > 100
+      for cp in mutated:
+        try:
+          discard initYamlParser().resume(cp, rest)
+          checkpoint("accepted corrupted checkpoint after " & $k)
+          fail()
+        except ValueError: discard
+        try:
+          discard newYamlFeedParser(initYamlParser(), cp)
+          checkpoint("feed accepted corrupted checkpoint after " & $k)
+          fail()
+        except ValueError: discard
+
   test "yaml-test-suite: resume after every event":
     let inputs = suiteInputs()
     check inputs.len > 300
@@ -91,13 +243,7 @@ suite "Checkpoints":
       let expected = expectedOf(input)
       # the last entry is yamlEndStream or an error; no checkpoint after it.
       for k in 0 ..< expected.len:
-        let s = initYamlParser().parse(input)
-        var actual: seq[string]
-        for i in 0 ..< k: actual.add(describe(s.next()))
-        let cp = roundTrip(s.checkpoint())
-        check cp.offset >= 0 and cp.offset <= input.len
-        initYamlParser().resume(cp, input[cp.offset .. ^1]).drain(actual)
-        if not compare(path & " [after " & $k & "]", expected, actual): break
+        if not resumesCorrectly(path, input, expected, k): break
 
   test "yaml-test-suite: feed parser checkpoints":
     let inputs = suiteInputs()

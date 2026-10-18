@@ -41,6 +41,8 @@ type
         proc(s: YamlStream, lineContent: var string): bool {.gcsafe, raises: [].}
     peeked: bool
     cached: Event
+    # the backend has raised an error
+    failed: bool
 
 proc noLastContext(s: YamlStream, lineContent: var string): bool {.raises: [].} =
   result = false
@@ -98,8 +100,11 @@ proc next*(s: YamlStream): Event {.raises: [YamlStreamError], gcSafe.} =
     try:
       while true:
         if s.nextImpl(s, result): break
-    except YamlStreamError as e: raise e
+    except YamlStreamError as e:
+      s.failed = true
+      raise e
     except CatchableError as ce:
+      s.failed = true
       var e = newException(YamlStreamError, ce.msg)
       e.parent = ce
       raise e
