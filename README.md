@@ -425,17 +425,17 @@ to the application. Parser errors are raised as usual.
 Nix users can `nix develop` to get a devshell with the required Nim version. You'll need to have Flakes enabled.
 
 ```bash
-nim test # runs all tests
-nim lexerTests # run lexer tests
-nim parserTests # run parser tests (git-clones yaml-dev-kit)
-nim feedTests # compare feed parser against the string parser on yaml-test-suite
-nim checkpointTests # resume from checkpoints after every event of yaml-test-suite
-nim documentTests # parse from document starts; error recovery
-nim fragmentTests # fragment identifiers; multi-document dumping
-nim nativeTests # runs native value tests
-nim quickstartTests # run tests for quickstart snippets from documentation
-nim clean # guess
-nim build # build a library
+nim test config.nims # runs all tests
+nim lexerTests config.nims # run lexer tests
+nim parserTests config.nims # run parser tests (git-clones yaml-dev-kit)
+nim feedTests config.nims # compare feed parser against the string parser on yaml-test-suite
+nim checkpointTests config.nims # resume from checkpoints after every event of yaml-test-suite
+nim documentTests config.nims # parse from document starts; error recovery
+nim fragmentTests config.nims # fragment identifiers; multi-document dumping
+nim nativeTests config.nims # runs native value tests
+nim quickstartTests config.nims # run tests for quickstart snippets from documentation
+nim clean config.nims # guess
+nim build config.nims # build a library
 ```
 
 When debugging crashes in this library, use the `d:debug` compile flag to enable printing of the internal stack traces for calls to `internalError` and `yAssert`.
