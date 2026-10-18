@@ -105,3 +105,38 @@ suite "Lint: syntax":
         check syntax > 0
     check valid > 0
     check invalid > 0
+
+suite "Lint: text rules":
+  test "trailing-spaces":
+    check spans("a: 1  \nb: 2\t\nc: 3\n", only("trailing-spaces")) ==
+        @["trailing-spaces 1:5-1:7 warning", "trailing-spaces 2:5-2:6 warning"]
+    check lint("a: 1 \n", only("trailing-spaces"))[0].message ==
+        "trailing whitespace"
+
+  test "line-length":
+    let config = only("line-length", RuleConfig(max: some(5)))
+    check spans("abcdef: 1\nab: 1\n", config) ==
+        @["line-length 1:6-1:10 warning"]
+    check lint("abcdef: 1\n", config)[0].message ==
+        "line too long (9 > 5 characters)"
+
+  test "line-length counts characters, columns are bytes":
+    check spans("é: ééé\n", only("line-length", RuleConfig(max: some(5)))) ==
+        @["line-length 1:9-1:11 warning"]
+
+  test "line-length default is 120":
+    check spans("a: " & 'x'.repeat(117) & "\n", only("line-length")).len == 0
+    check spans("a: " & 'x'.repeat(118) & "\n", only("line-length")) ==
+        @["line-length 1:121-1:122 warning"]
+
+  test "tabs in indentation":
+    check spans("  \tx\n", only("tabs")) == @["tabs 1:3-1:4 error"]
+    check spans("a:\tb\n", only("tabs")).len == 0
+
+  test "final-newline":
+    check spans("a: 1", only("final-newline")) ==
+        @["final-newline 1:5-1:6 warning"]
+    check spans("a: 1\nb: 2", only("final-newline")) ==
+        @["final-newline 2:5-2:6 warning"]
+    check spans("a: 1\n", only("final-newline")).len == 0
+    check spans("", only("final-newline")).len == 0

@@ -88,11 +88,61 @@ proc report*(ctx: var LintContext, r: LintRule, startPos, endPos: Mark,
 
 # rules
 
+const defaultMaxLineLength* = 120
+
+type
+  TrailingSpacesRule = ref object of LintRule
+  LineLengthRule = ref object of LintRule
+  TabsRule = ref object of LintRule
+  FinalNewlineRule = ref object of LintRule
+
+method onLine(r: TrailingSpacesRule, ctx: var LintContext, line: int,
+    text: string) =
+  var start = text.len
+  while start > 0 and text[start - 1] in {' ', '\t'}: dec(start)
+  if start < text.len:
+    ctx.report(r, mark(line, start + 1), mark(line, text.len + 1),
+        "trailing whitespace")
+
+method onLine(r: LineLengthRule, ctx: var LintContext, line: int,
+    text: string) =
+  let limit = r.config.max.get(defaultMaxLineLength)
+  let length = text.runeLen
+  if length > limit:
+    ctx.report(r, mark(line, text.runeOffset(limit) + 1),
+        mark(line, text.len + 1),
+        "line too long (" & $length & " > " & $limit & " characters)")
+
+method onLine(r: TabsRule, ctx: var LintContext, line: int, text: string) =
+  for i, c in text:
+    case c
+    of '\t':
+      ctx.report(r, mark(line, i + 1), mark(line, i + 2),
+          "tab character in indentation")
+      return
+    of ' ': discard
+    else: return
+
+method onEnd(r: FinalNewlineRule, ctx: var LintContext) =
+  if ctx.source.len > 0 and ctx.source[^1] != '\n':
+    var
+      line = 1
+      last = ""
+    for n, text in ctx.source.sourceLines:
+      line = n
+      last = text
+    ctx.report(r, mark(line, last.len + 1), mark(line, last.len + 2),
+        "no line break at end of file")
+
 # registry
 
 proc builtinRules*(): seq[LintRule] =
   ## Fresh instances of all built-in rules, with their default levels.
-  @[LintRule(SyntaxRule(id: "syntax", level: levelError))]
+  @[LintRule(SyntaxRule(id: "syntax", level: levelError)),
+    TrailingSpacesRule(id: "trailing-spaces", level: levelWarning),
+    LineLengthRule(id: "line-length", level: levelWarning),
+    TabsRule(id: "tabs", level: levelError),
+    FinalNewlineRule(id: "final-newline", level: levelWarning)]
 
 proc builtinRuleIds*(): seq[string] =
   for r in builtinRules(): result.add(r.id)
