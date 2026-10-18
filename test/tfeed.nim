@@ -181,9 +181,29 @@ suite "Feed Parser":
       "--- |\nzero indent\ncontent\n--- >\n folded\n...\n",
       "a: |\n  x\n # less indented comment\n",
       "a: |\n   x\n  y\n",
-      "top\n  level\n  plain\n---\n"]
+      "top\n  level\n  plain\n---\n",
+      # a tab at the start of a line makes the lexer look ahead over any
+      # number of spaces
+      "a: b\n\t    c: d\nx: y\n",
+      "a: b\n\t    c\n",
+      "x:\n  a: b\n  \t     c\nd: e\n",
+      "a: \"b\n\t     c\"\nd: e\n",
+      "url: http://x.y/z:8 a:b c: d\n",
+      "[a:b, c:d, e: f, g:]\n{h:i, j:[k]}\n",
+      "\"q\n-- not a marker\n.. nor this\n---x\n\"\n",
+      "plain\n---x\n-- y\n--- z\n",
+      "a: plain\n  # comment line ending the scalar\nb: c\n"]
     var inputs: seq[(string, string)]
     for i, input in edgeCases: inputs.add(("edge #" & $i, input))
+    # every chunk size up to the length of the short edge cases
+    for i, input in edgeCases:
+      for split in 1 ..< input.len:
+        let withGate = availability(input, split, true)
+        let withoutGate = availability(input, split, false)
+        if withGate != withoutGate:
+          checkpoint("edge #" & $i & " split at " & $split & ": with gate " &
+                     $withGate & ", without " & $withoutGate)
+          fail()
     for path in suiteInputs(): inputs.add((path, readFile(path)))
     for (path, input) in inputs:
       for chunkSize in [1, 2, 3, 5, 7]:
@@ -216,7 +236,14 @@ suite "Feed Parser":
       "literal": "a: |\n" & multiline & "b: c\n",
       "folded keep": "a: >+\n" & multiline & "\n\nb: c\n",
       "literal indicator": "a: |2\n" & multiline & "b: c\n",
-      "top-level literal": "--- |\n" & multiline & "--- end\n"}
+      "top-level literal": "--- |\n" & multiline & "--- end\n",
+      "plain with colons": "a: " & repeat("http://x.y/z 12:30 a:b ", 2000) &
+          "\nb: c\n",
+      "plain with long comment": "a: x\n  y\n  # " & repeat("c", 50000) &
+          "\nb: c\n",
+      "quoted with dashes": "\"" & repeat("\n- item\n. dot\n-- two", 1000) &
+          "\"\n",
+      "double-quoted backslashes": "a: \"" & repeat("\\\\", 20000) & "\"\n"}
     for (name, input) in cases:
       let expected = collect(initYamlParser().parse(input))
       if expected.failed:

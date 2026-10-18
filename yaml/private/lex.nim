@@ -1022,7 +1022,11 @@ proc armGate*(lex: var Lexer, waitForLineEnd = false) {.raises: [].} =
     var i = starvePos - 1
     while i >= contentStart and i >= starvePos - 10 and at(i) != '\\': dec(i)
     if i >= contentStart and i >= starvePos - 10:
-      while i > contentStart and at(i - 1) == '\\': dec(i)
+      # start at the beginning of the backslash run, so that escapes are
+      # paired correctly. Give up on absurdly long runs.
+      while i > contentStart and at(i - 1) == '\\' and starvePos - i < 64:
+        dec(i)
+      if i > contentStart and at(i - 1) == '\\': return
       scanStart = i
     elif starvePos > contentStart and at(starvePos - 1) == '"':
       # the scalar has ended; the reader ran out of input looking past it
@@ -1045,11 +1049,22 @@ proc armGate*(lex: var Lexer, waitForLineEnd = false) {.raises: [].} =
         # (e.g. whether `-` starts a `---` marker), so check the line start
         # again if they are only a few characters back.
         if scanStart - i <= 4: scanStart = lineStart
+        elif g.ctx.kind == skPlain and at(i) == '\t':
+          # for a line starting with a tab, the lexer looks ahead over any
+          # whitespace to see whether the line is empty or a comment.
+          var onlySpace = true
+          for j in i ..< scanStart:
+            if at(j) notin {' ', '\t'}:
+              onlySpace = false
+              break
+          if onlySpace: scanStart = lineStart
+          else: g.atLineStart = false
         else: g.atLineStart = false
         break
   if g.ctx.kind == skPlain:
     # a comment line ends a plain scalar; the reader then consumes the comment
-    # and the line break after it. Without a gate for that, just retry.
+    # and the line break after it. Wait for the line break, and if the reader
+    # then needs the character after it, just retry.
     proc startsWithComment(b: SourceBuffer, first, last: int): bool =
       for i in first ..< last:
         case b.data[i - b.base]
@@ -1057,7 +1072,10 @@ proc armGate*(lex: var Lexer, waitForLineEnd = false) {.raises: [].} =
         of '#': return true
         else: return false
       return false
-    if b.startsWithComment(lineStart, starvePos): return
+    if lineStart > contentStart and b.startsWithComment(lineStart, starvePos):
+      b.gate = CompletionGate(armed: true,
+          ctx: ScalarContext(kind: skLineEnd), scanPos: starvePos)
+      return
     if lineStart > contentStart:
       var prevEnd = lineStart - 1
       if prevEnd > contentStart and at(prevEnd) == '\l' and
@@ -1102,27 +1120,50 @@ proc gateBlocks*(lex: var Lexer): bool {.raises: [].} =
         inc(g.col)
         inc(i)
         continue
+      # a document marker `---` or `...` at column 0 ends every scalar
+      # (decided character by character, like isDirectivesEnd; block scalars
+      # use dirEndFollows/docEndFollows, which do not look at the character
+      # after the marker)
+      var marker = false
+      if g.col == 0 and c in {'-', '.'}:
+        var needMore = false
+        marker = true
+        for k in 1 .. (if g.ctx.kind == skBlock: 2 else: 3):
+          if i + k >= data[].len:
+            needMore = true
+            break
+          let d = data[][i + k]
+          if (k < 3 and d != c) or (k == 3 and d notin {' ', '\t', '\l', '\c'}):
+            marker = false
+            break
+        if needMore: break # state unchanged: look at this line start again
       g.atLineStart = false
       case g.ctx.kind
       of skPlain:
         # a continuation line must be more indented and must not start with
-        # a comment, a tab, or a document marker. In flow context, lines are
-        # not checked further.
-        if c in {'\t', '#'} or g.ctx.inFlow or g.col <= g.ctx.indentation or
-            (g.col == 0 and c in {'-', '.'}):
+        # a comment or a tab. In flow context, lines are not checked further.
+        if marker or c in {'\t', '#'} or g.ctx.inFlow or
+            g.col <= g.ctx.indentation:
           trigger()
       of skSingleQuoted, skDoubleQuoted:
-        if g.col == 0 and c in {'-', '.'}: trigger()
+        if marker: trigger()
       of skBlock:
-        if g.ctx.indentation < 0 or g.col < g.ctx.indentation or
-            (g.col == 0 and c in {'-', '.'}):
+        if marker or g.ctx.indentation < 0 or g.col < g.ctx.indentation:
           trigger()
         inc(i)
         continue
       else: discard
     case g.ctx.kind
     of skPlain:
-      if c == ':' or (c == '#' and g.prevSpace) or
+      if c == ':':
+        # like isPlainSafe: a colon ends the scalar if followed by
+        # whitespace, or by a flow indicator in flow context
+        if i + 1 >= data[].len: break # need the next character
+        let next = data[][i + 1]
+        if next in {' ', '\t', '\l', '\c'} or
+            (g.ctx.inFlow and next in flowIndicators):
+          trigger()
+      elif (c == '#' and g.prevSpace) or
           (g.ctx.inFlow and c in flowIndicators):
         trigger()
       g.prevSpace = c in {' ', '\t'}

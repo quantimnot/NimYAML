@@ -7,7 +7,8 @@
 import os, streams, strutils, unittest, algorithm
 when defined(nimPreviewSlimSystem):
   import std/[syncio, assertions]
-import ../yaml, ../yaml/[data, parser, stream]
+import ../yaml, ../yaml/[data, stream]
+import ../yaml/parser {.all.}
 
 proc describe(e: Event): string =
   ## unlike `==`, this includes positions and styles.
@@ -340,6 +341,54 @@ suite "Checkpoints":
     other.lexer.state = 1000
     expect ValueError:
       discard initYamlParser().resume(other, "")
+
+  test "structural checks reject impossible states with a valid checksum":
+    # a flow sequence: after its start event, cached events are pending
+    let input = "[a, b, c]\n"
+    let s = initYamlParser().parse(input)
+    for i in 0 ..< 3: discard s.next()
+    let base = s.checkpoint()
+    check base.keyCache.len > 0
+    let emitCachedId = stateId(emitCached)
+    check base.levels[^1].state == emitCachedId
+    proc rejected(cp: YamlCheckpoint): bool =
+      var cp = cp
+      cp.checksum = cp.digest()
+      try:
+        let rest = if cp.offset <= input.len: input[cp.offset .. ^1] else: ""
+        discard initYamlParser().resume(cp, rest)
+        return false
+      except ValueError: return true
+    check not rejected(base) # sanity: unmodified checkpoint is accepted
+    var cp = base
+    cp.offset += 1
+    check rejected(cp) # offsets disagree
+    cp = base
+    cp.keyCachePos = cp.keyCache.len
+    check rejected(cp) # no pending event left
+    cp = base
+    cp.keyCache.setLen(0)
+    cp.keyCachePos = 0
+    check rejected(cp) # emitCached without pending events
+    cp = base
+    cp.levels.insert(cp.levels[^1], 0)
+    check rejected(cp) # emitCached below the top
+    cp = base
+    cp.caching = true
+    check rejected(cp)
+    cp = base
+    cp.lexer.lineStart = cp.lexer.bufpos
+    check rejected(cp)
+    cp = base
+    cp.lexer.tokenStart = cp.lexer.bufpos + 1
+    check rejected(cp)
+    cp = base
+    cp.lexer.lineNumber = int.high
+    check rejected(cp)
+    cp = base
+    cp.peeked.add(cp.keyCache[0])
+    cp.peeked.add(cp.keyCache[0])
+    check rejected(cp)
 
   test "not a parser":
     expect ValueError:

@@ -92,9 +92,12 @@ and `false` when more input is required or the stream has already ended
    closing quote, a less indented line, `: `, ` #`, a document marker, an
    invalid escape, …) and skips the attempt until it finds one. This makes
    feeding a large scalar linear: measured with `-d:release`, a 1 MB quoted
-   scalar fed one byte at a time takes 35 ms, and a 550 KB block scalar takes
-   under 10 ms in 512-byte chunks. The gate never holds back an event or an
-   error that could already be produced; it is disabled by `finish`.
+   scalar fed one byte at a time takes 35 ms, a 1 MB plain scalar full of
+   URLs (`http://…`, colons that do not end it) 8 ms in 16-byte chunks, and a
+   550 KB block scalar under 10 ms in 512-byte chunks. The gate is designed
+   never to hold back an event or an error that could already be produced,
+   and the tests check this for every yaml-test-suite input at several chunk
+   sizes; it is disabled by `finish`.
    Flow collections (`[...]`, `{...}`), however, are parsed as a whole before
    their first event is produced, and every attempt re-parses the collection
    so far: an 80 KB flow sequence takes 0.01 s when fed in 4 KiB chunks, but
