@@ -12,6 +12,7 @@
 
 **Conventions:**
 - Run nimscript tasks as `nim <task> config.nims` (bare `nim <task>` crashes with current upstream Nim).
+- On Nim 2.3.1 devel, `nim <task> config.nims` only type-checks and builds no binary. There, run each "Run:" command as a direct compile instead: `lintTests` → `nim c -r test/tlint`, `yamllintTests` → `nim c -r test/tyamllint`, `lspTests` → `nim c -r test/tlsp`, `yamllsp` → `nim c -d:release tools/yamllsp`, `test` → `nim c -r test/tests`.
 - Module headers follow the `yaml/dom.nim` style (license comment, `## ====` title).
 - Tests use `std/unittest`, one `suite` per component.
 

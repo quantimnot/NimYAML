@@ -45,6 +45,11 @@ task documentTests, "Run document start and error recovery tests":
   --verbosity:0
   setCommand "c", "test/tdocuments"
 
+task lintTests, "Run diagnostics and lint tests":
+  --r
+  --verbosity:0
+  setCommand "c", "test/tlint"
+
 task jsonTests, "Run JSON tests":
   --r
   --verbosity:0
