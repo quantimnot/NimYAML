@@ -222,3 +222,50 @@ suite "Lint: all rules":
     check builtinRuleIds() == @["syntax", "duplicate-key", "complex-key",
         "undefined-alias", "unused-anchor", "truthy", "trailing-spaces",
         "line-length", "tabs", "final-newline"]
+
+suite "Lint config":
+  test "blank and comment-only configs are the defaults":
+    check parseLintConfig("").rules.len == 0
+    check parseLintConfig("# nothing\n\n").rules.len == 0
+
+  test "levels and options":
+    let config = parseLintConfig(
+        "rules:\n  line-length: {level: error, max: 5}\n  truthy: {level: off}\n")
+    check config.rules["line-length"].level == some(levelError)
+    check config.rules["line-length"].max == some(5)
+    check spans("- abcd\n- yes\n", config) ==
+        @["line-length 1:6-1:7 error"]
+
+  test "a rule without level keeps its default":
+    let config = parseLintConfig("rules:\n  line-length: {max: 3}\n")
+    check spans("abcd\n", config) == @["line-length 1:4-1:5 warning"]
+
+  test "invalid configs":
+    expect LintConfigError: discard parseLintConfig("rules:\n  nope: {}\n")
+    expect LintConfigError:
+      discard parseLintConfig("rules:\n  tabs: {level: bogus}\n")
+    expect LintConfigError:
+      discard parseLintConfig("rules:\n  line-length: {max: -1}\n")
+    expect LintConfigError: discard parseLintConfig("rulez: 1\n")
+    try:
+      discard parseLintConfig("rules:\n  nope: {}\n")
+    except LintConfigError as e:
+      check e.msg == "unknown rule: nope"
+
+  test "loadLintConfig and findLintConfig":
+    let root = getTempDir() / ("nimyaml-lint-test-" & $getCurrentProcessId())
+    createDir(root / "a" / "b")
+    defer: removeDir(root)
+    let path = root / "a" / configFileName
+    writeFile(path, "rules:\n  truthy: {level: error}\n")
+    check findLintConfig(root / "a" / "b") == path
+    check findLintConfig(root / "a") == path
+    check findLintConfig(root) == ""
+    check loadLintConfig(path).rules["truthy"].level == some(levelError)
+    writeFile(path, "rules:\n  nope: {}\n")
+    try:
+      discard loadLintConfig(path)
+      check false
+    except LintConfigError as e:
+      check e.msg.startsWith(path & ": ")
+    expect LintConfigError: discard loadLintConfig(root / "missing.yaml")

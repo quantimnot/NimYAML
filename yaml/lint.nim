@@ -23,6 +23,8 @@
 
 import std/[algorithm, options, os, sets, strutils, tables]
 from std/unicode import runeLen, runeOffset
+when defined(nimPreviewSlimSystem):
+  import std/syncio
 import data, parser, stream, loading, annotations, diagnostics
 export options, tables, diagnostics
 
@@ -255,6 +257,54 @@ proc builtinRuleIds*(): seq[string] =
   for r in builtinRules(): result.add(r.id)
 
 proc defaultConfig*(): LintConfig = LintConfig()
+
+proc isBlank(content: string): bool =
+  for line in content.splitLines:
+    let text = line.strip()
+    if text.len > 0 and text[0] != '#': return false
+  true
+
+proc parseLintConfig*(content: string): LintConfig =
+  ## Parses the content of a lint config file. Blank or comment-only content
+  ## yields `defaultConfig`. Raises `LintConfigError` if the content is
+  ## invalid, names an unknown rule or has a negative ``max``.
+  if content.isBlank: return defaultConfig()
+  try:
+    load(content, result)
+  except YamlLoadingError as e:
+    raise newException(LintConfigError,
+        $e.mark.line & ":" & $e.mark.column & ": " & e.msg)
+  let ids = builtinRuleIds()
+  for id, rule in result.rules:
+    if id notin ids:
+      raise newException(LintConfigError, "unknown rule: " & id)
+    if rule.max.isSome and rule.max.get() < 0:
+      raise newException(LintConfigError,
+          id & ": max must not be negative")
+
+proc loadLintConfig*(path: string): LintConfig =
+  ## Loads the lint config file at ``path``. Raises `LintConfigError`, with
+  ## a message starting with ``path``, if it cannot be read or is invalid.
+  var content: string
+  try:
+    content = readFile(path)
+  except IOError as e:
+    raise newException(LintConfigError, path & ": " & e.msg)
+  try:
+    result = parseLintConfig(content)
+  except LintConfigError as e:
+    raise newException(LintConfigError, path & ": " & e.msg)
+
+proc findLintConfig*(dir: string): string =
+  ## The path of the ``.nimyaml-lint.yaml`` in ``dir`` or its nearest
+  ## ancestor that has one; "" if there is none.
+  var current = absolutePath(dir)
+  while true:
+    let path = current / configFileName
+    if fileExists(path): return path
+    let parent = current.parentDir()
+    if parent.len == 0 or parent == current: return ""
+    current = parent
 
 proc cmpDiagnostics(a, b: Diagnostic): int =
   result = cmp(a.startPos.line, b.startPos.line)
