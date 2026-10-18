@@ -36,8 +36,6 @@ Be aware that serialization currently doesn't support the following features in 
 
  * Polymorphism: If a field has a type `ref Parent`, you cannot load a `ref Child` into it.
  * Generic objects: The code auto-generating loading and dumping functions currently cannot process instances of generic objects anywhere in the type you want to load/dump.
- * Default values: NimYAML uses its own `{.defaultVal: "foo".}` pragma.
-   It currently cannot process default values introduced in Nim 2.0.
 
 ## Incremental Parsing
 
