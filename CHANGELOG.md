@@ -8,6 +8,10 @@ Features:
    input has been fed. See the README for caveats: events lag behind the
    input by up to one token, and feeding small chunks into large events
    (long scalars, flow collections) costs time quadratic in the event size.
+ * added checkpoints: `checkpoint` captures the state of a parser or feed
+   parser between two events as plain, serializable data; `resume` and
+   `newYamlFeedParser(parser, checkpoint)` continue parsing from it, given
+   the input from `checkpoint.offset` on. See the README for caveats.
  * the lexer no longer depends on `std/lexbase`; consumed input is dropped
    between events, so memory use for `Stream` input stays bounded.
  * new module `yaml/fragment` resolves RFC 9512 fragment identifiers

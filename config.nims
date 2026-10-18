@@ -35,6 +35,11 @@ task feedTests, "Run feed parser tests":
   --verbosity:0
   setCommand "c", "test/tfeed"
 
+task checkpointTests, "Run checkpoint and resume tests":
+  --r
+  --verbosity:0
+  setCommand "c", "test/tcheckpoint"
+
 task jsonTests, "Run JSON tests":
   --r
   --verbosity:0

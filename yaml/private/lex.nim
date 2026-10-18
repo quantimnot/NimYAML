@@ -25,6 +25,8 @@ type
     starved: bool
     # error raised by ``stream`` while refilling
     error: ref CatchableError
+    # offset of data[0] in the whole input. Grows when input is compacted.
+    base: int
 
   Source = object
     buf: SourceBuffer
@@ -133,9 +135,14 @@ proc `[]`(b: SourceBuffer, i: int): char {.inline, raises: [].} =
   if i < b.data.len: b.data[i] else: b.fetch(i)
 
 proc `[]`(b: SourceBuffer, s: HSlice[int, int]): string {.raises: [].} =
-  # characters past the end only exist as EndOfFile and are never part of
-  # a lexeme.
-  b.data[s.a .. min(s.b, b.data.len - 1)]
+  # after restoring a checkpoint, the buffer may not yet hold characters
+  # that were read before the checkpoint, so a slice can reach past the
+  # data like a single read can. Characters past the end of final input
+  # only exist as EndOfFile and are never part of a lexeme.
+  if s.b >= b.data.len: discard b.fetch(s.b)
+  let last = min(s.b, b.data.len - 1)
+  # a starved slice may start past the data; its result is discarded.
+  if s.a > last: "" else: b.data[s.a .. last]
 
 proc handleCR(s: var Source, pos: int): int {.raises: [].} =
   inc(s.lineNumber)
@@ -888,16 +895,24 @@ proc starved*(lex: Lexer): bool {.raises: [].} =
 proc resetStarved*(lex: var Lexer) {.raises: [].} =
   lex.source.buf.starved = false
 
+proc retainedStart(lex: Lexer): int {.raises: [].} =
+  # first buffer index that the lexer may still access between tokens:
+  # the current line (for error messages), the current character and the
+  # most recent token (for its lexeme).
+  result = min(lex.source.lineStart, lex.source.bufpos - 1)
+  if lex.tokenStart > 0: result = min(result, lex.tokenStart - 1)
+  result = max(result, 0)
+
 proc compactBuffer(lex: var Lexer) {.noinline, raises: [].} =
   let b = lex.source.buf
-  var keep = min(lex.source.lineStart, lex.source.bufpos - 1)
-  if lex.tokenStart > 0: keep = min(keep, lex.tokenStart - 1)
+  let keep = lex.retainedStart()
   if keep < compactThreshold or keep * 2 < b.data.len:
     lex.source.compactAt = lex.source.bufpos + compactThreshold div 4
     return
   let rest = b.data.len - keep
   if rest > 0: moveMem(addr b.data[0], addr b.data[keep], rest)
   b.data.setLen(rest)
+  b.base += keep
   lex.source.bufpos -= keep
   lex.source.lineStart -= keep
   lex.tokenStart = max(0, lex.tokenStart - keep)
@@ -925,6 +940,106 @@ proc lineComplete*(lex: Lexer): bool {.raises: [].} =
   for i in lex.source.lineStart ..< lex.source.buf.data.len:
     if lex.source.buf.data[i] in {'\l', '\c'}: return true
   return false
+
+# checkpoints
+
+type
+  LexerCheckpoint* = object
+    ## Plain-data copy of the lexer state between two tokens. Positions are
+    ## relative to ``offset``, the absolute input offset from which input
+    ## must be supplied when restoring.
+    offset*: int
+    cur*: int
+    curStartLine*, curStartColumn*, curEndLine*, curEndColumn*: int
+    flowDepth*: int
+    evaluated*: string
+    indentation*: int
+    bufpos*, lineNumber*, lineStart*, tokenStart*: int
+    state*, lineStartState*, jsonEnablingState*: int
+    c*: int
+    seenMultiline*: bool
+    propertyIndentation*: int
+
+proc lexerStates(): array[19, State] {.raises: [].} =
+  # the position of a state in this list is its checkpoint id. Append only.
+  [State(outsideDoc), yamlVersion, tagShorthand, tagUri, unknownDirParams,
+   expectLineEnd, lineStart, flowLineStart, flowLineIndentation, insideLine,
+   indentationSettingToken, afterToken, beforeIndentationSettingToken,
+   afterJsonEnablingToken, lineIndentation, lineDirEnd, lineDocEnd, atSuffix,
+   streamEnd]
+
+proc stateId(s: State): int {.raises: [ValueError].} =
+  let states = lexerStates()
+  for i, candidate in states:
+    if candidate == s: return i
+  raise newException(ValueError, "lexer is in a state without checkpoint id")
+
+proc stateById(id: int): State {.raises: [ValueError].} =
+  let states = lexerStates()
+  if id < 0 or id > states.high:
+    raise newException(ValueError, "invalid lexer state in checkpoint")
+  states[id]
+
+proc checkpoint*(lex: Lexer): LexerCheckpoint {.raises: [ValueError].} =
+  ## Captures the lexer state. Must only be called between tokens.
+  if not lex.source.buf.error.isNil:
+    raise newException(ValueError, "cannot checkpoint after a stream error")
+  let keep = lex.retainedStart()
+  result = LexerCheckpoint(
+    offset: lex.source.buf.base + keep,
+    cur: ord(lex.cur),
+    curStartLine: lex.curStartPos.line, curStartColumn: lex.curStartPos.column,
+    curEndLine: lex.curEndPos.line, curEndColumn: lex.curEndPos.column,
+    flowDepth: lex.flowDepth, evaluated: lex.evaluated,
+    indentation: lex.indentation,
+    bufpos: lex.source.bufpos - keep, lineNumber: lex.source.lineNumber,
+    lineStart: lex.source.lineStart - keep,
+    tokenStart: max(0, lex.tokenStart - keep),
+    state: stateId(lex.state), lineStartState: stateId(lex.lineStartState),
+    jsonEnablingState: stateId(lex.jsonEnablingState),
+    c: ord(lex.c), seenMultiline: lex.seenMultiline,
+    propertyIndentation: lex.propertyIndentation)
+
+proc restore(lex: var Lexer, cp: LexerCheckpoint, buf: SourceBuffer, compactAt: int)
+    {.raises: [ValueError].} =
+  if cp.offset < 0 or cp.bufpos < 1 or cp.lineStart < 0 or cp.tokenStart < 0 or
+      cp.lineNumber < 1 or cp.cur < ord(Token.low) or cp.cur > ord(Token.high) or
+      cp.c < 0 or cp.c > 255 or cp.curStartLine < 1 or cp.curStartColumn < 1 or
+      cp.curEndLine < 1 or cp.curEndColumn < 1 or cp.flowDepth < 0:
+    raise newException(ValueError, "invalid lexer checkpoint")
+  buf.base = cp.offset
+  lex.source = Source(buf: buf, bufpos: cp.bufpos, lineNumber: cp.lineNumber,
+                      lineStart: cp.lineStart, compactAt: compactAt)
+  lex.cur = Token(cp.cur)
+  lex.curStartPos = Mark(line: cp.curStartLine, column: cp.curStartColumn)
+  lex.curEndPos = Mark(line: cp.curEndLine, column: cp.curEndColumn)
+  lex.flowDepth = cp.flowDepth
+  lex.evaluated = cp.evaluated
+  lex.indentation = cp.indentation
+  lex.tokenStart = cp.tokenStart
+  lex.state = stateById(cp.state)
+  lex.lineStartState = stateById(cp.lineStartState)
+  lex.jsonEnablingState = stateById(cp.jsonEnablingState)
+  lex.c = char(cp.c)
+  lex.seenMultiline = cp.seenMultiline
+  lex.propertyIndentation = cp.propertyIndentation
+
+proc restore*(lex: var Lexer, cp: LexerCheckpoint, source: Stream)
+    {.raises: [ValueError].} =
+  ## Restores a checkpoint. ``source`` must deliver the input from
+  ## ``cp.offset`` on.
+  lex.restore(cp, SourceBuffer(stream: source), compactThreshold)
+
+proc restore*(lex: var Lexer, cp: LexerCheckpoint, source: string)
+    {.raises: [ValueError].} =
+  ## Restores a checkpoint. ``source`` must be the input from ``cp.offset``
+  ## on.
+  lex.restore(cp, SourceBuffer(data: source, final: true), int.high)
+
+proc restoreFeed*(lex: var Lexer, cp: LexerCheckpoint) {.raises: [ValueError].} =
+  ## Restores a checkpoint for input that is supplied via ``feed``, starting
+  ## at ``cp.offset``.
+  lex.restore(cp, SourceBuffer(), compactThreshold)
 
 # states
 

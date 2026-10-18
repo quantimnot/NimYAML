@@ -11,7 +11,7 @@
 ## This is the low-level parser API. A ``YamlParser`` enables you to parse any
 ## non-nil string or Stream object as YAML character stream.
 
-import tables, strutils, macros, streams
+import tables, strutils, macros, streams, std/importutils
 import stream, private/lex, private/internal, private/escaping, data
 
 when defined(nimNoNil):
@@ -108,6 +108,8 @@ proc beforePairValue(ctx: Context, e: var Event): bool
 proc afterFlowMapValue(ctx: Context, e: var Event): bool
 proc afterFlowSeqSepProps(ctx: Context, e: var Event): bool
 proc afterFlowSeqItem(ctx: Context, e: var Event): bool
+proc beforeBlockMapKey(ctx: Context, e: var Event): bool
+proc afterFlowMapKey(ctx: Context, e: var Event): bool
 {.pop.}
 {.push gcSafe, raises: [].}
 proc atStreamEnd(ctx: Context, e : var Event): bool
@@ -214,6 +216,9 @@ type
     # -1 if the last attempt did not. Unchanged length = nothing new to try.
     starvedAt: int
     error: ref YamlParserError
+    # event to return before parsing further: a peeked event restored from
+    # the checkpoint of a YamlStream
+    pending: seq[Event]
 
 proc newYamlFeedParser*(p: YamlParser): YamlFeedParser =
   ## Creates a feed parser using the settings of ``p``.
@@ -249,6 +254,10 @@ proc tryNext*(fp: YamlFeedParser, e: var Event): bool
   ## further call raises the same error.
   if not fp.error.isNil: raise fp.error
   if fp.ended: return false
+  if fp.pending.len > 0:
+    e = fp.pending.pop()
+    if e.kind == yamlEndStream: fp.ended = true
+    return true
   let ctx = fp.ctx
   let final = ctx.lex.inputFinished()
   if not final and fp.starvedAt == ctx.lex.bufferedLen(): return false
@@ -290,6 +299,268 @@ iterator events*(fp: YamlFeedParser): Event {.raises: [YamlParserError].} =
   ## Yields all events that can be produced from the input fed so far.
   var e: Event
   while fp.tryNext(e): yield e
+
+# checkpoints
+
+type
+  YamlCheckpointHandle* = object
+    handle*, uriPrefix*: string
+
+  YamlCheckpointEvent* = object
+    ## Plain-data form of an `Event`.
+    kind*: EventKind
+    startLine*, startColumn*, endLine*, endColumn*: int
+    anchor*, tag*: string
+    collectionStyle*: CollectionStyle
+    scalarStyle*: ScalarStyle
+    # scalar content, alias target or %YAML version
+    content*: string
+    # explicitDirectivesEnd or explicitDocumentEnd
+    explicit*: bool
+    handles*: seq[YamlCheckpointHandle]
+
+  YamlCheckpointLevel* = object
+    state*, indentation*: int
+
+  YamlCheckpoint* = object
+    ## The state of a parser between two events, from which parsing can be
+    ## resumed later, e.g. in another process. A checkpoint is plain data and
+    ## can be serialized with NimYAML itself (or any other serializer that
+    ## handles objects, sequences, strings, integers, booleans and enums).
+    ##
+    ## ``offset`` is the byte offset in the original input from which input
+    ## must be supplied when resuming. Offsets of checkpoints taken from a
+    ## resumed parser still refer to the original input.
+    ##
+    ## All other fields are internal: they may change between NimYAML
+    ## versions and must not be modified. A checkpoint can only be resumed by
+    ## the NimYAML version that created it (see ``version``).
+    version*: int
+    offset*: int
+    started*: bool
+    lexer*: LexerCheckpoint
+    handles*: seq[YamlCheckpointHandle]
+    levels*: seq[YamlCheckpointLevel]
+    keyCache*: seq[YamlCheckpointEvent]
+    keyCachePos*: int
+    caching*: bool
+    headerAnchor*, headerTag*, inlineAnchor*, inlineTag*: string
+    headerStartLine*, headerStartColumn*: int
+    inlineStartLine*, inlineStartColumn*: int
+    blockIndentation*: int
+    # event that has been peeked but not yet returned by ``next``
+    peeked*: seq[YamlCheckpointEvent]
+
+export LexerCheckpoint
+
+const checkpointVersion* = 1
+  ## Version of the checkpoint format created by this NimYAML version.
+
+proc parserStates(): array[33, State] {.raises: [].} =
+  # the position of a state in this list is its checkpoint id. Append only.
+  [State(atStreamStart), beforeDoc, beforeDocEnd, afterDirectivesEnd,
+   beforeImplicitRoot, atBlockIndentation, beforeBlockIndentation,
+   beforeNodeProperties, afterCompactParent, afterCompactParentProps,
+   mergePropsOnNewline, beforeFlowItemProps, inBlockSeq, beforeBlockMapValue,
+   atBlockIndentationProps, beforeFlowItem, afterFlowSeqSep, afterFlowMapSep,
+   atBlockMapKeyProps, afterImplicitKey, afterBlockParent,
+   afterBlockParentProps, afterImplicitPairStart, beforePairValue,
+   afterFlowMapValue, afterFlowSeqSepProps, afterFlowSeqItem, atStreamEnd,
+   atEmptyPairKey, afterPairValue, emitCached, afterFlowMapKey,
+   beforeBlockMapKey]
+
+proc stateId(s: State): int {.raises: [ValueError].} =
+  let states = parserStates()
+  for i, candidate in states:
+    if candidate == s: return i
+  raise newException(ValueError, "parser is in a state without checkpoint id")
+
+proc stateById(id: int): State {.raises: [ValueError].} =
+  let states = parserStates()
+  if id < 0 or id > states.high:
+    raise newException(ValueError, "invalid parser state in checkpoint")
+  states[id]
+
+proc toCheckpoint(handles: seq[tuple[handle, uriPrefix: string]]):
+    seq[YamlCheckpointHandle] =
+  for h in handles:
+    result.add(YamlCheckpointHandle(handle: h.handle, uriPrefix: h.uriPrefix))
+
+proc fromCheckpoint(handles: seq[YamlCheckpointHandle]):
+    seq[tuple[handle, uriPrefix: string]] =
+  for h in handles: result.add((handle: h.handle, uriPrefix: h.uriPrefix))
+
+proc toCheckpoint(e: Event): YamlCheckpointEvent =
+  result = YamlCheckpointEvent(kind: e.kind,
+      startLine: e.startPos.line, startColumn: e.startPos.column,
+      endLine: e.endPos.line, endColumn: e.endPos.column)
+  case e.kind
+  of yamlStartMap:
+    result.anchor = string(e.mapProperties.anchor)
+    result.tag = string(e.mapProperties.tag)
+    result.collectionStyle = e.mapStyle
+  of yamlStartSeq:
+    result.anchor = string(e.seqProperties.anchor)
+    result.tag = string(e.seqProperties.tag)
+    result.collectionStyle = e.seqStyle
+  of yamlScalar:
+    result.anchor = string(e.scalarProperties.anchor)
+    result.tag = string(e.scalarProperties.tag)
+    result.scalarStyle = e.scalarStyle
+    result.content = e.scalarContent
+  of yamlStartDoc:
+    result.explicit = e.explicitDirectivesEnd
+    result.content = e.version
+    result.handles = e.handles.toCheckpoint()
+  of yamlEndDoc:
+    result.explicit = e.explicitDocumentEnd
+  of yamlAlias:
+    result.content = string(e.aliasTarget)
+  of yamlStartStream, yamlEndStream, yamlEndMap, yamlEndSeq: discard
+
+proc toMark(line, column: int): Mark {.raises: [ValueError].} =
+  if line == 0 and column == 0:
+    # positions the parser has not set yet are zero-initialized, outside of
+    # the range of ``Positive``. Restore them as they were.
+    zeroMem(addr result, sizeof(result))
+    return
+  if line < 1 or column < 1:
+    raise newException(ValueError, "invalid position in checkpoint")
+  Mark(line: line, column: column)
+
+proc fromCheckpoint(c: YamlCheckpointEvent): Event {.raises: [ValueError].} =
+  let
+    startPos = toMark(c.startLine, c.startColumn)
+    endPos = toMark(c.endLine, c.endColumn)
+    props = (Anchor(c.anchor), Tag(c.tag))
+  result = case c.kind
+    of yamlStartStream: Event(kind: yamlStartStream)
+    of yamlEndStream: Event(kind: yamlEndStream)
+    of yamlStartMap:
+      Event(kind: yamlStartMap, mapProperties: props, mapStyle: c.collectionStyle)
+    of yamlStartSeq:
+      Event(kind: yamlStartSeq, seqProperties: props, seqStyle: c.collectionStyle)
+    of yamlScalar:
+      Event(kind: yamlScalar, scalarProperties: props,
+            scalarStyle: c.scalarStyle, scalarContent: c.content)
+    of yamlStartDoc:
+      Event(kind: yamlStartDoc, explicitDirectivesEnd: c.explicit,
+            version: c.content, handles: c.handles.fromCheckpoint())
+    of yamlEndDoc: Event(kind: yamlEndDoc, explicitDocumentEnd: c.explicit)
+    of yamlEndMap: Event(kind: yamlEndMap)
+    of yamlEndSeq: Event(kind: yamlEndSeq)
+    of yamlAlias: Event(kind: yamlAlias, aliasTarget: Anchor(c.content))
+  result.startPos = startPos
+  result.endPos = endPos
+
+proc checkpoint(ctx: Context, started: bool): YamlCheckpoint {.raises: [ValueError].} =
+  result = YamlCheckpoint(version: checkpointVersion, started: started,
+      handles: ctx.handles.toCheckpoint(), keyCachePos: ctx.keyCachePos,
+      caching: ctx.caching,
+      headerAnchor: string(ctx.headerProps.anchor),
+      headerTag: string(ctx.headerProps.tag),
+      inlineAnchor: string(ctx.inlineProps.anchor),
+      inlineTag: string(ctx.inlineProps.tag),
+      headerStartLine: ctx.headerStart.line,
+      headerStartColumn: ctx.headerStart.column,
+      inlineStartLine: ctx.inlineStart.line,
+      inlineStartColumn: ctx.inlineStart.column,
+      blockIndentation: ctx.blockIndentation)
+  if started:
+    result.lexer = ctx.lex.checkpoint()
+    result.offset = result.lexer.offset
+  for level in ctx.levels:
+    result.levels.add(YamlCheckpointLevel(state: stateId(level.state),
+                                          indentation: level.indentation))
+  for e in ctx.keyCache: result.keyCache.add(e.toCheckpoint())
+
+proc restore(ctx: Context, cp: YamlCheckpoint) {.raises: [ValueError].} =
+  ## restores everything but the lexer.
+  if cp.version != checkpointVersion:
+    raise newException(ValueError, "checkpoint has format version " &
+        $cp.version & ", this NimYAML version requires " & $checkpointVersion)
+  if cp.levels.len == 0 or cp.keyCachePos < 0 or
+      cp.keyCachePos > cp.keyCache.len or cp.peeked.len > 1:
+    raise newException(ValueError, "invalid checkpoint")
+  ctx.handles = cp.handles.fromCheckpoint()
+  ctx.levels.setLen(0)
+  for level in cp.levels:
+    ctx.levels.add(Level(state: stateById(level.state),
+                         indentation: level.indentation))
+  ctx.keyCache.setLen(0)
+  for e in cp.keyCache: ctx.keyCache.add(e.fromCheckpoint())
+  ctx.keyCachePos = cp.keyCachePos
+  ctx.caching = cp.caching
+  ctx.headerProps = (Anchor(cp.headerAnchor), Tag(cp.headerTag))
+  ctx.inlineProps = (Anchor(cp.inlineAnchor), Tag(cp.inlineTag))
+  ctx.headerStart = toMark(cp.headerStartLine, cp.headerStartColumn)
+  ctx.inlineStart = toMark(cp.inlineStartLine, cp.inlineStartColumn)
+  ctx.blockIndentation = cp.blockIndentation
+  if cp.peeked.len == 1: ctx.peek = cp.peeked[0].fromCheckpoint()
+
+proc checkpoint*(s: YamlStream): YamlCheckpoint {.raises: [ValueError].} =
+  ## Captures the state of a parser returned by `parse` or `resume`. Raises
+  ## ``ValueError`` if ``s`` is not such a parser, or if its input stream
+  ## failed. Must not be called while ``s`` is being iterated by another
+  ## caller in the middle of an event (it never is between two ``next``
+  ## calls).
+  if not (s of Context):
+    raise newException(ValueError, "checkpoint requires a YamlStream from parse or resume")
+  let ctx = Context(s)
+  result = ctx.checkpoint(true)
+  privateAccess(YamlStream)
+  if s.peeked: result.peeked.add(s.cached.toCheckpoint())
+
+proc checkpoint*(fp: YamlFeedParser): YamlCheckpoint {.raises: [ValueError].} =
+  ## Captures the state of a feed parser. Raises ``ValueError`` after an
+  ## error. Input that has been fed but not yet parsed is not part of the
+  ## checkpoint: when resuming, feed from ``offset`` on.
+  if not fp.error.isNil:
+    raise newException(ValueError, "cannot checkpoint after an error")
+  result = fp.ctx.checkpoint(fp.started)
+  for e in fp.pending: result.peeked.add(e.toCheckpoint())
+
+proc resumeContext(p: YamlParser, cp: YamlCheckpoint): Context {.raises: [ValueError].} =
+  result = new(Context)
+  result.initCommon(p)
+  result.restore(cp)
+
+proc resume*(p: YamlParser, cp: YamlCheckpoint, s: Stream): YamlStream
+    {.raises: [ValueError].} =
+  ## Resumes parsing from a checkpoint. ``s`` must deliver the original
+  ## input from byte ``cp.offset`` on, e.g. after ``s.setPosition(cp.offset)``
+  ## on a file stream. Raises ``ValueError`` if the checkpoint is invalid or
+  ## was created by a different checkpoint format version.
+  if not cp.started:
+    raise newException(ValueError, "checkpoint of an unstarted feed parser; " &
+        "use newYamlFeedParser to resume it")
+  let ctx = p.resumeContext(cp)
+  ctx.lex.restore(cp.lexer, s)
+  result = ctx
+
+proc resume*(p: YamlParser, cp: YamlCheckpoint, s: string): YamlStream
+    {.raises: [ValueError].} =
+  ## Resumes parsing from a checkpoint. ``s`` must be the original input
+  ## from byte ``cp.offset`` on, e.g. ``input[cp.offset .. ^1]``.
+  if not cp.started:
+    raise newException(ValueError, "checkpoint of an unstarted feed parser; " &
+        "use newYamlFeedParser to resume it")
+  let ctx = p.resumeContext(cp)
+  ctx.lex.restore(cp.lexer, s)
+  result = ctx
+
+proc newYamlFeedParser*(p: YamlParser, cp: YamlCheckpoint): YamlFeedParser
+    {.raises: [ValueError].} =
+  ## Resumes parsing from a checkpoint as feed parser. Feed the original
+  ## input from byte ``cp.offset`` on.
+  let ctx = p.resumeContext(cp)
+  if cp.started: ctx.lex.restoreFeed(cp.lexer)
+  else: ctx.lex.initFeed()
+  result = YamlFeedParser(ctx: ctx, starvedAt: -1, started: cp.started)
+  privateAccess(YamlStream)
+  if ctx.peeked:
+    ctx.peeked = false
+    result.pending.add(move(ctx.cached))
 
 # implementation
 

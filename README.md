@@ -136,6 +136,74 @@ the missing data, as a `YamlStreamError` whose message starts with
 "Encountered stream error" and whose cause chain leads to the original
 exception. Previously, the first read happened inside `parse` itself.
 
+## Checkpoints
+
+A parser can be checkpointed between two events and resumed later from that
+point, e.g. after a crash while processing a huge file, or in another process.
+`checkpoint` captures the state of a parser returned by `parse` (or `resume`)
+or of a `YamlFeedParser`. The result is a plain `YamlCheckpoint` object that
+you can store with NimYAML itself. To resume, supply the original input from
+byte `cp.offset` on:
+
+```nim
+import std/streams
+import yaml, yaml/[parser, stream]
+
+var events = initYamlParser().parse(newFileStream("big.yaml"))
+for i in 0 ..< 1000: discard events.next()
+writeFile("big.checkpoint", Dumper().dump(events.checkpoint()))
+
+# later, possibly in another process:
+var cp: YamlCheckpoint
+load(readFile("big.checkpoint"), cp)
+let input = newFileStream("big.yaml")
+input.setPosition(cp.offset)
+events = initYamlParser().resume(cp, input) # continues with event #1001
+```
+
+`resume(parser, cp, s: string)` takes the input from `cp.offset` on as a string
+(e.g. `input[cp.offset .. ^1]`), and `newYamlFeedParser(parser, cp)` resumes as
+a feed parser, to which you feed the input from `cp.offset` on.
+
+### Caveats
+
+ * **You must supply exactly the same input.** Resuming continues with the
+   bytes you supply from `cp.offset` on, without checking that they are the
+   bytes the checkpoint was taken on. Changed or wrongly positioned input
+   yields wrong events or errors, not a diagnostic.
+ * **`offset` lies before the parser's position.** The parser keeps the start
+   of the current line and of the most recent token, so `cp.offset` usually
+   points somewhat before the end of the input consumed so far, and some input
+   is read again on resume. Offsets are absolute byte offsets in the original
+   input, also for checkpoints of a resumed parser. If you passed a `Stream`
+   that was not at position 0, offsets are relative to where parsing started.
+ * **Parser state only.** A checkpoint covers the parser, not what consumes its
+   events. If you construct Nim values or a DOM from the events (`load`,
+   `construct`, `loadAs`, …), that partial result and its state (e.g. anchors
+   seen so far) are not part of the checkpoint; aliases after the checkpoint
+   may refer to anchors defined before it. Checkpoint at document boundaries
+   if you need to resume construction.
+ * **Size: avoid checkpoints inside flow collections.** Between block-style
+   events a checkpoint is small (about 1 KB dumped as YAML). But the parser
+   reads a flow collection (`[...]`, `{...}`) as a whole before emitting its
+   first event, and a checkpoint taken while those events are being emitted
+   contains all that are still pending, in a verbose form: 10 events into a
+   49 KB top-level flow sequence of 5000 items, the dumped checkpoint is
+   1.2 MB, about 24 times the input. For JSON-like input made of one huge
+   array or object, checkpoints are therefore of little use.
+ * **Same version only, trusted data only.** `YamlCheckpoint`'s fields are
+   internal. A checkpoint can only be resumed by a NimYAML version with the
+   same `checkpointVersion`; `resume` raises `ValueError` otherwise, and for
+   checkpoints that are obviously invalid. It does not detect tampering: do not
+   resume checkpoints from untrusted sources.
+ * **When checkpointing fails.** `checkpoint` raises `ValueError` for a
+   `YamlStream` that does not come from `parse` or `resume`, after the input
+   `Stream` failed, and for a feed parser after an error. A feed parser's
+   checkpoint does not include input that was fed but not yet parsed; feed
+   from `cp.offset` on after resuming. A checkpoint of a feed parser that has
+   not produced any event yet can only be resumed with `newYamlFeedParser`.
+   A peeked event (see `peek`) is part of the checkpoint.
+
 ## Developers
 
 Nix users can `nix develop` to get a devshell with the required Nim version. You'll need to have Flakes enabled.
@@ -145,6 +213,7 @@ nim test # runs all tests
 nim lexerTests # run lexer tests
 nim parserTests # run parser tests (git-clones yaml-dev-kit)
 nim feedTests # compare feed parser against the string parser on yaml-test-suite
+nim checkpointTests # resume from checkpoints after every event of yaml-test-suite
 nim nativeTests # runs native value tests
 nim quickstartTests # run tests for quickstart snippets from documentation
 nim clean # guess

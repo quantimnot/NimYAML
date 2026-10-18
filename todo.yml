@@ -22,6 +22,7 @@
       - report "need more input" instead of treating an empty buffer as EOF
       - explicit end-of-input signal
     - id: checkpoint-restore
+      status: done
       feature:
       - snapshot parser/lexer state (byte offset, level stack, tag handles, anchors)
       - serializable checkpoint value
