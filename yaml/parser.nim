@@ -57,6 +57,14 @@ type
     ## Some elements in this list are vague. For a detailed description of a
     ## valid YAML character stream, see the YAML specification.
 
+  YamlDocumentStart* = object
+    ## Where the source of a document begins: the start of the line holding
+    ## its first directive, its `---` marker or, for a document without
+    ## either, its first content. ``offset`` is a byte offset in the whole
+    ## input, ``line`` the line number there. Parsing can start at a
+    ## document start, see `parse <#parse,YamlParser,string,YamlDocumentStart>`_.
+    offset*, line*: int
+
   State = proc(ctx: Context, e: var Event): bool {.gcSafe, raises: [CatchableError].}
 
   Level = object
@@ -75,6 +83,25 @@ type
     headerProps, inlineProps: Properties
     headerStart, inlineStart: Mark
     blockIndentation: int
+    # start of the most recently started document
+    documentStart: YamlDocumentStart
+
+  YamlDocumentError* = object
+    ## An error that `parseRecovering` recovered from.
+    error*: ref YamlParserError
+    ## Where parsing continued after the error: the start of the next
+    ## document after the error. ``offset`` is -1 if no document followed.
+    resumedAt*: YamlDocumentStart
+
+  YamlRecoveringStream* = ref object of YamlStream
+    ## A parser that recovers from errors, see `parseRecovering`.
+    ctx: Context
+    buffer: seq[Event]
+    pos: int
+    errors: seq[YamlDocumentError]
+    # offset of the line parsing last continued at after an error
+    lastResync: int
+    streamStarted, needToken: bool
 
 const defaultProperties = (yAnchorNone, yTagQuestionMark)
 
@@ -187,6 +214,35 @@ proc parse*(p: YamlParser, s: string): YamlStream =
   ctx.init(p, s)
   return ctx
 
+proc parse*(p: YamlParser, s: string, start: YamlDocumentStart): YamlStream =
+  ## Parses input that begins at the document start ``start`` of some
+  ## original input: ``s`` must be the original input from byte
+  ## ``start.offset`` on, e.g. ``input[start.offset .. ^1]``. The stream
+  ## yields ``yamlStartStream``, then that document and all following ones,
+  ## with positions (and further document starts) referring to the original
+  ## input.
+  let ctx = new(Context)
+  ctx.initCommon(p)
+  ctx.lex.init(s, start.offset, start.line)
+  return ctx
+
+proc parse*(p: YamlParser, s: Stream, start: YamlDocumentStart): YamlStream =
+  ## Like the `string` variant; ``s`` must deliver the original input from
+  ## byte ``start.offset`` on, e.g. after ``s.setPosition(start.offset)``.
+  let ctx = new(Context)
+  ctx.initCommon(p)
+  ctx.lex.init(s, start.offset, start.line)
+  return ctx
+
+proc documentStart*(s: YamlStream): YamlDocumentStart {.raises: [ValueError].} =
+  ## The start of the document whose ``yamlStartDoc`` event was most recently
+  ## returned by ``s``, which must come from `parse`, `resume` or
+  ## `parseRecovering`.
+  if s of YamlRecoveringStream: return YamlRecoveringStream(s).ctx.documentStart
+  if not (s of Context):
+    raise newException(ValueError, "documentStart requires a YamlStream from parse")
+  Context(s).documentStart
+
 type
   YamlFeedParser* = ref object
     ## A push-style parser for input that arrives in chunks, e.g. from a
@@ -230,6 +286,20 @@ proc newYamlFeedParser*(p: YamlParser): YamlFeedParser =
   ctx.initCommon(p)
   ctx.lex.initFeed()
   result = YamlFeedParser(ctx: ctx, starvedAt: -1)
+
+proc newYamlFeedParser*(p: YamlParser, start: YamlDocumentStart): YamlFeedParser =
+  ## Creates a feed parser for input that begins at the document start
+  ## ``start`` of some original input: feed the original input from byte
+  ## ``start.offset`` on. Positions refer to the original input.
+  let ctx = new(Context)
+  ctx.initCommon(p)
+  ctx.lex.initFeed(start.offset, start.line)
+  result = YamlFeedParser(ctx: ctx, starvedAt: -1)
+
+proc documentStart*(fp: YamlFeedParser): YamlDocumentStart =
+  ## The start of the document whose ``yamlStartDoc`` event was most recently
+  ## returned by ``fp``.
+  fp.ctx.documentStart
 
 proc feed*(fp: YamlFeedParser, data: openArray[char]) {.raises: [ValueError].} =
   ## Appends ``data`` to the input. Raises ``ValueError`` if called after
@@ -362,6 +432,7 @@ type
     headerStartLine*, headerStartColumn*: int
     inlineStartLine*, inlineStartColumn*: int
     blockIndentation*: int
+    documentStartOffset*, documentStartLine*: int
     # event that has been peeked but not yet returned by ``next``
     peeked*: seq[YamlCheckpointEvent]
 
@@ -516,7 +587,8 @@ proc digest(cp: YamlCheckpoint): string =
   for x in [cp.headerAnchor, cp.headerTag, cp.inlineAnchor, cp.inlineTag]:
     s.enc(x)
   for x in [cp.headerStartLine, cp.headerStartColumn, cp.inlineStartLine,
-            cp.inlineStartColumn, cp.blockIndentation]:
+            cp.inlineStartColumn, cp.blockIndentation, cp.documentStartOffset,
+            cp.documentStartLine]:
     s.enc(x)
   s.enc(cp.peeked.len)
   for e in cp.peeked: s.enc(e)
@@ -537,7 +609,9 @@ proc checkpoint(ctx: Context, started: bool): YamlCheckpoint {.raises: [ValueErr
       headerStartColumn: ctx.headerStart.column,
       inlineStartLine: ctx.inlineStart.line,
       inlineStartColumn: ctx.inlineStart.column,
-      blockIndentation: ctx.blockIndentation)
+      blockIndentation: ctx.blockIndentation,
+      documentStartOffset: ctx.documentStart.offset,
+      documentStartLine: ctx.documentStart.line)
   if started:
     result.lexer = ctx.lex.checkpoint()
     result.offset = result.lexer.offset
@@ -590,6 +664,8 @@ proc restore(ctx: Context, cp: YamlCheckpoint) {.raises: [ValueError].} =
   ctx.headerStart = toMark(cp.headerStartLine, cp.headerStartColumn)
   ctx.inlineStart = toMark(cp.inlineStartLine, cp.inlineStartColumn)
   ctx.blockIndentation = cp.blockIndentation
+  ctx.documentStart = YamlDocumentStart(offset: cp.documentStartOffset,
+                                        line: cp.documentStartLine)
   if cp.peeked.len == 1: ctx.peek = cp.peeked[0].fromCheckpoint()
 
 proc checkpoint*(s: YamlStream): YamlCheckpoint {.raises: [ValueError].} =
@@ -744,7 +820,15 @@ proc atStreamEnd(ctx: Context, e : var Event): bool =
 proc beforeDoc(ctx: Context, e: var Event): bool =
   var version = ""
   var seenDirectives = false
+  var start = YamlDocumentStart(offset: -1)
   while true:
+    if start.offset < 0 and ctx.lex.cur notin {DocumentEnd, StreamEnd}:
+      # the first token of the document; the lexer is still on its line
+      start = YamlDocumentStart(offset: ctx.lex.lineOffset(),
+                                line: ctx.lex.currentLineNumber())
+      # set right away, so that error recovery knows the start of a
+      # document that fails before its yamlStartDoc
+      ctx.documentStart = start
     case ctx.lex.cur
     of DocumentEnd:
       if seenDirectives:
@@ -805,6 +889,10 @@ proc afterDirectivesEnd(ctx: Context, e: var Event): bool =
     ctx.pushLevel(beforeNodeProperties)
     return false
   of Indentation:
+    # without node properties on the `---` line, the root node starts at the
+    # first content character of the next line, like in beforeImplicitRoot
+    # (inlineStart would otherwise be left over from the previous document).
+    if ctx.inlineProps.isEmpty(): ctx.inlineStart = ctx.lex.curEndPos
     ctx.headerStart = ctx.inlineStart
     ctx.transition(atBlockIndentation)
     ctx.pushLevel(beforeBlockIndentation)
@@ -1560,3 +1648,118 @@ proc display*(p: YamlParser, event: Event): string =
     of ssFolded: result &= " >"
     result &= yamlTestSuiteEscape(event.scalarContent)
   of yamlAlias: result = "=ALI *" & $event.aliasTarget
+# error recovery
+
+proc toParserError(ctx: Context, ce: ref CatchableError): ref YamlParserError =
+  if ce of YamlParserError: (ref YamlParserError)(ce)
+  elif ce of YamlStreamError and ce.parent of YamlParserError:
+    # raised by a nested ``next`` while caching a flow collection
+    (ref YamlParserError)(ce.parent)
+  else:
+    (ref YamlParserError)(msg: ce.msg, parent: ce, mark: ctx.lex.curStartPos,
+                          lineContent: ctx.lex.currentLine())
+
+proc recover(rs: YamlRecoveringStream, ce: ref CatchableError)
+    {.raises: [YamlParserError].} =
+  ## records the error, drops the events of the failed document and continues
+  ## at the next document, if any.
+  let ctx = rs.ctx
+  let pe = ctx.toParserError(ce)
+  if ctx.lex.streamFailed(): raise pe # not a YAML error; cannot continue
+  rs.buffer.setLen(0)
+  rs.pos = 0
+  if not rs.streamStarted:
+    rs.buffer.add(Event(kind: yamlStartStream))
+    rs.streamStarted = true
+  var record = YamlDocumentError(error: pe,
+                                 resumedAt: YamlDocumentStart(offset: -1))
+  ctx.keyCache.setLen(0)
+  ctx.keyCachePos = 0
+  ctx.caching = false
+  ctx.headerProps = defaultProperties
+  ctx.inlineProps = defaultProperties
+  ctx.blockIndentation = 0
+  resetHandles(ctx.handles)
+  privateAccess(YamlStream)
+  ctx.failed = false
+  ctx.peeked = false
+  # continue after the start of the failed document, so that it is not
+  # parsed again
+  if ctx.lex.resync(max(rs.lastResync, ctx.documentStart.offset)):
+    record.resumedAt = YamlDocumentStart(offset: ctx.lex.lineOffset(),
+                                         line: ctx.lex.currentLineNumber())
+    rs.lastResync = record.resumedAt.offset
+    ctx.levels = @[Level(state: atStreamEnd, indentation: -2),
+                   Level(state: beforeDoc, indentation: -1)]
+    rs.needToken = true
+  else:
+    ctx.levels = @[Level(state: atStreamEnd, indentation: -2)]
+    rs.needToken = false
+  if ctx.lex.streamFailed(): raise pe
+  rs.errors.add(record)
+
+proc fill(rs: YamlRecoveringStream) {.raises: [YamlParserError].} =
+  ## produces the events of the next complete document (or the start or end
+  ## of the stream) into the buffer. May produce nothing after an error.
+  rs.buffer.setLen(0)
+  rs.pos = 0
+  let ctx = rs.ctx
+  try:
+    if rs.needToken:
+      rs.needToken = false
+      ctx.safeNext()
+    while true:
+      var e: Event
+      ctx.lex.compact()
+      while not ctx.levels[^1].state(ctx, e): discard
+      let kind = e.kind
+      rs.buffer.add(move(e))
+      case kind
+      of yamlStartStream:
+        rs.streamStarted = true
+        return
+      of yamlEndDoc, yamlEndStream: return
+      else: discard
+  except CatchableError as ce:
+    rs.recover(ce)
+
+proc parseRecovering(p: YamlParser, ctx: Context): YamlRecoveringStream =
+  result = YamlRecoveringStream(ctx: ctx, lastResync: -1)
+  result.basicInit(proc(s: YamlStream, lineContent: var string): bool
+      {.gcsafe, raises: [], closure.} =
+    lineContent = YamlRecoveringStream(s).ctx.lex.currentLine()
+    return true)
+  result.nextImpl = proc(s: YamlStream, e: var Event): bool
+      {.raises: [CatchableError], gcsafe, closure.} =
+    let rs = YamlRecoveringStream(s)
+    while rs.pos >= rs.buffer.len: rs.fill()
+    e = move(rs.buffer[rs.pos])
+    inc(rs.pos)
+    return true
+
+proc parseRecovering*(p: YamlParser, s: string): YamlRecoveringStream =
+  ## Parses ``s`` like `parse`, but recovers from errors: when a document
+  ## turns out to be invalid, the error is recorded (see `errors`), the
+  ## document is dropped and parsing continues at the next document, i.e.
+  ## at the next line starting with a `---` marker or after the next line
+  ## starting with a `...` marker.
+  ##
+  ## The stream only yields documents that have been parsed completely, so it
+  ## stays well-formed. To be able to drop a document, it buffers the events
+  ## of the document being parsed: memory use is proportional to the largest
+  ## document, not to the largest event. Only errors in the YAML input are
+  ## recovered from; an error of the input stream is raised.
+  let ctx = new(Context)
+  ctx.init(p, s)
+  result = parseRecovering(p, ctx)
+
+proc parseRecovering*(p: YamlParser, s: Stream): YamlRecoveringStream =
+  ## Like the `string` variant.
+  let ctx = new(Context)
+  try: ctx.init(p, s)
+  except IOError, OSError: discard # reported by the first ``next``
+  result = parseRecovering(p, ctx)
+
+proc errors*(s: YamlRecoveringStream): lent seq[YamlDocumentError] =
+  ## The errors recovered from so far, in input order.
+  s.errors

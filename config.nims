@@ -40,6 +40,11 @@ task checkpointTests, "Run checkpoint and resume tests":
   --verbosity:0
   setCommand "c", "test/tcheckpoint"
 
+task documentTests, "Run document start and error recovery tests":
+  --r
+  --verbosity:0
+  setCommand "c", "test/tdocuments"
+
 task jsonTests, "Run JSON tests":
   --r
   --verbosity:0

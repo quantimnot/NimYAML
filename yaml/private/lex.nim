@@ -902,22 +902,75 @@ proc next*(lex: var Lexer) {.raises: [LexerError].}=
   debug("lexer -> [" & $lex.curStartPos.line & "," & $lex.curStartPos.column &
       "-" & $lex.curEndPos.line & "," & $lex.curEndPos.column & "] " & $lex.cur)
 
-proc init*(lex: var Lexer, source: Stream) {.raises: [IOError, OSError].} =
-  lex.source = Source(buf: SourceBuffer(stream: source), lineNumber: 1,
-                      compactAt: compactThreshold)
+proc init*(lex: var Lexer, source: Stream, offset = 0, line = 1)
+    {.raises: [IOError, OSError].} =
+  ## ``offset`` and ``line`` give the position of the start of ``source`` in
+  ## the whole input; ``source`` must start at the beginning of a line.
+  lex.source = Source(buf: SourceBuffer(stream: source, base: offset),
+                      lineNumber: line, compactAt: compactThreshold)
   lex.basicInit()
 
-proc init*(lex: var Lexer, source: string) {.raises: [].} =
-  lex.source = Source(buf: SourceBuffer(data: source, final: true),
-                      lineNumber: 1, compactAt: int.high) # in memory anyway
+proc init*(lex: var Lexer, source: string, offset = 0, line = 1) {.raises: [].} =
+  lex.source = Source(buf: SourceBuffer(data: source, final: true, base: offset),
+                      lineNumber: line, compactAt: int.high) # in memory anyway
   lex.basicInit()
 
-proc initFeed*(lex: var Lexer) {.raises: [].} =
+proc initFeed*(lex: var Lexer, offset = 0, line = 1) {.raises: [].} =
   ## Initializes the lexer for input that is supplied via ``feed``.
   ## ``start`` must be called before the first token is read; since it
   ## reads the first character, it is subject to starvation like ``next``.
-  lex.source = Source(buf: SourceBuffer(), lineNumber: 1,
+  lex.source = Source(buf: SourceBuffer(base: offset), lineNumber: line,
                       compactAt: compactThreshold)
+
+proc lineOffset*(lex: Lexer): int {.raises: [].} =
+  ## Offset of the start of the current line in the whole input.
+  lex.source.buf.base + lex.source.lineStart
+
+proc currentLineNumber*(lex: Lexer): int {.raises: [].} =
+  lex.source.lineNumber
+
+proc streamFailed*(lex: Lexer): bool {.raises: [].} =
+  ## ``true`` if the input stream has raised an error.
+  not lex.source.buf.error.isNil
+
+proc resync*(lex: var Lexer, after: int): bool {.raises: [].} =
+  ## Error recovery: positions the lexer at the start of the next document
+  ## that begins after offset ``after``, scanning forward from the start of
+  ## the current line. A document begins at a line starting with a `---`
+  ## marker, or after a line starting with a `...` marker. Returns ``false``
+  ## if there is no such document; the lexer is then in an unspecified state.
+  ## Not for feed input.
+  let b = lex.source.buf
+  if not b.error.isNil: return false
+  var i = lex.source.lineStart
+  var line = lex.source.lineNumber
+  while true:
+    let c = b[i]
+    if c == EndOfFile and i >= b.data.len: return false
+    if c in {'-', '.'} and b[i + 1] == c and b[i + 2] == c and
+        b[i + 3] in {' ', '\t', '\l', '\c', EndOfFile} and
+        b.base + i > after and c == '-':
+      break
+    # go to the next line
+    var j = i
+    while b[j] notin {'\l', '\c'}:
+      if b[j] == EndOfFile and j >= b.data.len: return false
+      inc(j)
+    let isDocEnd = c == '.' and b[i + 1] == '.' and b[i + 2] == '.' and
+        b[i + 3] in {' ', '\t', '\l', '\c'}
+    if b[j] == '\c' and b[j + 1] == '\l': inc(j)
+    i = j + 1
+    inc(line)
+    if isDocEnd and b.base + i > after: break
+  if not b.error.isNil: return false
+  lex.source.bufpos = i
+  lex.source.lineStart = i
+  lex.source.lineNumber = line
+  lex.tokenStart = 0
+  lex.indentation = 0
+  lex.seenMultiline = false
+  lex.basicInit()
+  return true
 
 proc start*(lex: var Lexer) {.raises: [].} =
   lex.basicInit()

@@ -13,6 +13,11 @@ Features:
    parser between two events as plain, serializable data; `resume` and
    `newYamlFeedParser(parser, checkpoint)` continue parsing from it, given
    the input from `checkpoint.offset` on. See the README for caveats.
+ * added `documentStart` and `parse(parser, input, start)` (also for streams
+   and `newYamlFeedParser`): record where each document of a stream begins
+   and parse from any document on, without the documents before it.
+ * added `parseRecovering`: after an invalid document, records the error and
+   continues with the next document (see the README for caveats).
  * the lexer no longer depends on `std/lexbase`; consumed input is dropped
    between events, so memory use for `Stream` input stays bounded.
  * new module `yaml/fragment` resolves RFC 9512 fragment identifiers
@@ -29,6 +34,8 @@ Changes:
 
 Bugfixes:
 
+ * the start position of the root collection of a document that begins with
+   `---` on a line of its own referred to the previous document
  * loading YAML with a redefined anchor into a `YamlNode` no longer crashes;
    aliases refer to the latest definition
  * `==` on `YamlNode` now returns `true` when comparing a cyclic node with

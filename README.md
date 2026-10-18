@@ -232,6 +232,74 @@ a feed parser, to which you feed the input from `cp.offset` on.
    the `YamlParser` you call it on (e.g. `issueWarnings`), not those of the
    parser the checkpoint was taken from.
 
+## Document Starts
+
+In a stream of several documents (logs, Kubernetes manifests, …), each
+document can be parsed on its own, without the documents before it. After a
+`yamlStartDoc` event, `documentStart` tells where the source of that document
+begins: the byte `offset` and `line` of the line holding its first directive,
+its `---` marker or, for a document without either, its first content. Record
+these to index a stream, and later parse from any of them:
+
+```nim
+import yaml/[parser, stream, data]
+
+var starts: seq[YamlDocumentStart]
+let events = initYamlParser().parse(input)
+for e in events:
+  if e.kind == yamlStartDoc: starts.add(events.documentStart())
+
+# later: parse the third document and all after it
+let start = starts[2]
+for e in initYamlParser().parse(input[start.offset .. ^1], start):
+  echo e
+```
+
+The new stream starts with `yamlStartStream`; its events, positions and
+further document starts are the same as those of the original stream. There is
+also a `Stream` variant (seek to `start.offset` first) and
+`newYamlFeedParser(parser, start)`. `%YAML` and `%TAG` directives belong to the
+document they precede, so they are part of what you parse from its start.
+This is much cheaper than a checkpoint, but only possible at document starts.
+As with checkpoints, the input you supply must be the original input from
+`start.offset` on; this is not checked.
+
+## Error Recovery
+
+`parseRecovering` parses like `parse`, but when a document turns out to be
+invalid, it records the error, drops the document and continues with the next
+one:
+
+```nim
+let events = initYamlParser().parseRecovering(input)
+for e in events:
+  echo e # only events of valid documents
+for err in events.errors:
+  echo "line ", err.error.mark.line, ": ", err.error.msg,
+    " (continued at line ", err.resumedAt.line, ")"
+```
+
+### Caveats
+
+ * **Where parsing continues.** After an error, parsing continues at the next
+   line that starts with a `---` marker, or after the next line that starts
+   with a `...` marker (a marker is followed by whitespace or the end of the
+   line). Everything in between is skipped, including any content that would
+   have been valid. Parsing never continues within the document that failed,
+   and an invalid document without a later marker ends the stream.
+ * **Whole documents are buffered.** To be able to drop an invalid document
+   without having emitted part of it, the stream holds back the events of
+   each document until it is complete. Memory use is therefore proportional
+   to the largest document, unlike `parse`, where it is proportional to the
+   largest event. Use `parse` for huge single documents.
+ * **Only YAML errors are recovered from.** A failure of the input `Stream`
+   is raised as with `parse`.
+ * **Not combinable with everything.** There is no feed parser variant, and
+   `checkpoint` does not accept a recovering stream. `documentStart` works.
+   The stream is a regular `YamlStream`: the high-level `load` procs do not
+   recover from errors, but you can process the recovering stream's events
+   like those of `parse`.
+
 ## Developers
 
 Nix users can `nix develop` to get a devshell with the required Nim version. You'll need to have Flakes enabled.
@@ -242,6 +310,7 @@ nim lexerTests # run lexer tests
 nim parserTests # run parser tests (git-clones yaml-dev-kit)
 nim feedTests # compare feed parser against the string parser on yaml-test-suite
 nim checkpointTests # resume from checkpoints after every event of yaml-test-suite
+nim documentTests # parse from document starts; error recovery
 nim nativeTests # runs native value tests
 nim quickstartTests # run tests for quickstart snippets from documentation
 nim clean # guess

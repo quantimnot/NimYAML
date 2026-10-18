@@ -28,10 +28,12 @@
       - serializable checkpoint value
       - seek source and resume event emission from a checkpoint
     - id: document-boundary-resume
+      status: done
       feature:
       - record byte offset / line at each document boundary
       - start parse() at a given offset with %YAML / %TAG directives restored
     - id: error-recovery
+      status: done
       feature:
       - after a parser error, skip to the next document marker
       - continue parsing the remaining documents and collect errors
