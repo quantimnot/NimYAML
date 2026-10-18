@@ -32,3 +32,8 @@ vendor
 .vscode
 *.swp
 /.aider.*
+test/tlint
+test/tlsp
+test/tyamllint
+tools/yamllint
+tools/yamllsp

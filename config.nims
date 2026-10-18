@@ -50,6 +50,24 @@ task lintTests, "Run diagnostics and lint tests":
   --verbosity:0
   setCommand "c", "test/tlint"
 
+task yamllintTests, "Run yamllint CLI tests":
+  --r
+  --verbosity:0
+  setCommand "c", "test/tyamllint"
+
+task yamllint, "Compile the yamllint tool":
+  --d:release
+  setCommand "c", "tools/yamllint"
+
+task lspTests, "Run language server tests":
+  --r
+  --verbosity:0
+  setCommand "c", "test/tlsp"
+
+task yamllsp, "Compile the yamllsp language server":
+  --d:release
+  setCommand "c", "tools/yamllsp"
+
 task jsonTests, "Run JSON tests":
   --r
   --verbosity:0
