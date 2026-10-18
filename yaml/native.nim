@@ -1108,7 +1108,6 @@ proc addFieldCases(
   if tParent != nil:
     addFieldCases(tParent, context, name, o, matched, failOnUnknown, m, tName, caseStmt, fieldIndex)
 
-  debugEcho treerepr tDesc.getTypeInst
   # we need the type impl declaration to check for the yamlKey pragma
   let
     tInst = tDesc.getTypeInst
