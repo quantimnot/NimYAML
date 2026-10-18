@@ -10,6 +10,10 @@ Features:
    (long scalars, flow collections) costs time quadratic in the event size.
  * the lexer no longer depends on `std/lexbase`; consumed input is dropped
    between events, so memory use for `Stream` input stays bounded.
+ * new module `yaml/fragment` resolves RFC 9512 fragment identifiers
+   (`#`, `#/json/pointer`, `#*anchor`) against YAML input
+ * added `dumpMultiDoc`, which dumps several values as documents of a single
+   YAML stream (counterpart of `loadMultiDoc`)
 
 Changes:
 
@@ -17,6 +21,13 @@ Changes:
    the `Stream` are reported by the first `next` that needs the data, as
    "Encountered stream error" with the original exception in the cause
    chain, also when the read fails in the middle of a token.
+
+Bugfixes:
+
+ * loading YAML with a redefined anchor into a `YamlNode` no longer crashes;
+   aliases refer to the latest definition
+ * `==` on `YamlNode` now returns `true` when comparing a cyclic node with
+   itself
 
 ## 2.2.1
 

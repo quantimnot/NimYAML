@@ -143,6 +143,50 @@ proc dump*[K](
   except YamlStreamError as e:
     internalError("Unexpected exception: " & $e.name)
 
+proc representMultiDoc[K](
+  dumper: Dumper,
+  values: openArray[K],
+): YamlStream {.gcsafe, raises: [YamlSerializationError].} =
+  let bys = newBufferYamlStream()
+  bys.put(startStreamEvent())
+  for value in values:
+    let events = BufferYamlStream(represent(value, dumper.serialization))
+    for e in events.mitems():
+      if e.kind notin {yamlStartStream, yamlEndStream}: bys.put(e)
+  bys.put(endStreamEvent())
+  result = bys
+
+proc dumpMultiDoc*[K](
+  dumper: Dumper,
+  values: openArray[K],
+  target: Stream,
+) {.gcsafe, raises: [
+  YamlPresenterJsonError, YamlPresenterOutputError,
+  YamlSerializationError
+].} =
+  ## Dump each of the given Nim values as a separate document of a single
+  ## YAML stream into the given stream. Anchors are local to each document.
+  ## Counterpart of ``loadMultiDoc``.
+  var events = representMultiDoc(dumper, values)
+  try: present(events, target, dumper.presentation)
+  except YamlStreamError as e:
+    internalError("Unexpected exception: " & $e.name)
+
+proc dumpMultiDoc*[K](
+  dumper: Dumper,
+  values: openArray[K],
+): string {.gcsafe, hint[XCannotRaiseY]: off, raises: [
+  YamlPresenterJsonError, YamlPresenterOutputError,
+  YamlSerializationError
+].} =
+  ## Dump each of the given Nim values as a separate document of a single
+  ## YAML stream into a string. Anchors are local to each document.
+  ## Counterpart of ``loadMultiDoc``.
+  var events = representMultiDoc(dumper, values)
+  try: result = present(events, dumper.presentation)
+  except YamlStreamError as e:
+    internalError("Unexpected exception: " & $e.name)
+
 proc transform*(
   dumper : Dumper,
   input  : Stream | string,

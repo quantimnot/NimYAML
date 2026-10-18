@@ -10,6 +10,15 @@ when defined(nimPreviewSlimSystem):
   import std/assertions
 
 suite "DOM":
+  test "Composing redefined anchor":
+    let result = loadAs[YamlNode]("a: &x 1\nb: &x 2\nc: *x\n")
+    assert result["a"].content == "1"
+    assert result["c"].content == "2"
+    assert cast[pointer](result["b"]) == cast[pointer](result["c"])
+  test "Cyclic node equals itself":
+    let result = loadAs[YamlNode]("&a [b, *a]")
+    assert result == result
+    assert result[1] == result
   test "Composing simple Scalar":
     let
       input  = newStringStream("scalar")

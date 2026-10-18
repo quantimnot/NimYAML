@@ -74,6 +74,7 @@ proc eqImpl(x, y: YamlNode, alreadyVisited: var HashSet[pointer]): bool =
         return false
       elif a != b: return false
 
+  if cast[pointer](x) == cast[pointer](y): return true
   if x.kind != y.kind or x.tag != y.tag: return false
   alreadyVisited.incl(cast[pointer](x))
   alreadyVisited.incl(cast[pointer](y))
@@ -163,7 +164,7 @@ proc constructChild*(
 ) {.raises: [YamlStreamError, YamlConstructionError].} =
   template addAnchor(c: var ConstructionContext, target: Anchor) =
     if target != yAnchorNone:
-      yAssert(not ctx.refs.hasKey(target))
+      # anchors may be redefined; aliases refer to the latest definition
       c.refs[target] = (tag: yamlTag(YamlNode), p: cast[pointer](result))
 
   var start: Event
