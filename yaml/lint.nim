@@ -134,11 +134,60 @@ method onEnd(r: FinalNewlineRule, ctx: var LintContext) =
     ctx.report(r, mark(line, last.len + 1), mark(line, last.len + 2),
         "no line break at end of file")
 
+type
+  Frame = object
+    isMap, atKey, isKey: bool
+    start: Mark
+    keys: HashSet[string] # tag & '\0' & content of the scalar keys
+
+  KeyTracker = object
+    ## Tracks whether nodes are mapping keys.
+    frames: seq[Frame]
+    ended: Frame # frame of the collection ended by the last event
+
+proc nextIsKey(t: var KeyTracker): bool =
+  if t.frames.len > 0 and t.frames[^1].isMap:
+    result = t.frames[^1].atKey
+    t.frames[^1].atKey = not result
+
+proc track(t: var KeyTracker, e: Event): bool =
+  ## Updates ``t`` with ``e``. Returns whether ``e`` starts a mapping key.
+  case e.kind
+  of yamlStartDoc: t.frames.setLen(0)
+  of yamlScalar, yamlAlias: result = t.nextIsKey()
+  of yamlStartMap, yamlStartSeq:
+    result = t.nextIsKey()
+    t.frames.add(Frame(isMap: e.kind == yamlStartMap, atKey: true,
+        isKey: result, start: e.startPos))
+  of yamlEndMap, yamlEndSeq: t.ended = t.frames.pop()
+  else: discard
+
+type
+  DuplicateKeyRule = ref object of LintRule
+    tracker: KeyTracker
+  ComplexKeyRule = ref object of LintRule
+    tracker: KeyTracker
+
+method onEvent(r: DuplicateKeyRule, ctx: var LintContext, e: Event) =
+  if r.tracker.track(e) and e.kind == yamlScalar:
+    let key = $e.scalarProperties.tag & '\0' & e.scalarContent
+    if r.tracker.frames[^1].keys.containsOrIncl(key):
+      ctx.report(r, e.startPos, e.endPos,
+          "duplicate mapping key " & e.scalarContent.escape)
+
+method onEvent(r: ComplexKeyRule, ctx: var LintContext, e: Event) =
+  discard r.tracker.track(e)
+  if e.kind in {yamlEndMap, yamlEndSeq} and r.tracker.ended.isKey:
+    ctx.report(r, r.tracker.ended.start, e.endPos, "mapping key is a " &
+        (if e.kind == yamlEndMap: "mapping" else: "sequence"))
+
 # registry
 
 proc builtinRules*(): seq[LintRule] =
   ## Fresh instances of all built-in rules, with their default levels.
   @[LintRule(SyntaxRule(id: "syntax", level: levelError)),
+    DuplicateKeyRule(id: "duplicate-key", level: levelError),
+    ComplexKeyRule(id: "complex-key", level: levelWarning),
     TrailingSpacesRule(id: "trailing-spaces", level: levelWarning),
     LineLengthRule(id: "line-length", level: levelWarning),
     TabsRule(id: "tabs", level: levelError),

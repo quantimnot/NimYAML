@@ -140,3 +140,34 @@ suite "Lint: text rules":
         @["final-newline 2:5-2:6 warning"]
     check spans("a: 1\n", only("final-newline")).len == 0
     check spans("", only("final-newline")).len == 0
+
+suite "Lint: mapping keys":
+  test "duplicate-key, block and flow":
+    check spans("a: 1\na: 2\n", only("duplicate-key")) ==
+        @["duplicate-key 2:1-2:2 error"]
+    check spans("{a: 1, a: 2}\n", only("duplicate-key")) ==
+        @["duplicate-key 1:8-1:9 error"]
+    check lint("a: 1\na: 2\n", only("duplicate-key"))[0].message ==
+        "duplicate mapping key \"a\""
+
+  test "duplicate-key: only within one mapping and document":
+    check spans("x: {a: 1}\ny: {a: 1}\n", only("duplicate-key")).len == 0
+    check spans("a: 1\nb: 1\n", only("duplicate-key")).len == 0
+    check spans("a: 1\n---\na: 2\n", only("duplicate-key")).len == 0
+    check spans("- a\n- a\n", only("duplicate-key")).len == 0
+
+  test "duplicate-key: same content and tag":
+    check spans("a: 1\n\"a\": 2\n", only("duplicate-key")).len == 0
+
+  test "duplicate-key after a complex key":
+    check spans("? [a]\n: 1\na: 2\na: 3\n", only("duplicate-key")) ==
+        @["duplicate-key 4:1-4:2 error"]
+
+  test "complex-key":
+    check spans("? [1, 2]\n: v\n", only("complex-key")) ==
+        @["complex-key 1:3-1:9 warning"]
+    check lint("? [1, 2]\n: v\n", only("complex-key"))[0].message ==
+        "mapping key is a sequence"
+    check lint("? {a: 1}\n: v\n", only("complex-key"))[0].message ==
+        "mapping key is a mapping"
+    check spans("a: [1, 2]\n", only("complex-key")).len == 0
