@@ -38,6 +38,19 @@ Features:
    Unicode General Category support, so there is still no dependency on PCRE.
  * added `dumpMultiDoc`, which dumps several values as documents of a single
    YAML stream (counterpart of `loadMultiDoc`)
+ * new module `yaml/jsonschema` validates `YamlNode` graphs against JSON
+   Schema drafts 2020-12, 2019-09, 07, 06 and 04: `compile`, `isValid`,
+   `validate` with the flag, basic, detailed and verbose output formats,
+   annotations, `SchemaRegistry` with an optional `SchemaLoader`, and
+   `checkSchema`. Numbers are compared exactly; formats (including
+   `idn-hostname` with IDNA2008/UTS 46) are checked with `formatAssertion`.
+   The JSON Schema Test Suite (added as a submodule) passes completely,
+   including its optional, output and annotation tests. Patterns are matched
+   by a new built-in ECMA-262 regular expression engine.
+ * new module `yaml/hyperschema` discovers and resolves the links of JSON
+   Hyper-Schema (`links`, `resolveTarget`, `toYaml`)
+ * new module `yaml/uritemplate` expands RFC 6570 URI Templates at all
+   levels; the uritemplate-test suite (added as a submodule) passes
 
 Changes:
 
@@ -48,6 +61,9 @@ Changes:
 
 Bugfixes:
 
+ * a JSON-style surrogate pair escape like `"\uD83D\uDCA9"` in a
+   double-quoted scalar now yields the one character it encodes instead of
+   two invalid surrogate code points
  * the start position of the root collection of a document that begins with
    `---` on a line of its own referred to the previous document
  * a failing internal assertion crashed with SIGSEGV (when not raised inside

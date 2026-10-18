@@ -5,3 +5,9 @@
 [submodule "test/jsonpath-compliance-test-suite"]
 	path = test/jsonpath-compliance-test-suite
 	url = https://github.com/jsonpath-standard/jsonpath-compliance-test-suite.git
+[submodule "test/JSON-Schema-Test-Suite"]
+	path = test/JSON-Schema-Test-Suite
+	url = https://github.com/json-schema-org/JSON-Schema-Test-Suite.git
+[submodule "test/uritemplate-test"]
+	path = test/uritemplate-test
+	url = https://github.com/uri-templates/uritemplate-test.git

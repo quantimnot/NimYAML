@@ -117,6 +117,20 @@
 ## RFC 9535 JSONPath queries like ``$.store.book[?@.price < 10].title``,
 ## including filters and the standard function extensions.
 ##
+## JSON Schema API
+## ---------------
+##
+## .. code-block::
+##
+##   # needs explicit import to use:
+##   import yaml/[jsonschema, hyperschema, uritemplate]
+##
+## The `module yaml/jsonschema`_ validates ``YamlNode`` graphs against JSON
+## Schema (drafts 2020-12, 2019-09, 07, 06 and 04) and produces the output
+## formats of the specification. The `module yaml/hyperschema`_ resolves the
+## links a JSON Hyper-Schema describes for an instance, using the
+## `module yaml/uritemplate`_, which expands RFC 6570 URI Templates.
+##
 ##
 ## Low Level Event Handling
 ## ========================

@@ -54,8 +54,20 @@
 - id: json-ld
 
 - id: json-schema
+  status: done
+  info:
+  - https://json-schema.org/specification
+  - https://github.com/json-schema-org/JSON-Schema-Test-Suite
 
 - id: json-hyper-schema
+  status: done
+  info:
+  - https://json-schema.org/draft/2019-09/json-schema-hypermedia
+
+- id: rfc6570-uri-template
+  status: done
+  info:
+  - https://www.rfc-editor.org/rfc/rfc6570
 
 - id: rfc8785-json-canonicalization-scheme
   info:

@@ -88,6 +88,26 @@ task jsonpathTests, "Run JSONPath and I-Regexp tests":
   --verbosity:0
   setCommand "c", "test/tjsonpath"
 
+task jsonSchemaTests, "Run the JSON Schema Test Suite and JSON Schema tests":
+  --r
+  --verbosity:0
+  setCommand "c", "test/tjsonschema"
+
+task schemaInternalsTests, "Run regex, URI, decimal, IDNA and format tests":
+  --r
+  --verbosity:0
+  setCommand "c", "test/tschemainternals"
+
+task hyperSchemaTests, "Run JSON Hyper-Schema tests":
+  --r
+  --verbosity:0
+  setCommand "c", "test/thyperschema"
+
+task uriTemplateTests, "Run URI Template tests":
+  --r
+  --verbosity:0
+  setCommand "c", "test/turitemplate"
+
 task nativeTests, "Run native value tests":
   --r
   --verbosity:0
@@ -121,7 +141,7 @@ task bench, "Benchmarking":
   setCommand "c", "bench/bench"
 
 task clean, "Remove all generated files":
-  exec "rm -rf libyaml.* test/tests test/tjsonpath test/parsing test/lexing bench/json docout"
+  exec "rm -rf libyaml.* test/tests test/tjsonpath test/tjsonschema test/thyperschema test/tschemainternals test/turitemplate test/parsing test/lexing bench/json docout"
   setCommand "nop"
 
 task testSuiteEvents, "Compile the testSuiteEvents tool":
