@@ -171,3 +171,54 @@ suite "Lint: mapping keys":
     check lint("? {a: 1}\n: v\n", only("complex-key"))[0].message ==
         "mapping key is a mapping"
     check spans("a: [1, 2]\n", only("complex-key")).len == 0
+
+suite "Lint: anchors and aliases":
+  test "defined and used anchor":
+    check spans("x: &a 1\ny: *a\n", only("undefined-alias")).len == 0
+    check spans("x: &a 1\ny: *a\n", only("unused-anchor")).len == 0
+
+  test "undefined-alias":
+    check spans("y: *b\n", only("undefined-alias")) ==
+        @["undefined-alias 1:4-1:6 error"]
+    check lint("y: *b\n", only("undefined-alias"))[0].message ==
+        "undefined alias *b"
+
+  test "undefined-alias: anchor defined later or in another document":
+    check spans("y: *a\nx: &a 1\n", only("undefined-alias")) ==
+        @["undefined-alias 1:4-1:6 error"]
+    check spans("x: &a 1\n---\ny: *a\n", only("undefined-alias")) ==
+        @["undefined-alias 3:4-3:6 error"]
+
+  test "unused-anchor":
+    check spans("x: &a 1\n", only("unused-anchor")) ==
+        @["unused-anchor 1:4-1:5 warning"]
+    check lint("x: &a 1\n", only("unused-anchor"))[0].message ==
+        "unused anchor &a"
+    check spans("&m\n- a\n", only("unused-anchor")) ==
+        @["unused-anchor 1:1-1:2 warning"]
+
+  test "unused-anchor: redefined before use":
+    check spans("x: &a 1\ny: &a 2\nz: *a\n", only("unused-anchor")) ==
+        @["unused-anchor 1:4-1:5 warning"]
+
+suite "Lint: truthy":
+  test "plain YAML 1.1 booleans":
+    check spans("k: yes\n", only("truthy")) == @["truthy 1:4-1:7 warning"]
+    check spans("yes: 1\n", only("truthy")) == @["truthy 1:1-1:4 warning"]
+    check lint("k: off\n", only("truthy"))[0].message ==
+        "\"off\" is a boolean in YAML 1.1; quote it or use true/false"
+
+  test "quoted, tagged and YAML 1.2 booleans are fine":
+    check spans("k: \"yes\"\n", only("truthy")).len == 0
+    check spans("k: !!str yes\n", only("truthy")).len == 0
+    check spans("k: true\n", only("truthy")).len == 0
+
+suite "Lint: all rules":
+  test "defaults, sorted by position":
+    check spans("a: yes \n") ==
+        @["truthy 1:4-1:7 warning", "trailing-spaces 1:7-1:8 warning"]
+
+  test "built-in rule ids":
+    check builtinRuleIds() == @["syntax", "duplicate-key", "complex-key",
+        "undefined-alias", "unused-anchor", "truthy", "trailing-spaces",
+        "line-length", "tabs", "final-newline"]

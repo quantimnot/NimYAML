@@ -181,6 +181,61 @@ method onEvent(r: ComplexKeyRule, ctx: var LintContext, e: Event) =
     ctx.report(r, r.tracker.ended.start, e.endPos, "mapping key is a " &
         (if e.kind == yamlEndMap: "mapping" else: "sequence"))
 
+type
+  UndefinedAliasRule = ref object of LintRule
+    defined: HashSet[Anchor]
+  UnusedAnchorRule = ref object of LintRule
+    anchors: OrderedTable[Anchor, tuple[pos: Mark, used: bool]]
+  TruthyRule = ref object of LintRule
+
+proc anchorOf(e: Event): Anchor =
+  case e.kind
+  of yamlScalar: e.scalarProperties.anchor
+  of yamlStartMap: e.mapProperties.anchor
+  of yamlStartSeq: e.seqProperties.anchor
+  else: yAnchorNone
+
+method onEvent(r: UndefinedAliasRule, ctx: var LintContext, e: Event) =
+  case e.kind
+  of yamlStartDoc: r.defined.clear()
+  of yamlAlias:
+    if e.aliasTarget notin r.defined:
+      ctx.report(r, e.startPos, e.endPos,
+          "undefined alias *" & $e.aliasTarget)
+  else:
+    let anchor = e.anchorOf
+    if anchor != yAnchorNone: r.defined.incl(anchor)
+
+proc reportUnused(r: UnusedAnchorRule, ctx: var LintContext, anchor: Anchor,
+    pos: Mark) =
+  ctx.report(r, pos, mark(pos.line, pos.column + 1),
+      "unused anchor &" & $anchor)
+
+method onEvent(r: UnusedAnchorRule, ctx: var LintContext, e: Event) =
+  case e.kind
+  of yamlStartDoc: r.anchors.clear()
+  of yamlEndDoc:
+    for anchor, info in r.anchors:
+      if not info.used: r.reportUnused(ctx, anchor, info.pos)
+  of yamlAlias:
+    if e.aliasTarget in r.anchors: r.anchors[e.aliasTarget].used = true
+  else:
+    let anchor = e.anchorOf
+    if anchor != yAnchorNone:
+      if anchor in r.anchors and not r.anchors[anchor].used:
+        r.reportUnused(ctx, anchor, r.anchors[anchor].pos)
+      r.anchors[anchor] = (pos: e.startPos, used: false)
+
+const yaml11Booleans = ["y", "Y", "yes", "Yes", "YES", "n", "N", "no", "No",
+    "NO", "on", "On", "ON", "off", "Off", "OFF"]
+
+method onEvent(r: TruthyRule, ctx: var LintContext, e: Event) =
+  if e.kind == yamlScalar and e.scalarStyle == ssPlain and
+      e.scalarProperties.tag == yTagQuestionMark and
+      e.scalarContent in yaml11Booleans:
+    ctx.report(r, e.startPos, e.endPos, "\"" & e.scalarContent &
+        "\" is a boolean in YAML 1.1; quote it or use true/false")
+
 # registry
 
 proc builtinRules*(): seq[LintRule] =
@@ -188,6 +243,9 @@ proc builtinRules*(): seq[LintRule] =
   @[LintRule(SyntaxRule(id: "syntax", level: levelError)),
     DuplicateKeyRule(id: "duplicate-key", level: levelError),
     ComplexKeyRule(id: "complex-key", level: levelWarning),
+    UndefinedAliasRule(id: "undefined-alias", level: levelError),
+    UnusedAnchorRule(id: "unused-anchor", level: levelWarning),
+    TruthyRule(id: "truthy", level: levelWarning),
     TrailingSpacesRule(id: "trailing-spaces", level: levelWarning),
     LineLengthRule(id: "line-length", level: levelWarning),
     TabsRule(id: "tabs", level: levelError),
