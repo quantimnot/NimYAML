@@ -50,8 +50,6 @@ type
     ## - A custom tag shorthand is used that has not previously been
     ##   declared with a ``%TAG`` directive.
     ## - Multiple tags or anchors are defined for the same node.
-    ## - An alias is used which does not map to any anchor that has
-    ##   previously been declared in the same document.
     ## - An alias has a tag or anchor associated with it.
     ##
     ## Some elements in this list are vague. For a detailed description of a

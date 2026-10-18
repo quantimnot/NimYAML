@@ -298,6 +298,41 @@ for err in events.errors:
    recover from errors, but you can process the recovering stream's events
    like those of `parse`.
 
+## Linting
+
+`yaml/lint` lints YAML sources: `lint(source, config)` returns diagnostics
+(rule id, severity, range, message) sorted by position. It parses once with
+`parseRecovering` and runs these rules:
+
+| rule | default | reports |
+|---|---|---|
+| `syntax` | error | invalid documents |
+| `duplicate-key` | error | a scalar key repeated in one mapping |
+| `complex-key` | warning | a sequence or mapping used as a key |
+| `undefined-alias` | error | an alias without an earlier anchor in its document |
+| `unused-anchor` | warning | an anchor no alias refers to |
+| `truthy` | warning | plain `yes`/`no`/`on`/`off`/`y`/`n` (booleans in YAML 1.1) |
+| `trailing-spaces` | warning | whitespace at the end of a line |
+| `line-length` | warning | lines longer than `max` (120) characters |
+| `tabs` | error | tabs in indentation |
+| `final-newline` | warning | no line break at the end of the file |
+
+Rules are configured in `.nimyaml-lint.yaml`, found by walking up from the
+linted file's directory:
+
+```yaml
+rules:
+  line-length: {level: warning, max: 100}
+  truthy: {level: off}
+```
+
+Two tools use it: `tools/yamllint.nim` (`yamllint [--config:FILE] FILE...`,
+exit code 1 if there are errors, 2 for usage, I/O or config errors) and
+`tools/yamllsp.nim`, a language server (JSON-RPC over stdio, full document
+sync) that publishes the diagnostics of open documents. Build them with
+`nim yamllint config.nims` and `nim yamllsp config.nims`, or
+`nim c -d:release tools/yamllint`.
+
 ## Developers
 
 Nix users can `nix develop` to get a devshell with the required Nim version. You'll need to have Flakes enabled.

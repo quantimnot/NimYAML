@@ -18,6 +18,10 @@ Features:
    and parse from any document on, without the documents before it.
  * added `parseRecovering`: after an invalid document, records the error and
    continues with the next document (see the README for caveats).
+ * added `yaml/diagnostics` and `yaml/lint`: a lint engine with syntax,
+   mapping key, anchor and text rules, configured by `.nimyaml-lint.yaml`,
+   plus the `tools/yamllint` command line tool and the `tools/yamllsp`
+   language server.
  * the lexer no longer depends on `std/lexbase`; consumed input is dropped
    between events, so memory use for `Stream` input stays bounded.
  * new module `yaml/fragment` resolves RFC 9512 fragment identifiers
