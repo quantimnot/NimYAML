@@ -3,9 +3,12 @@
 - id: schema
   with:
     - id: tag
+      status: done
       feature:
       - read schema tag
       - write (configurable/optional) schema tag
+      info:
+      - "%SCHEMA and %GLOBAL directives, see README"
     - id: database
       feature:
       - abstract schema database interface

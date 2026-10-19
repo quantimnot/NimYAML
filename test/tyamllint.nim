@@ -64,4 +64,22 @@ suite "yamllint":
     defer: removeFile(tmp / ".nimyaml-lint.yaml")
     check yamllint(dir / "bad.yaml") == ("", 0)
 
+  test "documents are validated against the schema they declare":
+    # %SCHEMA is relative to the file, so the file's location is its base
+    writeFile(dir / "port.schema.yaml", "{type: object, properties: " &
+        "{port: {type: integer}}}\n")
+    writeFile(dir / "service.yaml",
+        "%SCHEMA port.schema.yaml\n---\nport: http\n")
+    let r = yamllint(dir / "service.yaml")
+    check r.exitCode == 1
+    check r.output.startsWith(dir / "service.yaml" & ":3:7: error: ")
+    check "[schema-validation]" in r.output
+    check yamllint("--no-schema", dir / "service.yaml") == ("", 0)
+
+  test "directive diagnostics":
+    writeFile(dir / "late.yaml", "a\n...\n%GLOBAL YAML 1.2\n--- b\n")
+    check yamllint(dir / "late.yaml") == (dir / "late.yaml" &
+        ":3:1: error: %GLOBAL is only allowed before the first document" &
+        " [misplaced-global-directive]\n", 1)
+
 removeDir(tmp)

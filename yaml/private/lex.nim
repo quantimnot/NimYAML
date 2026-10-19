@@ -72,6 +72,10 @@ type
 
   Lexer* = object
     cur*: Token
+    directiveExtensions*: bool
+      ## whether ``%GLOBAL`` and ``%SCHEMA`` are lexed as NimYAML's own
+      ## directives rather than as reserved directives (YAML 1.2, §6.8).
+      ## A parser setting: not part of checkpoints.
     curStartPos*, curEndPos*: Mark
     flowDepth*: int
     # recently read scalar or URI, if any
@@ -97,7 +101,7 @@ type
     YamlDirective,    # `%YAML`
     TagDirective,     # `%TAG`
     UnknownDirective, # any directive but `%YAML` and `%TAG`
-    DirectiveParam,   # parameters of %YAML and unknown directives
+    DirectiveParam,   # parameters of %YAML, %SCHEMA and unknown directives
     EmptyLine,        # for line folding in multiline plain scalars
     DirectivesEnd,    # explicit `---`
     DocumentEnd,      # explicit `...`
@@ -114,6 +118,8 @@ type
     VerbatimTag,      # a verbatim tag, e.g. `!<tag:yaml.org,2002:str>`
     Anchor,           # anchor property of a node, e.g. `&anchor`
     Alias             # alias node, e.g. `*alias`
+    GlobalDirective,  # `%GLOBAL`, if directive extensions are enabled
+    SchemaDirective   # `%SCHEMA`, if directive extensions are enabled
 
   ChompType* = enum
     ctKeep, ctClip, ctStrip
@@ -262,6 +268,7 @@ proc yamlVersion(lex: var Lexer): bool {.raises: LexerError.}
 proc tagShorthand(lex: var Lexer): bool {.raises: LexerError.}
 proc tagUri(lex: var Lexer): bool {.raises: LexerError.}
 proc unknownDirParams(lex: var Lexer): bool {.raises: [].}
+proc globalDirectiveName(lex: var Lexer): bool {.raises: [].}
 proc expectLineEnd(lex: var Lexer): bool {.raises: LexerError.}
 proc lineStart(lex: var Lexer): bool {.raises: LexerError.}
 proc flowLineStart(lex: var Lexer): bool {.raises: LexerError.}
@@ -1288,13 +1295,13 @@ type
     seenMultiline*: bool
     propertyIndentation*: int
 
-proc lexerStates(): array[19, State] {.raises: [].} =
+proc lexerStates(): array[20, State] {.raises: [].} =
   # the position of a state in this list is its checkpoint id. Append only.
   [State(outsideDoc), yamlVersion, tagShorthand, tagUri, unknownDirParams,
    expectLineEnd, lineStart, flowLineStart, flowLineIndentation, insideLine,
    indentationSettingToken, afterToken, beforeIndentationSettingToken,
    afterJsonEnablingToken, lineIndentation, lineDirEnd, lineDocEnd, atSuffix,
-   streamEnd]
+   streamEnd, globalDirectiveName]
 
 proc stateId(s: State): int {.raises: [ValueError].} =
   let states = lexerStates()
@@ -1371,6 +1378,29 @@ proc restoreFeed*(lex: var Lexer, cp: LexerCheckpoint) {.raises: [ValueError].} 
 
 # states
 
+proc directive(lex: var Lexer, name: string) =
+  ## Sets the token for the directive called ``name`` and the state that
+  ## lexes its parameters. Used for directives of their own line and for the
+  ## one ``%GLOBAL`` wraps, so that a wrapped directive is lexed exactly like
+  ## the same directive on its own.
+  if name == "YAML":
+    lex.state = yamlVersion
+    lex.cur = Token.YamlDirective
+  elif name == "TAG":
+    lex.state = tagShorthand
+    lex.cur = Token.TagDirective
+  elif lex.directiveExtensions and name == "GLOBAL":
+    lex.state = globalDirectiveName
+    lex.cur = Token.GlobalDirective
+  elif lex.directiveExtensions and name == "SCHEMA":
+    lex.state = unknownDirParams
+    lex.cur = Token.SchemaDirective
+  else:
+    lex.state = unknownDirParams
+    lex.cur = Token.UnknownDirective
+    lex.evaluated.setLen(0)
+    lex.evaluated.add(name)
+
 proc outsideDoc(lex: var Lexer): bool =
   case lex.c
   of '%':
@@ -1379,19 +1409,7 @@ proc outsideDoc(lex: var Lexer): bool =
       lex.advance()
       if lex.c in spaceOrLineEnd: break
     lex.endToken()
-    let name = lex.shortLexeme()
-    case name
-    of "YAML":
-      lex.state = yamlVersion
-      lex.cur = Token.YamlDirective
-    of "TAG":
-      lex.state = tagShorthand
-      lex.cur = Token.TagDirective
-    else:
-      lex.state = unknownDirParams
-      lex.cur = Token.UnknownDirective
-      lex.evaluated.setLen(0)
-      lex.evaluated.add(name)
+    lex.directive(lex.shortLexeme())
   of '-':
     lex.startToken()
     if lex.isDirectivesEnd():
@@ -1485,15 +1503,31 @@ proc tagUri(lex: var Lexer): bool =
   return true
 
 proc unknownDirParams(lex: var Lexer): bool =
+  ## Lexes one parameter of ``%SCHEMA`` or a reserved directive. Parameters
+  ## are runs of non-space characters (``ns-directive-parameter``); a ``#``
+  ## starts a comment only after whitespace.
   while lex.c in space: lex.advance()
   if lex.c in lineEnd + {'#'}:
     lex.state = expectLineEnd
     return false
   lex.startToken()
-  while true:
-    lex.advance()
-    if lex.c in lineEnd + {'#'}: break
+  while lex.c notin spaceOrLineEnd: lex.advance()
+  lex.endToken()
   lex.cur = Token.DirectiveParam
+  return true
+
+proc globalDirectiveName(lex: var Lexer): bool =
+  ## Lexes the name of the directive that ``%GLOBAL`` wraps. Without one,
+  ## the line simply ends; the parser notices that no directive followed on
+  ## the same line.
+  while lex.c in space: lex.advance()
+  if lex.c in commentOrLineEnd:
+    lex.state = expectLineEnd
+    return false
+  lex.startToken()
+  while lex.c notin spaceOrLineEnd: lex.advance()
+  lex.endToken()
+  lex.directive(lex.fullLexeme())
   return true
 
 proc expectLineEnd(lex: var Lexer): bool =

@@ -221,7 +221,13 @@ suite "Lint: all rules":
   test "built-in rule ids":
     check builtinRuleIds() == @["syntax", "duplicate-key", "complex-key",
         "undefined-alias", "unused-anchor", "truthy", "trailing-spaces",
-        "line-length", "tabs", "final-newline"]
+        "line-length", "tabs", "final-newline",
+        # directive rules, reported from the parser's directive issues
+        "unknown-directive", "invalid-schema-directive",
+        "duplicate-schema-directive", "unresolvable-schema-uri",
+        "misplaced-global-directive", "missing-global-directive",
+        "nested-global-directive", "duplicate-global-directive",
+        "unknown-global-directive", "schema-source"]
 
 suite "Lint config":
   test "blank and comment-only configs are the defaults":
@@ -269,3 +275,67 @@ suite "Lint config":
     except LintConfigError as e:
       check e.msg.startsWith(path & ": ")
     expect LintConfigError: discard loadLintConfig(root / "missing.yaml")
+
+suite "Lint: directive rules":
+  # Each directive issue the parser records is a rule of its own, with the
+  # issue kind's id; the fixtures cover every error and warning of the
+  # %GLOBAL and %SCHEMA directives.
+  proc directiveSpans(source: string, sourceUri = "",
+      config = defaultConfig()): seq[string] =
+    for d in lint(source, config, sourceUri):
+      if d.rule notin ["final-newline", "unused-anchor"]: result.add(d.span)
+
+  test "reserved directives are warnings":
+    check directiveSpans("%FOO bar\n--- a\n") ==
+        @["unknown-directive 1:1-1:9 warning"]
+
+  test "%SCHEMA errors":
+    check directiveSpans("%SCHEMA\n--- a\n") ==
+        @["invalid-schema-directive 1:1-1:8 error"]
+    check directiveSpans("%SCHEMA a b\n--- a\n", "file:///x.yaml") ==
+        @["invalid-schema-directive 1:1-1:12 error"]
+    check directiveSpans(
+        "%SCHEMA https://x.example/1\n%SCHEMA https://x.example/2\n--- a\n") ==
+        @["duplicate-schema-directive 2:1-2:28 error"]
+    check directiveSpans("%SCHEMA s.json\n--- a\n") ==
+        @["unresolvable-schema-uri 1:9-1:15 error"]
+    check directiveSpans("%SCHEMA s.json\n--- a\n", "file:///w/x.yaml").len == 0
+
+  test "%GLOBAL errors and warnings":
+    check directiveSpans("--- a\n...\n%GLOBAL YAML 1.2\n--- b\n") ==
+        @["misplaced-global-directive 3:1-3:17 error"]
+    check directiveSpans("%GLOBAL\n--- a\n") ==
+        @["missing-global-directive 1:1-1:8 error"]
+    check directiveSpans("%GLOBAL GLOBAL YAML 1.2\n--- a\n") ==
+        @["nested-global-directive 1:1-1:24 error"]
+    check directiveSpans("%GLOBAL TAG !e! a:\n%GLOBAL TAG !e! b:\n--- a\n") ==
+        @["duplicate-global-directive 2:1-2:19 error"]
+    check directiveSpans("%GLOBAL FOO x\n--- a\n") ==
+        @["unknown-global-directive 1:1-1:14 warning"]
+
+  test "schema-source names the winner":
+    check directiveSpans("%SCHEMA https://x.example/s\n---\n" &
+        "$schema: https://x.example/k\n") ==
+        @["schema-source 1:9-1:28 info"]
+
+  test "levels are configurable like any rule":
+    var config = defaultConfig()
+    config.rules["unknown-directive"] = RuleConfig(level: some(levelError))
+    config.rules["schema-source"] = RuleConfig(level: some(levelOff))
+    check directiveSpans("%FOO\n%SCHEMA https://x.example/s\n---\n" &
+        "$schema: https://x.example/k\n", config = config) ==
+        @["unknown-directive 1:1-1:5 error"]
+    check parseLintConfig(
+        "rules:\n  nested-global-directive: {level: warning}\n")
+        .rules["nested-global-directive"].level == some(levelWarning)
+
+  test "valid uses produce nothing":
+    check directiveSpans("""%GLOBAL TAG !e! tag:e:
+%GLOBAL SCHEMA https://x.example/s
+%GLOBAL YAML 1.2
+--- !e!a 1
+...
+%TAG !e! tag:other:
+%SCHEMA https://x.example/t
+--- !e!b 2
+""").len == 1 # the schema-source info of the second document

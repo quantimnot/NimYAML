@@ -39,3 +39,7 @@ test/tlsp
 test/tyamllint
 tools/yamllint
 tools/yamllsp
+tools/yamlexpand
+test/tdirectives
+test/tdocumentschema
+test/tportable

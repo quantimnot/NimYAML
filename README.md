@@ -618,6 +618,94 @@ echo expand("/users/{id}{?fields*}", vars)   # /users/jo?fields=name&fields=age
 `templateValue` converts `YamlNode` values, and `expandPartially` expands
 only some variables, leaving the others as template expressions.
 
+## `%SCHEMA` and `%GLOBAL` Directives
+
+NimYAML gives meaning to two directive names that YAML 1.2 reserves:
+
+```yaml
+%GLOBAL TAG !e! tag:example.com,2000:
+%GLOBAL SCHEMA schemas/service.json
+--- !e!service {name: a}
+...
+%SCHEMA schemas/special.json      # overrides the global schema here
+--- !e!service {name: b}
+...
+--- !e!service {name: c}          # !e! and the global schema apply again
+```
+
+* `%SCHEMA <uri-reference>` names the JSON Schema of the document that
+  follows it. A relative reference resolves against the URI the stream was
+  read from (`initYamlParser(sourceUri = ...)`); without one, it is an error.
+  At most one per document.
+* `%GLOBAL <directive>` wraps a `YAML`, `TAG` or `SCHEMA` directive (whose
+  parameters are read exactly as on their own line) and makes it apply to
+  every document of the stream. It is only allowed before the first
+  document. A document's own `%YAML`, `%SCHEMA` or `%TAG` for the same handle
+  overrides the global one for that document only.
+
+Each `yamlStartDoc` event reports the effective `version` and `handles`, and
+in `directives` the effective `schema`, every declaration in effect with its
+origin (global or per-document) and position, and the problems found in the
+directive block. Misuse never makes the YAML invalid, because every such line
+is a valid reserved directive: the directive is ignored and an issue is
+recorded instead, which `lint` reports under these ids:
+
+| rule | default | reports |
+|---|---|---|
+| `unknown-directive` | warning | a reserved directive (YAML 1.2, §6.8, says to ignore it with a warning) |
+| `invalid-schema-directive` | error | `%SCHEMA` without exactly one URI reference |
+| `duplicate-schema-directive` | error | a second `%SCHEMA` in one document |
+| `unresolvable-schema-uri` | error | a relative schema reference without source URI |
+| `misplaced-global-directive` | error | `%GLOBAL` after the first document |
+| `missing-global-directive` | error | `%GLOBAL` without a directive |
+| `nested-global-directive` | error | `%GLOBAL GLOBAL` |
+| `duplicate-global-directive` | error | a second global `YAML` or `SCHEMA`, or the same `TAG` handle twice |
+| `unknown-global-directive` | warning | `%GLOBAL` with another directive (ignored) |
+| `schema-source` | info | a document that names its schema in more than one way |
+
+With `initYamlParser(directiveExtensions = false)`, `GLOBAL` and `SCHEMA` are
+reserved directives like any other.
+
+`yaml/documentschema` decides which schema a document is validated against,
+highest first: its `%SCHEMA`, a `%GLOBAL SCHEMA`, a
+`# yaml-language-server: $schema=<uri>` modeline in the document, a top-level
+`$schema` key. Schemas are never merged. `yaml/schemavalidation` validates
+every document against its schema (with `yaml/jsonschema`) and returns
+diagnostics (`schema-validation`, `schema-unavailable`) positioned at the
+offending nodes.
+
+### Portable YAML
+
+Other YAML processors ignore both directives, as the specification asks
+them to. For `%GLOBAL TAG` that changes the meaning: they reject later
+documents that use the handle. `yaml/portable` rewrites such input so that
+any YAML 1.2 processor reads every document the same way, keeping comments
+and layout:
+
+```nim
+import yaml/portable
+echo expandDirectives(source)   # %GLOBAL lines become per-document directives
+echo expandDirectives(source, ExpandOptions(schemas: soModeline))
+  # ... and %SCHEMA becomes a yaml-language-server modeline
+```
+
+The same is available as `tools/yamlexpand.nim`
+(`yamlexpand [--modeline] [FILE]`). When dumping events instead, the
+presenter writes each document's directives with
+`PresentationOptions(outputVersion: ovDocument, schemaDirective: sdDirective)`
+(or `sdModeline`).
+
+### Caveats
+
+ * **Not standard YAML.** YAML 1.2 says there is no way to define private
+   directives (§6.8). Use `yamlexpand` before handing such files to other
+   tools.
+ * **Comments before a directive block belong to the previous document.**
+   A document's source starts at its first directive, so a modeline between
+   `...` and the next document's directives counts for the document before.
+ * **Schema references are not fetched.** The tools read `file:` schemas
+   only; other schemas must be added to the `SchemaRegistry`.
+
 ## Linting
 
 `yaml/lint` lints YAML sources: `lint(source, config)` returns diagnostics
@@ -637,6 +725,9 @@ only some variables, leaving the others as template expressions.
 | `tabs` | error | tabs in indentation |
 | `final-newline` | warning | no line break at the end of the file |
 
+plus the directive rules listed under
+[`%SCHEMA` and `%GLOBAL` Directives](#schema-and-global-directives).
+
 Rules are configured in `.nimyaml-lint.yaml`, found by walking up from the
 linted file's directory:
 
@@ -646,10 +737,16 @@ rules:
   truthy: {level: off}
 ```
 
-Two tools use it: `tools/yamllint.nim` (`yamllint [--config:FILE] FILE...`,
-exit code 1 if there are errors, 2 for usage, I/O or config errors) and
-`tools/yamllsp.nim`, a language server (JSON-RPC over stdio, full document
-sync) that publishes the diagnostics of open documents. Build them with
+Two tools use it: `tools/yamllint.nim`
+(`yamllint [--config:FILE] [--no-schema] FILE...`, exit code 1 if there are
+errors, 2 for usage, I/O or config errors) and `tools/yamllsp.nim`, a
+language server (JSON-RPC over stdio, full document sync). Both also validate
+documents against the JSON Schema they declare (`file:` schemas only). The
+language server publishes the diagnostics of open documents and offers
+completion of directive names, hover on directives (effective value, global
+or per-document, overrides) and on `---`/`...` markers (the directives and
+schema in effect), and go-to-definition and document links on schema
+references. Build them with
 `nim yamllint config.nims` and `nim yamllsp config.nims`, or
 `nim c -d:release tools/yamllint`.
 

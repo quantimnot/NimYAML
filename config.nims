@@ -108,6 +108,25 @@ task uriTemplateTests, "Run URI Template tests":
   --verbosity:0
   setCommand "c", "test/turitemplate"
 
+task directiveTests, "Run %GLOBAL and %SCHEMA directive tests":
+  --r
+  --verbosity:0
+  setCommand "c", "test/tdirectives"
+
+task documentSchemaTests, "Run schema selection and validation tests":
+  --r
+  --verbosity:0
+  setCommand "c", "test/tdocumentschema"
+
+task portableTests, "Run directive expansion tests":
+  --r
+  --verbosity:0
+  setCommand "c", "test/tportable"
+
+task yamlexpand, "Compile the yamlexpand tool":
+  --d:release
+  setCommand "c", "tools/yamlexpand"
+
 task nativeTests, "Run native value tests":
   --r
   --verbosity:0
@@ -141,7 +160,7 @@ task bench, "Benchmarking":
   setCommand "c", "bench/bench"
 
 task clean, "Remove all generated files":
-  exec "rm -rf libyaml.* test/tests test/tjsonpath test/tjsonschema test/thyperschema test/tschemainternals test/turitemplate test/parsing test/lexing bench/json docout"
+  exec "rm -rf libyaml.* test/tests test/tjsonpath test/tjsonschema test/thyperschema test/tschemainternals test/turitemplate test/tdirectives test/tdocumentschema test/tportable test/parsing test/lexing bench/json docout"
   setCommand "nop"
 
 task testSuiteEvents, "Compile the testSuiteEvents tool":

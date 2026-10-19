@@ -131,6 +131,22 @@
 ## links a JSON Hyper-Schema describes for an instance, using the
 ## `module yaml/uritemplate`_, which expands RFC 6570 URI Templates.
 ##
+## Directives API
+## --------------
+##
+## .. code-block::
+##
+##   # needs explicit import to use:
+##   import yaml/[documentschema, schemavalidation, portable]
+##
+## NimYAML's parser understands two directives of its own: ``%SCHEMA``
+## names the JSON Schema of a document and ``%GLOBAL`` makes a ``YAML``,
+## ``TAG`` or ``SCHEMA`` directive apply to every document of a stream
+## (see the README). The `module yaml/documentschema`_ decides which schema
+## each document declares, the `module yaml/schemavalidation`_ validates the
+## documents against it, and the `module yaml/portable`_ rewrites streams
+## that use ``%GLOBAL`` into YAML that other processors read the same way.
+##
 ##
 ## Low Level Event Handling
 ## ========================

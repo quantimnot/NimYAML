@@ -48,7 +48,21 @@ type
     ## It is also possible to specify that the presenter shall not emit any
     ## YAML version. The generated content is then guaranteed to be valid
     ## YAML 1.1 and 1.2 (but not 1.0 or any newer YAML version).
-    ov1_2, ov1_1, ovNone
+    ##
+    ## ``ovDocument`` writes the version each document's ``yamlStartDoc``
+    ## event carries, if any; for parsed input that is the effective version,
+    ## including one inherited from ``%GLOBAL YAML``.
+    ov1_2, ov1_1, ovNone, ovDocument
+
+  SchemaDirectiveStyle* = enum
+    ## Whether and how to write the schema a document declares (the
+    ## effective ``%SCHEMA`` of its ``yamlStartDoc`` event):
+    ## - ``sdNone``: Don't write it.
+    ## - ``sdDirective``: As a ``%SCHEMA`` directive. Other YAML processors
+    ##   ignore it.
+    ## - ``sdModeline``: As a ``# yaml-language-server: $schema=`` comment,
+    ##   which editors understand.
+    sdNone, sdDirective, sdModeline
 
   ScalarQuotingStyle* = enum
     ## Specifies whether scalars should forcibly be double-quoted.
@@ -74,6 +88,7 @@ type
     outputVersion*  : OutputYamlVersion = ovNone ## whether to write the %YAML tag
     maxLineLength*  : Option[int] = some(80) ## max length of a line, including indentation
     directivesEnd*  : DirectivesEndStyle = deIfNecessary ## whether to write '---' after tags
+    schemaDirective*: SchemaDirectiveStyle = sdNone ## whether to write the schema of each document
     suppressAttrs*  : bool = false ## whether to suppress all attributes on nodes
     quoting*        : ScalarQuotingStyle = sqUnset ## how scalars are quoted
     condenseFlow*   : bool = true ## whether non-nested flow containers use a single line
@@ -736,7 +751,23 @@ proc doPresent(
               ctx.target.write("%YAML 1.1")
               ctx.newline()
               ctx.wroteDirectivesEnd = true
+          of ovDocument:
+            if item.version.len > 0:
+              ctx.target.write("%YAML " & item.version)
+              ctx.newline()
+              ctx.wroteDirectivesEnd = true
           of ovNone: discard
+          if not item.directives.isNil and item.directives.schema.len > 0:
+            case ctx.options.schemaDirective
+            of sdNone: discard
+            of sdDirective:
+              ctx.target.write("%SCHEMA " & item.directives.schema)
+              ctx.newline()
+              ctx.wroteDirectivesEnd = true
+            of sdModeline:
+              ctx.target.write("# yaml-language-server: $schema=" &
+                  item.directives.schema)
+              ctx.newline()
           for v in ctx.handles:
             if v.handle == "!":
               if v.uriPrefix != "!":

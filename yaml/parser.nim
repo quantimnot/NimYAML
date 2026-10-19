@@ -12,7 +12,7 @@
 ## non-nil string or Stream object as YAML character stream.
 
 import tables, strutils, macros, streams, std/importutils
-import stream, private/lex, private/internal, private/escaping, data
+import stream, private/lex, private/internal, private/escaping, private/uri, data
 
 when defined(nimNoNil):
     {.experimental: "notnil".}
@@ -25,6 +25,8 @@ type
     ## only until the document goes out of scope (i.e. until
     ## ``yamlEndDocument`` is yielded).
     issueWarnings: bool
+    directiveExtensions: bool
+    sourceUri: string
 
   YamlParserError* = object of YamlLoadingError
     ## A parser error is raised if the character stream that is parsed is
@@ -61,7 +63,15 @@ type
     ## either, its first content. ``offset`` is a byte offset in the whole
     ## input, ``line`` the line number there. Parsing can start at a
     ## document start, see `parse <#parse,YamlParser,string,YamlDocumentStart>`_.
+    ##
+    ## A document start also carries what parsing from it needs to know
+    ## about the documents before it: ``index``, the 0-based number of the
+    ## document in the stream, and ``globals``, the ``%GLOBAL`` directives of
+    ## the first document (empty for the first document itself, which
+    ## declares them).
     offset*, line*: int
+    index*: int
+    globals*: seq[Directive]
 
   State = proc(ctx: Context, e: var Event): bool {.gcSafe, raises: [CatchableError].}
 
@@ -72,6 +82,14 @@ type
   Context = ref object of YamlStream
     handles: seq[tuple[handle, uriPrefix: string]]
     issueWarnings: bool
+    # NimYAML's directive extensions, see `beforeDoc`. ``globals`` are
+    # declared in the directive block of the first document and apply to
+    # every document; ``documentsBegun`` counts the documents whose first
+    # token has been read, so that the first one can be told apart.
+    directiveExtensions: bool
+    sourceUri: string
+    globals: seq[Directive]
+    documentsBegun: int
     lex: Lexer
     levels: seq[Level]
     keyCache: seq[Event]
@@ -185,8 +203,17 @@ proc initCommon(ctx: Context, p: YamlParser) =
   ctx.headerProps = defaultProperties
   ctx.inlineProps = defaultProperties
   ctx.issueWarnings = p.issueWarnings
+  ctx.directiveExtensions = p.directiveExtensions
+  ctx.sourceUri = p.sourceUri
+  ctx.lex.directiveExtensions = p.directiveExtensions
   ctx.keyCachePos = 0
   ctx.caching = false
+
+proc continueAt(ctx: Context, start: YamlDocumentStart) =
+  ## Prepares parsing from ``start`` as if the documents before it had been
+  ## parsed: they declared the global directives and count as begun.
+  ctx.globals = start.globals
+  ctx.documentsBegun = start.index
 
 proc init[T](ctx: Context, p: YamlParser, source: T) {.inline.} =
   ctx.initCommon(p)
@@ -194,13 +221,23 @@ proc init[T](ctx: Context, p: YamlParser, source: T) {.inline.} =
 
 # interface
 
-proc init*(p: var YamlParser, issueWarnings: bool = false) =
-  ## Initializes a YAML parser.
+proc init*(p: var YamlParser, issueWarnings: bool = false,
+    directiveExtensions = true, sourceUri = "") =
+  ## Initializes a YAML parser. See `initYamlParser`.
   p.issueWarnings = issueWarnings
+  p.directiveExtensions = directiveExtensions
+  p.sourceUri = sourceUri
 
-proc initYamlParser*(issueWarnings: bool = false): YamlParser =
-  ## Creates an initializes YAML parser and returns it
-  result.issueWarnings = issueWarnings
+proc initYamlParser*(issueWarnings: bool = false, directiveExtensions = true,
+    sourceUri = ""): YamlParser =
+  ## Creates an initializes YAML parser and returns it.
+  ##
+  ## With ``directiveExtensions``, the parser implements NimYAML's
+  ## ``%GLOBAL`` and ``%SCHEMA`` directives (see the README); without, they
+  ## are reserved directives like any other, as YAML 1.2 defines them.
+  ## ``sourceUri`` is the URI the input was retrieved from; relative
+  ## ``%SCHEMA`` references resolve against it.
+  result.init(issueWarnings, directiveExtensions, sourceUri)
 
 proc parse*(p: YamlParser, s: Stream): YamlStream =
   let ctx = new(Context)
@@ -221,6 +258,7 @@ proc parse*(p: YamlParser, s: string, start: YamlDocumentStart): YamlStream =
   ## input.
   let ctx = new(Context)
   ctx.initCommon(p)
+  ctx.continueAt(start)
   ctx.lex.init(s, start.offset, start.line)
   return ctx
 
@@ -229,6 +267,7 @@ proc parse*(p: YamlParser, s: Stream, start: YamlDocumentStart): YamlStream =
   ## byte ``start.offset`` on, e.g. after ``s.setPosition(start.offset)``.
   let ctx = new(Context)
   ctx.initCommon(p)
+  ctx.continueAt(start)
   ctx.lex.init(s, start.offset, start.line)
   return ctx
 
@@ -291,6 +330,7 @@ proc newYamlFeedParser*(p: YamlParser, start: YamlDocumentStart): YamlFeedParser
   ## ``start.offset`` on. Positions refer to the original input.
   let ctx = new(Context)
   ctx.initCommon(p)
+  ctx.continueAt(start)
   ctx.lex.initFeed(start.offset, start.line)
   result = YamlFeedParser(ctx: ctx, starvedAt: -1)
 
@@ -384,6 +424,20 @@ type
   YamlCheckpointHandle* = object
     handle*, uriPrefix*: string
 
+  YamlCheckpointDirective* = object
+    ## Plain-data form of a `Directive`.
+    kind*: DirectiveKind
+    origin*: DirectiveOrigin
+    overridden*: bool
+    positions*: seq[int] ## start, end, value start, value end (line, column)
+    value*, handle*, uri*: string ## version or prefix or reference; handle; uri
+
+  YamlCheckpointIssue* = object
+    ## Plain-data form of a `DirectiveIssue`.
+    kind*: DirectiveIssueKind
+    message*: string
+    positions*: seq[int] ## start, end (line, column)
+
   YamlCheckpointEvent* = object
     ## Plain-data form of an `Event`.
     kind*: EventKind
@@ -396,6 +450,11 @@ type
     # explicitDirectivesEnd or explicitDocumentEnd
     explicit*: bool
     handles*: seq[YamlCheckpointHandle]
+    # yamlStartDoc: whether ``directives`` is set, and its content
+    hasDirectives*: bool
+    schema*: string
+    declarations*: seq[YamlCheckpointDirective]
+    issues*: seq[YamlCheckpointIssue]
 
   YamlCheckpointLevel* = object
     state*, indentation*: int
@@ -430,13 +489,16 @@ type
     headerStartLine*, headerStartColumn*: int
     inlineStartLine*, inlineStartColumn*: int
     blockIndentation*: int
-    documentStartOffset*, documentStartLine*: int
+    documentStartOffset*, documentStartLine*, documentStartIndex*: int
+    # %GLOBAL directives, and the number of documents begun
+    globals*: seq[YamlCheckpointDirective]
+    documentsBegun*: int
     # event that has been peeked but not yet returned by ``next``
     peeked*: seq[YamlCheckpointEvent]
 
 export LexerCheckpoint
 
-const checkpointVersion* = 1
+const checkpointVersion* = 2
   ## Version of the checkpoint format created by this NimYAML version.
 
 proc parserStates(): array[33, State] {.raises: [].} =
@@ -463,6 +525,28 @@ proc stateById(id: int): State {.raises: [ValueError].} =
   if id < 0 or id > states.high:
     raise newException(ValueError, "invalid parser state in checkpoint")
   states[id]
+
+proc toCheckpoint(d: Directive): YamlCheckpointDirective =
+  result = YamlCheckpointDirective(kind: d.kind, origin: d.origin,
+      overridden: d.overridden)
+  for m in [d.startPos, d.endPos, d.valueStart, d.valueEnd]:
+    result.positions.add([int(m.line), int(m.column)])
+  case d.kind
+  of dkYaml: result.value = d.version
+  of dkTag:
+    result.value = d.prefix
+    result.handle = d.handle
+  of dkSchema:
+    result.value = d.reference
+    result.uri = d.uri
+
+proc toCheckpoint(directives: seq[Directive]): seq[YamlCheckpointDirective] =
+  for d in directives: result.add(d.toCheckpoint())
+
+proc toCheckpoint(i: DirectiveIssue): YamlCheckpointIssue =
+  YamlCheckpointIssue(kind: i.kind, message: i.message,
+      positions: @[int(i.startPos.line), int(i.startPos.column),
+                   int(i.endPos.line), int(i.endPos.column)])
 
 proc toCheckpoint(handles: seq[tuple[handle, uriPrefix: string]]):
     seq[YamlCheckpointHandle] =
@@ -495,6 +579,11 @@ proc toCheckpoint(e: Event): YamlCheckpointEvent =
     result.explicit = e.explicitDirectivesEnd
     result.content = e.version
     result.handles = e.handles.toCheckpoint()
+    if not e.directives.isNil:
+      result.hasDirectives = true
+      result.schema = e.directives.schema
+      result.declarations = e.directives.declarations.toCheckpoint()
+      for i in e.directives.issues: result.issues.add(i.toCheckpoint())
   of yamlEndDoc:
     result.explicit = e.explicitDocumentEnd
   of yamlAlias:
@@ -510,6 +599,28 @@ proc toMark(line, column: int): Mark {.raises: [ValueError].} =
   if line < 1 or column < 1:
     raise newException(ValueError, "invalid position in checkpoint")
   Mark(line: line, column: column)
+
+proc markAt(positions: seq[int], i: int): Mark {.raises: [ValueError].} =
+  if positions.len < 2 * i + 2:
+    raise newException(ValueError, "invalid position in checkpoint")
+  toMark(positions[2 * i], positions[2 * i + 1])
+
+proc fromCheckpoint(c: YamlCheckpointDirective): Directive
+    {.raises: [ValueError].} =
+  result = case c.kind
+    of dkYaml: Directive(kind: dkYaml, version: c.value)
+    of dkTag: Directive(kind: dkTag, handle: c.handle, prefix: c.value)
+    of dkSchema: Directive(kind: dkSchema, reference: c.value, uri: c.uri)
+  result.origin = c.origin
+  result.overridden = c.overridden
+  result.startPos = c.positions.markAt(0)
+  result.endPos = c.positions.markAt(1)
+  result.valueStart = c.positions.markAt(2)
+  result.valueEnd = c.positions.markAt(3)
+
+proc fromCheckpoint(directives: seq[YamlCheckpointDirective]): seq[Directive]
+    {.raises: [ValueError].} =
+  for d in directives: result.add(d.fromCheckpoint())
 
 proc fromCheckpoint(c: YamlCheckpointEvent): Event {.raises: [ValueError].} =
   let
@@ -533,6 +644,13 @@ proc fromCheckpoint(c: YamlCheckpointEvent): Event {.raises: [ValueError].} =
     of yamlEndMap: Event(kind: yamlEndMap)
     of yamlEndSeq: Event(kind: yamlEndSeq)
     of yamlAlias: Event(kind: yamlAlias, aliasTarget: Anchor(c.content))
+  if c.kind == yamlStartDoc and c.hasDirectives:
+    result.directives = DocumentDirectives(schema: c.schema,
+        declarations: c.declarations.fromCheckpoint())
+    for i in c.issues:
+      result.directives.issues.add(DirectiveIssue(kind: i.kind,
+          message: i.message, startPos: i.positions.markAt(0),
+          endPos: i.positions.markAt(1)))
   result.startPos = startPos
   result.endPos = endPos
 
@@ -545,6 +663,22 @@ proc enc(s: var string, h: YamlCheckpointHandle) =
   s.enc(h.handle)
   s.enc(h.uriPrefix)
 
+proc enc(s: var string, d: YamlCheckpointDirective) =
+  s.enc(d.kind)
+  s.enc(d.origin)
+  s.enc(d.overridden)
+  s.enc(d.positions.len)
+  for x in d.positions: s.enc(x)
+  s.enc(d.value)
+  s.enc(d.handle)
+  s.enc(d.uri)
+
+proc enc(s: var string, i: YamlCheckpointIssue) =
+  s.enc(i.kind)
+  s.enc(i.message)
+  s.enc(i.positions.len)
+  for x in i.positions: s.enc(x)
+
 proc enc(s: var string, e: YamlCheckpointEvent) =
   s.enc(e.kind)
   for x in [e.startLine, e.startColumn, e.endLine, e.endColumn]: s.enc(x)
@@ -556,6 +690,12 @@ proc enc(s: var string, e: YamlCheckpointEvent) =
   s.enc(e.explicit)
   s.enc(e.handles.len)
   for h in e.handles: s.enc(h)
+  s.enc(e.hasDirectives)
+  s.enc(e.schema)
+  s.enc(e.declarations.len)
+  for d in e.declarations: s.enc(d)
+  s.enc(e.issues.len)
+  for i in e.issues: s.enc(i)
 
 proc digest(cp: YamlCheckpoint): string =
   ## FNV-1a over a canonical encoding of all fields but ``checksum``.
@@ -586,8 +726,10 @@ proc digest(cp: YamlCheckpoint): string =
     s.enc(x)
   for x in [cp.headerStartLine, cp.headerStartColumn, cp.inlineStartLine,
             cp.inlineStartColumn, cp.blockIndentation, cp.documentStartOffset,
-            cp.documentStartLine]:
+            cp.documentStartLine, cp.documentStartIndex, cp.documentsBegun]:
     s.enc(x)
+  s.enc(cp.globals.len)
+  for d in cp.globals: s.enc(d)
   s.enc(cp.peeked.len)
   for e in cp.peeked: s.enc(e)
   var h = 0xcbf29ce484222325'u64
@@ -609,7 +751,9 @@ proc checkpoint(ctx: Context, started: bool): YamlCheckpoint {.raises: [ValueErr
       inlineStartColumn: ctx.inlineStart.column,
       blockIndentation: ctx.blockIndentation,
       documentStartOffset: ctx.documentStart.offset,
-      documentStartLine: ctx.documentStart.line)
+      documentStartLine: ctx.documentStart.line,
+      documentStartIndex: ctx.documentStart.index,
+      globals: ctx.globals.toCheckpoint(), documentsBegun: ctx.documentsBegun)
   if started:
     result.lexer = ctx.lex.checkpoint()
     result.offset = result.lexer.offset
@@ -662,8 +806,14 @@ proc restore(ctx: Context, cp: YamlCheckpoint) {.raises: [ValueError].} =
   ctx.headerStart = toMark(cp.headerStartLine, cp.headerStartColumn)
   ctx.inlineStart = toMark(cp.inlineStartLine, cp.inlineStartColumn)
   ctx.blockIndentation = cp.blockIndentation
+  ctx.globals = cp.globals.fromCheckpoint()
+  ctx.documentsBegun = cp.documentsBegun
   ctx.documentStart = YamlDocumentStart(offset: cp.documentStartOffset,
-                                        line: cp.documentStartLine)
+                                        line: cp.documentStartLine,
+                                        index: cp.documentStartIndex)
+  # the globals of a document start are those of the stream, except for the
+  # first document, which declares them
+  if ctx.documentStart.index > 0: ctx.documentStart.globals = ctx.globals
   if cp.peeked.len == 1: ctx.peek = cp.peeked[0].fromCheckpoint()
 
 proc checkpoint*(s: YamlStream): YamlCheckpoint {.raises: [ValueError].} =
@@ -815,15 +965,215 @@ proc atStreamEnd(ctx: Context, e : var Event): bool =
             endPos: ctx.lex.curStartPos, kind: yamlEndStream)
   return true
 
+# Directives
+#
+# A document's directive block is read by `beforeDoc`, one directive per
+# line. YAML 1.2 knows ``%YAML`` and ``%TAG``; everything else is a reserved
+# directive, to be ignored with a warning (§6.8). With directive extensions
+# enabled, NimYAML also gives meaning to two names that would otherwise be
+# reserved:
+#
+# * ``%SCHEMA <uri-reference>`` names the JSON Schema of the document,
+#   resolved against the source URI of the stream.
+# * ``%GLOBAL <directive>`` wraps a ``YAML``, ``TAG`` or ``SCHEMA`` directive
+#   and makes it apply to every document of the stream. It may only appear
+#   in the directive block of the first document. A document's own
+#   directives override the global ones for that document.
+#
+# Misusing these directives never makes the input invalid YAML, because
+# every such line is a valid reserved directive. The offending directive is
+# ignored instead and a `DirectiveIssue` recorded, which travels with the
+# document's ``yamlStartDoc`` event. Syntax errors in the parameters of a
+# wrapped directive are the errors that directive would raise on its own
+# line, since the lexer lexes them the same way.
+#
+# The readers below each consume one directive's tokens. They are shared by
+# a directive on its own line and the same directive wrapped by ``%GLOBAL``,
+# so both are checked identically.
+
+type DirectiveParameter = tuple[value: string, startPos, endPos: Mark]
+
+proc issue(issues: var seq[DirectiveIssue], kind: DirectiveIssueKind,
+    startPos, endPos: Mark, message: string) =
+  ## Records why a directive is ignored.
+  issues.add(DirectiveIssue(kind: kind, message: message,
+      startPos: startPos, endPos: endPos))
+
+proc readParameters(ctx: Context): seq[DirectiveParameter] =
+  ## Consumes the parameters of a ``%SCHEMA`` or reserved directive; the
+  ## current token is the directive itself.
+  ctx.safeNext()
+  while ctx.lex.cur == Token.DirectiveParam:
+    result.add((ctx.lex.fullLexeme(), ctx.lex.curStartPos, ctx.lex.curEndPos))
+    ctx.safeNext()
+
+proc readYamlDirective(ctx: Context, origin: DirectiveOrigin,
+    start: Mark): Directive =
+  ## Reads ``%YAML <version>``; the lexer has already checked the version's
+  ## syntax.
+  ctx.safeNext()
+  if ctx.lex.cur != Token.DirectiveParam:
+    raise ctx.generateError("Invalid token (expected YAML version string): " & $ctx.lex.cur)
+  result = Directive(kind: dkYaml, origin: origin, version: ctx.lex.fullLexeme(),
+      startPos: start, endPos: ctx.lex.curEndPos,
+      valueStart: ctx.lex.curStartPos, valueEnd: ctx.lex.curEndPos)
+  ctx.safeNext()
+
+proc readTagDirective(ctx: Context, origin: DirectiveOrigin,
+    start: Mark): Directive =
+  ## Reads ``%TAG <handle> <prefix>``.
+  ctx.safeNext()
+  if ctx.lex.cur != Token.TagHandle:
+    raise ctx.generateError("Invalid token (expected tag handle): " & $ctx.lex.cur)
+  let handle = ctx.lex.fullLexeme()
+  ctx.safeNext()
+  if ctx.lex.cur != Token.Suffix:
+    raise ctx.generateError("Invalid token (expected tag URI): " & $ctx.lex.cur)
+  result = Directive(kind: dkTag, origin: origin, handle: handle,
+      prefix: ctx.lex.evaluated, startPos: start, endPos: ctx.lex.curEndPos,
+      valueStart: ctx.lex.curStartPos, valueEnd: ctx.lex.curEndPos)
+  ctx.safeNext()
+
+proc readSchemaDirective(ctx: Context, origin: DirectiveOrigin, start: Mark,
+    issues: var seq[DirectiveIssue], directive: var Directive): bool =
+  ## Reads a ``%SCHEMA`` directive. Returns ``false``, after recording why,
+  ## if it does not name a schema that can be located.
+  let directiveEnd = ctx.lex.curEndPos
+  let params = ctx.readParameters()
+  let lineEnd = if params.len > 0: params[^1].endPos else: directiveEnd
+  if params.len != 1:
+    issues.issue(diInvalidSchema, start, lineEnd,
+        "%SCHEMA expects exactly one URI reference, got " & $params.len &
+        " parameters")
+    return false
+  let (reference, valueStart, valueEnd) = params[0]
+  if not isUriReference(reference):
+    issues.issue(diInvalidSchema, valueStart, valueEnd,
+        escape(reference) & " is not a URI reference")
+    return false
+  var uri = reference
+  if not reference.isAbsolute:
+    if ctx.sourceUri.len == 0:
+      issues.issue(diUnresolvableSchema, valueStart, valueEnd,
+          "relative schema reference " & escape(reference) &
+          " cannot be resolved: the input has no source URI")
+      return false
+    uri = resolve(ctx.sourceUri, reference)
+  directive = Directive(kind: dkSchema, origin: origin, reference: reference,
+      uri: uri, startPos: start, endPos: lineEnd, valueStart: valueStart,
+      valueEnd: valueEnd)
+  result = true
+
+proc skipRestOfLine(ctx: Context, line: int): Mark =
+  ## Consumes the remaining tokens of directive line ``line``; returns the
+  ## end of the last one.
+  result = ctx.lex.curEndPos
+  while ctx.lex.cur != Token.StreamEnd and ctx.lex.curStartPos.line == line:
+    result = ctx.lex.curEndPos
+    ctx.safeNext()
+
+proc sameDeclaration(a, b: Directive): bool =
+  ## Whether ``a`` and ``b`` set the same thing, so that one replaces the
+  ## other: the version, the schema, or the prefix of the same tag handle.
+  a.kind == b.kind and (a.kind != dkTag or a.handle == b.handle)
+
+proc readGlobalDirective(ctx: Context, issues: var seq[DirectiveIssue],
+    seenGlobalSchema: var bool) =
+  ## Reads ``%GLOBAL <directive>``; the current token is ``%GLOBAL``.
+  let
+    start = ctx.lex.curStartPos
+    line = start.line
+    firstDocument = ctx.documentsBegun == 1
+  ctx.safeNext()
+  let wrapped = ctx.lex.cur
+  if ctx.lex.curStartPos.line != line or wrapped notin {Token.YamlDirective,
+      Token.TagDirective, Token.SchemaDirective, Token.GlobalDirective,
+      Token.UnknownDirective}:
+    issues.issue(diMissingGlobal, start, Mark(line: line,
+        column: start.column + "%GLOBAL".len), "%GLOBAL needs a directive")
+    return
+  var declared: Directive
+  case wrapped
+  of Token.YamlDirective: declared = ctx.readYamlDirective(doGlobal, start)
+  of Token.TagDirective: declared = ctx.readTagDirective(doGlobal, start)
+  of Token.SchemaDirective:
+    if not firstDocument:
+      # still read, so that it is checked like everywhere else
+      var ignored: seq[DirectiveIssue]
+      discard ctx.readSchemaDirective(doGlobal, start, ignored, declared)
+    else:
+      let duplicate = seenGlobalSchema
+      seenGlobalSchema = true
+      if not ctx.readSchemaDirective(doGlobal, start, issues, declared): return
+      if duplicate:
+        issues.issue(diDuplicateGlobal, start, declared.endPos,
+            "a global %SCHEMA has already been declared")
+        return
+  of Token.GlobalDirective:
+    let stop = ctx.skipRestOfLine(line)
+    issues.issue(diNestedGlobal, start, stop, "%GLOBAL cannot wrap %GLOBAL")
+    return
+  else:
+    let name = ctx.lex.evaluated
+    let stop = ctx.skipRestOfLine(line)
+    issues.issue(diUnknownGlobal, start, stop, "%GLOBAL " & name &
+        " is ignored: only YAML, TAG and SCHEMA can be global")
+    return
+  if not firstDocument:
+    issues.issue(diMisplacedGlobal, start, declared.endPos,
+        "%GLOBAL is only allowed before the first document")
+    return
+  for existing in ctx.globals:
+    if existing.sameDeclaration(declared) and declared.kind != dkSchema:
+      issues.issue(diDuplicateGlobal, start, declared.endPos,
+          "a global %" & $declared.kind &
+          (if declared.kind == dkTag: " for " & declared.handle else: "") &
+          " has already been declared")
+      return
+  ctx.globals.add(declared)
+
+proc effectiveDirectives(ctx: Context, own: seq[Directive],
+    issues: seq[DirectiveIssue], version: var string): DocumentDirectives =
+  ## Overlays the document's own directives on the global ones: sets the
+  ## effective tag handles in ``ctx.handles`` and ``version``, and returns
+  ## the record for the ``yamlStartDoc`` event (nil if there is nothing to
+  ## record).
+  resetHandles(ctx.handles)
+  version = ""
+  var schema = ""
+  for d in ctx.globals & own:
+    case d.kind
+    of dkYaml: version = d.version
+    of dkTag: discard registerHandle(ctx.handles, d.handle, d.prefix)
+    of dkSchema: schema = d.uri
+  if ctx.globals.len == 0 and own.len == 0 and issues.len == 0: return nil
+  result = DocumentDirectives(schema: schema, issues: issues)
+  for g in ctx.globals:
+    var declaration = g
+    for d in own:
+      if d.sameDeclaration(g): declaration.overridden = true
+    result.declarations.add(declaration)
+  result.declarations.add(own)
+
 proc beforeDoc(ctx: Context, e: var Event): bool =
-  var version = ""
-  var seenDirectives = false
-  var start = YamlDocumentStart(offset: -1)
+  var
+    own: seq[Directive]
+    issues: seq[DirectiveIssue]
+    seenDirectives, seenYaml, seenSchema, seenGlobalSchema = false
+    start = YamlDocumentStart(offset: -1)
+  template startDocument(explicit: bool) =
+    var version: string
+    let directives = ctx.effectiveDirectives(own, issues, version)
+    e = startDocEvent(explicit, version, ctx.handles, ctx.lex.curStartPos,
+        ctx.lex.curEndPos, directives)
   while true:
     if start.offset < 0 and ctx.lex.cur notin {DocumentEnd, StreamEnd}:
       # the first token of the document; the lexer is still on its line
+      inc(ctx.documentsBegun)
       start = YamlDocumentStart(offset: ctx.lex.lineOffset(),
-                                line: ctx.lex.currentLineNumber())
+                                line: ctx.lex.currentLineNumber(),
+                                index: ctx.documentsBegun - 1)
+      if start.index > 0: start.globals = ctx.globals
       # set right away, so that error recovery knows the start of a
       # document that fails before its yamlStartDoc
       ctx.documentStart = start
@@ -833,7 +1183,7 @@ proc beforeDoc(ctx: Context, e: var Event): bool =
         raise ctx.generateError("Missing `---` after directives")
       ctx.safeNext()
     of DirectivesEnd:
-      e = startDocEvent(true, version, ctx.handles, ctx.lex.curStartPos, ctx.lex.curEndPos)
+      startDocument(true)
       ctx.safeNext()
       ctx.transition(beforeDocEnd)
       ctx.pushLevel(afterDirectivesEnd, -1)
@@ -844,39 +1194,45 @@ proc beforeDoc(ctx: Context, e: var Event): bool =
       ctx.popLevel()
       return false
     of Indentation:
-      e = startDocEvent(false, version, ctx.handles, ctx.lex.curStartPos, ctx.lex.curEndPos)
+      startDocument(false)
       ctx.transition(beforeDocEnd)
       ctx.pushLevel(beforeImplicitRoot, -1)
       return true
     of YamlDirective:
       seenDirectives = true
-      ctx.safeNext()
-      if ctx.lex.cur != Token.DirectiveParam:
-        raise ctx.generateError("Invalid token (expected YAML version string): " & $ctx.lex.cur)
-      elif version != "":
-        raise ctx.generateError("Duplicate %YAML")
-      version = ctx.lex.fullLexeme()
-      if version != "1.2" and ctx.issueWarnings:
+      if seenYaml: raise ctx.generateError("Duplicate %YAML")
+      seenYaml = true
+      own.add(ctx.readYamlDirective(doDocument, ctx.lex.curStartPos))
+      if own[^1].version != "1.2" and ctx.issueWarnings:
         discard # TODO
-      ctx.safeNext()
     of TagDirective:
       seenDirectives = true
-      ctx.safeNext()
-      if ctx.lex.cur != Token.TagHandle:
-        raise ctx.generateError("Invalid token (expected tag handle): " & $ctx.lex.cur)
-      let tagHandle = ctx.lex.fullLexeme()
-      ctx.safeNext()
-      if ctx.lex.cur != Token.Suffix:
-        raise ctx.generateError("Invalid token (expected tag URI): " & $ctx.lex.cur)
-      discard registerHandle(ctx.handles, tagHandle, ctx.lex.evaluated)
-      ctx.safeNext()
+      own.add(ctx.readTagDirective(doDocument, ctx.lex.curStartPos))
+    of SchemaDirective:
+      seenDirectives = true
+      let
+        start = ctx.lex.curStartPos
+        duplicate = seenSchema
+      seenSchema = true
+      var declared: Directive
+      if ctx.readSchemaDirective(doDocument, start, issues, declared):
+        if duplicate:
+          issues.issue(diDuplicateSchema, start, declared.endPos,
+              "a document can have only one %SCHEMA")
+        else: own.add(declared)
+    of GlobalDirective:
+      seenDirectives = true
+      ctx.readGlobalDirective(issues, seenGlobalSchema)
     of UnknownDirective:
       seenDirectives = true
-      # TODO: issue warning. Warnings must be buffered in the Context rather
-      # than emitted directly, so that a YamlFeedParser rollback discards them.
-      while true:
-        ctx.safeNext()
-        if ctx.lex.cur != Token.DirectiveParam: break
+      let
+        start = ctx.lex.curStartPos
+        name = ctx.lex.evaluated
+        params = ctx.readParameters()
+      issues.issue(diUnknownDirective, start,
+          if params.len > 0: params[^1].endPos else: Mark(line: start.line,
+              column: start.column + 1 + name.len),
+          "unknown directive %" & name & " is ignored")
     else:
       raise ctx.generateError("Unexpected token (expected directive or document start): " & $ctx.lex.cur)
 
@@ -1697,7 +2053,9 @@ proc recover(rs: YamlRecoveringStream, ce: ref CatchableError)
   # parsed again
   if ctx.lex.resync(max(rs.lastResync, ctx.documentStart.offset)):
     record.resumedAt = YamlDocumentStart(offset: ctx.lex.lineOffset(),
-                                         line: ctx.lex.currentLineNumber())
+                                         line: ctx.lex.currentLineNumber(),
+                                         index: ctx.documentsBegun,
+                                         globals: ctx.globals)
     rs.lastResync = record.resumedAt.offset
     ctx.levels = @[Level(state: atStreamEnd, indentation: -2),
                    Level(state: beforeDoc, indentation: -1)]

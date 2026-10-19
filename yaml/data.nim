@@ -66,7 +66,15 @@ type
     of yamlStartDoc:
       explicitDirectivesEnd*: bool
       version*: string
+        ## the effective ``%YAML`` version: the document's own, or the
+        ## global one (empty if there is neither)
       handles*: seq[tuple[handle, uriPrefix: string]]
+        ## the effective tag handles: the defaults, overlaid by global
+        ## ``%TAG`` directives, overlaid by the document's own
+      directives*: DocumentDirectives
+        ## where the effective directives come from, the effective schema
+        ## and the problems found in the directive block; ``nil`` for a
+        ## document without directives in a stream without globals
     of yamlEndDoc:
       explicitDocumentEnd*: bool
     of yamlEndMap, yamlEndSeq: discard
@@ -78,6 +86,77 @@ type
     column*: Positive = 1
 
   Properties* = tuple[anchor: Anchor, tag: Tag]
+
+  # Directives
+  # ----------
+  #
+  # YAML 1.2 defines ``%YAML`` and ``%TAG`` and scopes both to one document.
+  # NimYAML adds two directives of its own: ``%SCHEMA <uri-reference>``
+  # names the JSON Schema of the document, and ``%GLOBAL <directive>`` (only
+  # in the directive block of the first document) makes a ``YAML``, ``TAG``
+  # or ``SCHEMA`` directive apply to every document of the stream. The types
+  # below describe, per document, which directives are in effect and where
+  # they come from. Consumers that only need the effective values can keep
+  # reading ``version`` and ``handles`` of the ``yamlStartDoc`` event.
+
+  DirectiveKind* = enum
+    ## The directives that have a meaning for NimYAML.
+    dkYaml = "YAML", dkTag = "TAG", dkSchema = "SCHEMA"
+
+  DirectiveOrigin* = enum
+    ## Whether a directive was declared for the stream (``%GLOBAL``) or for
+    ## its document.
+    doGlobal = "global", doDocument = "document"
+
+  Directive* = object
+    ## A directive declaration. ``startPos`` .. ``endPos`` spans the
+    ## declaring line from ``%`` to the end of the last parameter,
+    ## ``valueStart`` .. ``valueEnd`` the version, prefix or URI.
+    origin*: DirectiveOrigin
+    overridden*: bool
+      ## a global directive that the document replaces with its own
+    startPos*, endPos*, valueStart*, valueEnd*: Mark
+    case kind*: DirectiveKind
+    of dkYaml: version*: string
+    of dkTag: handle*, prefix*: string
+    of dkSchema:
+      reference*: string ## the URI reference as written
+      uri*: string       ## ``reference``, resolved against the source URI
+
+  DirectiveIssueKind* = enum
+    ## Problems with directives that do not make the YAML invalid: the
+    ## directive is ignored instead. The string values are the stable ids
+    ## under which `lint <lint.html>`_ reports them.
+    diUnknownDirective = "unknown-directive"
+      ## a reserved directive, which YAML 1.2 (§6.8) says to ignore with a
+      ## warning
+    diInvalidSchema = "invalid-schema-directive"
+      ## ``%SCHEMA`` without exactly one URI reference
+    diDuplicateSchema = "duplicate-schema-directive"
+    diUnresolvableSchema = "unresolvable-schema-uri"
+      ## a relative reference in a stream without source URI
+    diMisplacedGlobal = "misplaced-global-directive"
+      ## ``%GLOBAL`` outside the directive block of the first document
+    diMissingGlobal = "missing-global-directive"
+    diNestedGlobal = "nested-global-directive"
+    diDuplicateGlobal = "duplicate-global-directive"
+    diUnknownGlobal = "unknown-global-directive"
+      ## ``%GLOBAL`` with a directive other than YAML, TAG or SCHEMA
+
+  DirectiveIssue* = object
+    kind*: DirectiveIssueKind
+    message*: string
+    startPos*, endPos*: Mark
+
+  DocumentDirectives* = ref object
+    ## What the directives of one document amount to.
+    schema*: string
+      ## the URI of the effective ``%SCHEMA`` (the document's own or the
+      ## global one), resolved; empty if there is none
+    declarations*: seq[Directive]
+      ## the global directives (with ``overridden`` set where the document
+      ## replaces them), then the document's own, in source order
+    issues*: seq[DirectiveIssue]
 
   YamlLoadingError* = object of ValueError
     ## Base class for all exceptions that may be raised during the process
@@ -156,12 +235,13 @@ proc startDocEvent*(
   handles  : seq[tuple[handle, uriPrefix: string]] = @[],
   startPos : Mark = Mark(),
   endPos   : Mark = Mark(),
+  directives: DocumentDirectives = nil,
 ): Event
     {.inline, raises: [].} =
   ## creates a new event that marks the start of a YAML document
   result = Event(startPos: startPos, endPos: endPos,
                  kind: yamlStartDoc, version: version, handles: handles,
-                 explicitDirectivesEnd: explicit)
+                 explicitDirectivesEnd: explicit, directives: directives)
 
 proc endDocEvent*(
   explicit = false,
@@ -264,6 +344,19 @@ proc hash*(id: Anchor): Hash {.borrow.}
 proc `==`*(left, right: Tag): bool {.borrow.}
 proc `$`*(tag: Tag): string {.borrow.}
 proc hash*(tag: Tag): Hash {.borrow.}
+
+proc `==`*(left, right: Directive): bool {.raises: [].} =
+  ## Whether two declarations are the same, including their positions.
+  ## (Nim cannot derive equality for case objects.)
+  if left.kind != right.kind or left.origin != right.origin or
+      left.overridden != right.overridden or left.startPos != right.startPos or
+      left.endPos != right.endPos or left.valueStart != right.valueStart or
+      left.valueEnd != right.valueEnd:
+    return false
+  case left.kind
+  of dkYaml: left.version == right.version
+  of dkTag: left.handle == right.handle and left.prefix == right.prefix
+  of dkSchema: left.reference == right.reference and left.uri == right.uri
 
 proc `==`*(left: Event, right: Event): bool {.raises: [].} =
   ## compares all existing fields of the given items

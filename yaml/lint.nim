@@ -20,12 +20,24 @@
 ##
 ## Events of invalid documents are dropped by `parseRecovering`, so event
 ## rules only see valid documents; the ``syntax`` rule reports the errors.
+##
+## Directive rules
+## ---------------
+##
+## The parser records problems with directives that do not make the YAML
+## invalid (see `DirectiveIssueKind`): reserved directives, and misuse of
+## NimYAML's ``%SCHEMA`` and ``%GLOBAL``. Each kind is a rule of its own,
+## under the same id, so that it can be configured like any other. The
+## ``schema-source`` rule reports documents that name their schema in more
+## than one way (see `documentschema <documentschema.html>`_). Like
+## ``syntax``, these rules have no hooks of their own: `lint` hands them
+## what the parser and the schema collector found.
 
 import std/[algorithm, options, os, sets, strutils, tables]
 from std/unicode import runeLen, runeOffset
 when defined(nimPreviewSlimSystem):
   import std/syncio
-import data, parser, stream, loading, annotations, diagnostics
+import data, parser, stream, loading, annotations, diagnostics, documentschema
 export options, tables, diagnostics
 
 type
@@ -46,7 +58,10 @@ type
   LintContext* = object
     ## State of one `lint` call, passed to the rules.
     source*: string
+    sourceUri*: string ## where ``source`` was retrieved from; may be empty
     diagnostics*: seq[Diagnostic]
+    documentStart*: YamlDocumentStart
+      ## the start of the document of the most recent ``yamlStartDoc``
 
   LintRule* = ref object of RootObj
     ## Base of all rules. `lint` creates fresh instances for each call, so
@@ -56,6 +71,9 @@ type
     config*: RuleConfig
 
   SyntaxRule = ref object of LintRule
+  ReportedRule = ref object of LintRule
+    ## A rule whose diagnostics come from the parser (directive issues) or
+    ## the schema collector, not from hooks.
 
 const configFileName* = ".nimyaml-lint.yaml"
 
@@ -242,7 +260,7 @@ method onEvent(r: TruthyRule, ctx: var LintContext, e: Event) =
 
 proc builtinRules*(): seq[LintRule] =
   ## Fresh instances of all built-in rules, with their default levels.
-  @[LintRule(SyntaxRule(id: "syntax", level: levelError)),
+  result = @[LintRule(SyntaxRule(id: "syntax", level: levelError)),
     DuplicateKeyRule(id: "duplicate-key", level: levelError),
     ComplexKeyRule(id: "complex-key", level: levelWarning),
     UndefinedAliasRule(id: "undefined-alias", level: levelError),
@@ -252,6 +270,11 @@ proc builtinRules*(): seq[LintRule] =
     LineLengthRule(id: "line-length", level: levelWarning),
     TabsRule(id: "tabs", level: levelError),
     FinalNewlineRule(id: "final-newline", level: levelWarning)]
+  for kind in DirectiveIssueKind:
+    let level = if kind in {diUnknownDirective, diUnknownGlobal}: levelWarning
+                else: levelError
+    result.add(ReportedRule(id: $kind, level: level))
+  result.add(ReportedRule(id: "schema-source", level: levelInfo))
 
 proc builtinRuleIds*(): seq[string] =
   for r in builtinRules(): result.add(r.id)
@@ -311,29 +334,51 @@ proc cmpDiagnostics(a, b: Diagnostic): int =
   if result == 0: result = cmp(a.startPos.column, b.startPos.column)
   if result == 0: result = cmp(a.rule, b.rule)
 
-proc lint*(source: string, config = defaultConfig()): seq[Diagnostic] =
-  ## Lints ``source`` with the rules enabled by ``config``. Returns the
-  ## diagnostics sorted by start position, then rule id.
+proc lint*(source: string, config = defaultConfig(), sourceUri = ""):
+    seq[Diagnostic] =
+  ## Lints ``source`` with the rules enabled by ``config``. ``sourceUri`` is
+  ## the URI ``source`` was retrieved from; relative schema references
+  ## resolve against it. Returns the diagnostics sorted by start position,
+  ## then rule id.
   var
-    ctx = LintContext(source: source)
+    ctx = LintContext(source: source, sourceUri: sourceUri)
     rules: seq[LintRule]
     syntax: LintRule = nil
+    reported = initTable[string, LintRule]()
+    schemas = initSchemaCollector(sourceUri)
   for r in builtinRules():
     r.config = config.rules.getOrDefault(r.id)
     if r.config.level.isSome: r.level = r.config.level.get()
     if r.level == levelOff: continue
     if r of SyntaxRule: syntax = r
+    elif r of ReportedRule: reported[r.id] = r
     else: rules.add(r)
-  let events = initYamlParser().parseRecovering(source)
+  template report(d: Diagnostic) =
+    if d.rule in reported:
+      var found = d
+      found.severity = reported[d.rule].level.severity
+      ctx.diagnostics.add(found)
+  let events = initYamlParser(sourceUri = sourceUri).parseRecovering(source)
   for e in events:
+    if e.kind == yamlStartDoc:
+      ctx.documentStart = events.documentStart
+      schemas.onDocumentStart(e, ctx.documentStart)
+      if not e.directives.isNil:
+        for i in e.directives.issues:
+          report(Diagnostic(rule: $i.kind, startPos: i.startPos,
+              endPos: i.endPos, message: i.message))
+    else: schemas.onEvent(e)
     for r in rules: r.onEvent(ctx, e)
   if not syntax.isNil:
     for err in events.errors:
       var d = err.toDiagnostic(source)
       d.severity = syntax.level.severity
       ctx.diagnostics.add(d)
+  for err in events.errors: schemas.onDocumentDropped(err)
   for n, text in source.sourceLines:
+    schemas.onLine(n, text)
     for r in rules: r.onLine(ctx, n, text)
+  for d in schemas.finish().diagnostics: report(d)
   for r in rules: r.onEnd(ctx)
   result = move(ctx.diagnostics)
   result.sort(cmpDiagnostics)

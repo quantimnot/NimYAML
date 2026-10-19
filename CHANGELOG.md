@@ -51,9 +51,38 @@ Features:
    Hyper-Schema (`links`, `resolveTarget`, `toYaml`)
  * new module `yaml/uritemplate` expands RFC 6570 URI Templates at all
    levels; the uritemplate-test suite (added as a submodule) passes
+ * NimYAML's own directives `%SCHEMA <uri-reference>` (the JSON Schema of the
+   document, resolved against the new parser option `sourceUri`) and
+   `%GLOBAL <directive>` (a `YAML`, `TAG` or `SCHEMA` directive for every
+   document of the stream, overridable per document). Enabled by default;
+   `initYamlParser(directiveExtensions = false)` treats them as reserved
+   directives. `yamlStartDoc` events carry the effective schema, the
+   declarations in effect with origin and position, and directive issues
+   (`directives` field); feed parsers, checkpoints, `parse(start)` and error
+   recovery keep the global directives
+ * reserved directives are now reported (`unknown-directive`), as YAML 1.2
+   §6.8 asks; misuse of `%SCHEMA`/`%GLOBAL` is reported by nine further lint
+   rules, and `schema-source` reports documents that name their schema in
+   more than one way
+ * new modules `yaml/documentschema` (which schema a document declares:
+   `%SCHEMA` > `%GLOBAL SCHEMA` > `yaml-language-server` modeline >
+   `$schema` key) and `yaml/schemavalidation` (validates each document
+   against it, as diagnostics)
+ * new module `yaml/portable` and tool `tools/yamlexpand`: expand global
+   directives into per-document ones (optionally `%SCHEMA` into a modeline),
+   so that other YAML processors read the stream the same way; presenter
+   options `outputVersion = ovDocument` and `schemaDirective`
+ * `yamllint` and `yamllsp` validate documents against their schema; the
+   language server adds completion, hover, go-to-definition and document
+   links for directives and schema references
 
 Changes:
 
+ * parameters of reserved directives are lexed one token per parameter
+   (`ns-directive-parameter`), not as one token for the rest of the line
+ * `YamlDocumentStart` has new fields `index` and `globals`; the checkpoint
+   format version is now 2 (checkpoints of version 1 cannot be resumed)
+ * `lint` takes an optional `sourceUri`
  * `parse(Stream)` no longer reads from the stream itself. Errors raised by
    the `Stream` are reported by the first `next` that needs the data, as
    "Encountered stream error" with the original exception in the cause
