@@ -750,6 +750,24 @@ references. Build them with
 `nim yamllint config.nims` and `nim yamllsp config.nims`, or
 `nim c -d:release tools/yamllint`.
 
+Editor bindings for the language server live in `editors/`. Both start
+`yamllsp` from `PATH` by default, so put the built binary there or point
+them at it:
+
+* **VS Code**: `editors/vscode` is a small extension. Package and install it
+  with
+  ```bash
+  cd editors/vscode && npm install
+  npx @vscode/vsce package --allow-missing-repository --skip-license
+  code --install-extension nimyaml-yamllsp-0.1.0.vsix
+  ```
+  Set `nimyaml.yamllsp.path` to use a binary that is not on `PATH`, and run
+  *NimYAML: Restart yamllsp* after rebuilding it. It runs alongside other
+  YAML extensions.
+* **Helix**: merge `editors/helix/languages.toml` into
+  `~/.config/helix/languages.toml`, or copy it to `.helix/languages.toml` in a
+  project. `hx --health yaml` shows whether `yamllsp` was found.
+
 ## Developers
 
 Nix users can `nix develop` to get a devshell with the required Nim version. You'll need to have Flakes enabled.
