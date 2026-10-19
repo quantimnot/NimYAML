@@ -745,8 +745,11 @@ documents against the JSON Schema they declare (`file:` schemas only). The
 language server publishes the diagnostics of open documents and offers
 completion of directive names, hover on directives (effective value, global
 or per-document, overrides) and on `---`/`...` markers (the directives and
-schema in effect), and go-to-definition and document links on schema
-references. Build them with
+schema in effect), go-to-definition and document links on schema
+references, and syntax highlighting (semantic tokens) as NimYAML's lexer
+reads the text: keys, scalars by resolved type (numbers, booleans, null),
+tags, anchors, aliases, `%GLOBAL`/`%SCHEMA` and other directives, and
+comments. Build them with
 `nim yamllint config.nims` and `nim yamllsp config.nims`, or
 `nim c -d:release tools/yamllint`.
 

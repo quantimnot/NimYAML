@@ -28,7 +28,11 @@
 ##   document, and its schema with the source it comes from,
 ## * go-to-definition and document links on schema references.
 ##
-## They work on what the parser reports per document (the ``directives`` of
+## Semantic tokens highlight the text as NimYAML's lexer reads it: keys,
+## scalars by the type they resolve to, tags, anchors, aliases, directives
+## and comments (see the section below).
+##
+## The directive features work on what the parser reports per document (the ``directives`` of
 ## each ``yamlStartDoc`` event) rather than on the text, so they agree with
 ## how the document is actually read. Documents with syntax errors are
 ## dropped by error recovery and have no such information.
@@ -38,6 +42,8 @@ when defined(nimPreviewSlimSystem):
   import std/syncio
 import ../yaml/[data, parser, stream, lint, jsonschema, documentschema,
     schemavalidation]
+import ../yaml/private/lex
+from ../yaml/hints import guessType, TypeHint
 
 type
   ConfigEntry = tuple[config: LintConfig, error: string]
@@ -382,6 +388,220 @@ proc documentLinks(s: Server, uri: string): JsonNode =
     result.add(%*{"range": lspRange(a.lines, r.startPos, r.endPos),
         "target": r.target})
 
+# Semantic tokens
+#
+# Editors highlight YAML with regular-expression grammars, which guess where
+# NimYAML knows: whether `%GLOBAL` and `%SCHEMA` are directives, where a
+# multi-line plain scalar ends, whether a scalar is a key, which plain
+# scalars resolve to numbers, booleans or null. The server answers
+# ``textDocument/semanticTokens/full`` from one pass of NimYAML's own lexer,
+# so the highlighting is how the text is actually read.
+#
+# The lexer rather than the parser: events carry no positions of the
+# indicators, tags and anchors inside a node, and error recovery drops whole
+# documents, while a highlighter should colour all it can. The lexer is
+# driven by itself; the parser only switches on the directive extensions.
+# Only `range` and `delta` requests are not offered: a full pass is cheap,
+# and clients fall back to it.
+#
+# Two things the lexer has no tokens for are recovered around it. Comments
+# are whitespace to the lexer, but every `#` between two tokens starts one,
+# since all other text is inside some token; a block scalar's token also
+# spans its header line, so its comment is searched for there. And on a
+# lexer error, the lexer skips to the next document as the parser's error
+# recovery does, and the skipped text stays uncoloured.
+
+type
+  HighlightKind = enum
+    ## The token types of the legend, in the order of their indexes. Only
+    ## standard types, so that every theme has colours for them.
+    hkComment = "comment"
+    hkKeyword = "keyword"     ## directives, `---`, `...`, null and booleans
+    hkString = "string"
+    hkNumber = "number"
+    hkProperty = "property"   ## mapping keys
+    hkType = "type"           ## tags
+    hkVariable = "variable"   ## anchors and aliases
+    hkOperator = "operator"   ## indicators, block scalar headers
+    hkNamespace = "namespace" ## the handle a `%TAG` declares
+    hkParameter = "parameter" ## parameters of unknown directives
+
+  Highlight = object
+    line, startColumn, endColumn: int ## 1-based; byte columns, end exclusive
+    kind: HighlightKind
+    declaration: bool                ## an anchor, the only modifier
+
+const
+  highlightModifiers = ["declaration"]
+  noDirective = Token.StreamEnd ## no directive line is being read
+
+proc contentStart(text: string): int =
+  ## The column of the first non-blank character of ``text``.
+  result = 1
+  while result <= text.len and text[result - 1] in {' ', '\t'}: inc(result)
+
+proc add(hs: var seq[Highlight], lines: seq[string], startPos, endPos: Mark,
+    kind: HighlightKind, declaration = false) =
+  ## Adds the text from ``startPos`` to ``endPos``, one highlight per line,
+  ## since clients need not support tokens that span lines. Continuation
+  ## lines start at their first non-blank character.
+  for line in int(startPos.line) .. min(int(endPos.line), lines.len):
+    let text = lines[line - 1]
+    let first =
+      if line == startPos.line: int(startPos.column) else: contentStart(text)
+    let last = if line == endPos.line: int(endPos.column) else: text.len + 1
+    if last > first:
+      hs.add(Highlight(line: line, startColumn: first, endColumn: last,
+          kind: kind, declaration: declaration))
+
+proc addComments(hs: var seq[Highlight], lines: seq[string],
+    startPos, endPos: Mark) =
+  ## The comments in the gap between two tokens.
+  for line in int(startPos.line) .. min(int(endPos.line), lines.len):
+    let text = lines[line - 1]
+    let first = if line == startPos.line: int(startPos.column) else: 1
+    let last = if line == endPos.line: int(endPos.column) else: text.len + 1
+    for column in first ..< min(last, text.len + 1):
+      if text[column - 1] == '#':
+        hs.add(Highlight(line: line, startColumn: column, endColumn: last,
+            kind: hkComment))
+        break
+
+proc addBlockScalar(hs: var seq[Highlight], lines: seq[string],
+    startPos, endPos: Mark) =
+  ## A literal or folded scalar: its header (indicator, indentation and
+  ## chomping), the comment after the header, then its content.
+  let header = lines[startPos.line - 1]
+  var headerEnd = int(startPos.column) + 1
+  while headerEnd <= header.len and header[headerEnd - 1] in {'0'..'9', '+', '-'}:
+    inc(headerEnd)
+  hs.add(Highlight(line: startPos.line, startColumn: int(startPos.column),
+      endColumn: headerEnd, kind: hkOperator))
+  hs.addComments(lines, Mark(line: startPos.line, column: headerEnd),
+      Mark(line: startPos.line, column: header.len + 1))
+  if endPos.line > startPos.line and startPos.line < lines.len:
+    let firstLine = startPos.line + 1
+    hs.add(lines, Mark(line: firstLine,
+        column: contentStart(lines[firstLine - 1])), endPos, hkString)
+
+proc plainKind(content: string): HighlightKind =
+  ## The colour of a plain scalar value by what it resolves to.
+  case guessType(content)
+  of yTypeInteger, yTypeFloat, yTypeFloatInf, yTypeFloatNaN: hkNumber
+  of yTypeBoolTrue, yTypeBoolFalse, yTypeNull: hkKeyword
+  of yTypeUnknown, yTypeTimestamp: hkString
+
+proc highlights(text: string, lines: seq[string]): seq[Highlight] =
+  ## The highlights of ``text`` in order, as read by one pass of the lexer.
+  var
+    lex: Lexer
+    gapStart = Mark(line: 1, column: 1) # comments are searched from here
+    directive = noDirective # the directive whose parameters are being read
+    scalarStart = -1        # highlights of the last scalar, if it may be a key
+    explicitKey = false     # after `?`, before the key's content
+    lastResync = -1
+  lex.directiveExtensions = true
+  lex.init(text)
+  while true:
+    try:
+      lex.next()
+    except LexerError:
+      # a new start, from the current line on if it opens a document;
+      # beyond the last one if the error is there again
+      if not lex.resync(max(lex.lineOffset() - 1, lastResync)): break
+      lastResync = lex.lineOffset()
+      let resumed = lex.currentLineNumber()
+      # the line may be read again, if the error was on its `---`
+      while result.len > 0 and result[^1].line >= resumed: result.setLen(result.len - 1)
+      gapStart = Mark(line: resumed, column: 1)
+      directive = noDirective
+      scalarStart = -1
+      explicitKey = false
+      continue
+    let (startPos, endPos) = (lex.curStartPos, lex.curEndPos)
+    result.addComments(lines, gapStart, startPos)
+    gapStart = endPos
+    let token = lex.cur
+    if token == Token.MapValueInd and scalarStart >= 0:
+      for i in scalarStart ..< result.len: result[i].kind = hkProperty
+    scalarStart = -1
+    case token
+    of Token.YamlDirective, Token.TagDirective, Token.SchemaDirective,
+       Token.UnknownDirective, Token.GlobalDirective:
+      directive = token
+      result.add(lines, startPos, endPos, hkKeyword)
+    of Token.DirectiveParam:
+      result.add(lines, startPos, endPos, case directive
+        of Token.YamlDirective: hkNumber
+        of Token.SchemaDirective: hkString
+        else: hkParameter)
+    of Token.TagHandle:
+      result.add(lines, startPos, endPos,
+          if directive == Token.TagDirective: hkNamespace else: hkType)
+    of Token.Suffix:
+      result.add(lines, startPos, endPos,
+          if directive == Token.TagDirective: hkString else: hkType)
+    of Token.VerbatimTag:
+      result.add(lines, startPos, endPos, hkType)
+    of Token.Anchor:
+      result.add(lines, startPos, endPos, hkVariable, declaration = true)
+    of Token.Alias:
+      result.add(lines, startPos, endPos, hkVariable)
+    of Token.Plain, Token.SingleQuoted, Token.DoubleQuoted:
+      scalarStart = result.len
+      result.add(lines, startPos, endPos,
+          if explicitKey: hkProperty
+          elif token == Token.Plain: plainKind(lex.evaluated)
+          else: hkString)
+    of Token.Literal, Token.Folded:
+      result.addBlockScalar(lines, startPos, endPos)
+    of Token.DirectivesEnd, Token.DocumentEnd:
+      result.add(lines, startPos, endPos, hkKeyword)
+    of Token.SeqItemInd, Token.MapKeyInd, Token.MapValueInd, Token.MapStart,
+       Token.MapEnd, Token.SeqStart, Token.SeqEnd, Token.SeqSep:
+      result.add(lines, startPos, endPos, hkOperator)
+    of Token.EmptyLine, Token.Indentation, Token.StreamEnd: discard
+    # a directive's parameters follow it directly, on its line
+    if token notin {Token.YamlDirective, Token.TagDirective,
+        Token.SchemaDirective, Token.UnknownDirective, Token.GlobalDirective,
+        Token.DirectiveParam, Token.TagHandle}:
+      directive = noDirective
+    # node properties and line breaks may come between `?` and the key
+    if token == Token.MapKeyInd: explicitKey = true
+    elif token notin {Token.TagHandle, Token.Suffix, Token.VerbatimTag,
+        Token.Anchor, Token.Indentation, Token.EmptyLine}:
+      explicitKey = false
+    if token == Token.StreamEnd: break
+
+proc semanticLegend(): JsonNode =
+  ## The legend the indexes of `semanticTokens` refer to.
+  var types: seq[string]
+  for kind in HighlightKind: types.add($kind)
+  %*{"tokenTypes": types, "tokenModifiers": highlightModifiers}
+
+proc semanticTokens(s: Server, uri: string): JsonNode =
+  ## The highlights of the document ``uri`` in the LSP encoding: five
+  ## integers per token, its line and start relative to the previous token,
+  ## its length, its type and its modifiers, with UTF-16 positions.
+  var data = newJArray()
+  if uri in s.docs:
+    let text = s.docs[uri]
+    var lines: seq[string]
+    for _, line in text.sourceLines: lines.add(line)
+    var previousLine, previousStart = 0
+    for h in highlights(text, lines):
+      let
+        line = h.line - 1
+        start = utf16Column(lines[line], h.startColumn)
+        length = utf16Column(lines[line], h.endColumn) - start
+      data.add(%(line - previousLine))
+      data.add(%(if line == previousLine: start - previousStart else: start))
+      data.add(%length)
+      data.add(%ord(h.kind))
+      data.add(%(if h.declaration: 1 else: 0))
+      (previousLine, previousStart) = (line, start)
+  %*{"data": data}
+
 proc publish(s: var Server, uri: string): JsonNode =
   var diagnostics = newJArray()
   if uri in s.docs:
@@ -425,7 +645,9 @@ proc handle*(s: var Server, msg: JsonNode): seq[JsonNode] =
                                             "save": {"includeText": false}},
                        "completionProvider": {"triggerCharacters": ["%", " "]},
                        "hoverProvider": true, "definitionProvider": true,
-                       "documentLinkProvider": {"resolveProvider": false}},
+                       "documentLinkProvider": {"resolveProvider": false},
+                       "semanticTokensProvider": {"legend": semanticLegend(),
+                                                  "full": true}},
       "serverInfo": {"name": "yamllsp"}}))
   of "textDocument/didOpen":
     let doc = params["textDocument"]
@@ -464,6 +686,8 @@ proc handle*(s: var Server, msg: JsonNode): seq[JsonNode] =
     result.add(respond(id, answer))
   of "textDocument/documentLink":
     result.add(respond(id, s.documentLinks(params["textDocument"]["uri"].getStr())))
+  of "textDocument/semanticTokens/full":
+    result.add(respond(id, s.semanticTokens(params["textDocument"]["uri"].getStr())))
   of "shutdown":
     s.shutdownRequested = true
     result.add(respond(id, newJNull()))
