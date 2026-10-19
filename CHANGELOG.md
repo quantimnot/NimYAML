@@ -75,6 +75,8 @@ Features:
  * `yamllint` and `yamllsp` validate documents against their schema; the
    language server adds completion, hover, go-to-definition and document
    links for directives and schema references
+ * added editor bindings for `yamllsp`: a VS Code extension in
+   `editors/vscode` and a Helix `languages.toml` in `editors/helix`
 
 Changes:
 

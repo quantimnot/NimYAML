@@ -1,0 +1,51 @@
+{
+  "name": "nimyaml-yamllsp",
+  "displayName": "NimYAML yamllsp",
+  "description": "Lint diagnostics, JSON Schema validation and %GLOBAL/%SCHEMA directive support for YAML via NimYAML's yamllsp",
+  "version": "0.1.0",
+  "publisher": "nimyaml",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "vscode": "^1.82.0"
+  },
+  "categories": ["Linters", "Programming Languages"],
+  "activationEvents": [
+    "onLanguage:yaml",
+    "workspaceContains:**/.nimyaml-lint.yaml"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "NimYAML yamllsp",
+      "properties": {
+        "nimyaml.yamllsp.path": {
+          "type": "string",
+          "default": "yamllsp",
+          "markdownDescription": "Command that starts the `yamllsp` language server: a name looked up on `PATH` or an absolute path. Build it with `nim yamllsp config.nims` in the NimYAML repository."
+        },
+        "nimyaml.yamllsp.args": {
+          "type": "array",
+          "items": {"type": "string"},
+          "default": [],
+          "description": "Extra arguments passed to the language server."
+        },
+        "nimyaml.trace.server": {
+          "type": "string",
+          "enum": ["off", "messages", "verbose"],
+          "default": "off",
+          "description": "Traces the communication between VS Code and yamllsp in the output channel."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "nimyaml.yamllsp.restart",
+        "title": "NimYAML: Restart yamllsp"
+      }
+    ]
+  },
+  "dependencies": {
+    "vscode-languageclient": "9.0.1"
+  }
+}
