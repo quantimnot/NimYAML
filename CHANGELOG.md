@@ -95,6 +95,13 @@ Bugfixes:
    one tag allowed per node" if it had a tag of its own
  * a flow collection on a `---` line (`--- {a: b}`, YAML 1.2 example 9.4)
    was rejected as "Illegal content at `---`"
+ * an alias on a `---` line (`--- *a`) was rejected as "Illegal content at
+   `---`"
+ * a second `%TAG` for the same handle in one document silently replaced the
+   first; it is now an error, as YAML 1.2 §6.8.2 says
+ * error recovery parsed a document with directives that failed on or before
+   its `---` line again from that line: the error was recorded twice, or the
+   document came back without its directives
  * a JSON-style surrogate pair escape like `"\uD83D\uDCA9"` in a
    double-quoted scalar now yields the one character it encodes instead of
    two invalid surrogate code points
