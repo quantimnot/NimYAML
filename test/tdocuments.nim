@@ -268,6 +268,42 @@ suite "Error recovery":
       if e.kind == yamlScalar: scalars.add(e.scalarContent)
     check scalars == @["ok"]
 
+suite "Root properties on a `---` line":
+  # A tag or anchor of a root scalar written on the `---` line used to stay
+  # in the parser and was applied to the root of the next document as well
+  # (a second tag then failed with "Only one tag allowed per node").
+  proc rootTags(source: string): seq[string] =
+    for e in initYamlParser().parse(source):
+      if e.kind == yamlScalar: result.add($e.scalarProperties.tag)
+
+  test "belong to their document only":
+    check rootTags("--- !!str a\n--- b\n") ==
+        @["tag:yaml.org,2002:str", "?"]
+    check rootTags("--- !!str a\n...\n--- !!int 1\n") ==
+        @["tag:yaml.org,2002:str", "tag:yaml.org,2002:int"]
+    check rootTags("--- !!str\n--- b\n") == @["tag:yaml.org,2002:str", "?"]
+
+suite "Flow collections on a `---` line":
+  # The parser used to reject any flow collection that starts on the `---`
+  # line ("Illegal content at `---`"), although YAML 1.2 example 9.4 has one.
+  proc shape(source: string): seq[string] =
+    for e in initYamlParser().parse(source): result.add($e)
+
+  test "are the root node of their document":
+    check shape("--- [a, b]\n") == @["+STR", "+DOC ---", "+SEQ []", "=VAL :a",
+        "=VAL :b", "-SEQ", "-DOC", "-STR"]
+    check shape("--- { matches %: 20 }\n...\n--- !!seq [x]\n")[2 .. 5] ==
+        @["+MAP {}", "=VAL :matches %", "=VAL :20", "-MAP"]
+    check shape("--- &a {b: c}\n")[2] == "+MAP {} &a"
+
+  test "multi-line flow collections":
+    check shape("--- [a,\n  b]\n")[2 .. 5] ==
+        @["+SEQ []", "=VAL :a", "=VAL :b", "-SEQ"]
+
+  test "content after the collection is an error":
+    expect YamlStreamError:
+      discard shape("--- [a]\nb\n")
+
 suite "Document starts":
   test "yaml-test-suite: parsing from each document start":
     let inputs = suiteInputs()

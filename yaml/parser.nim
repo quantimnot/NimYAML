@@ -899,14 +899,24 @@ proc afterDirectivesEnd(ctx: Context, e: var Event): bool =
     return false
   of DocumentEnd, DirectivesEnd, StreamEnd:
     e = scalarEvent("", ctx.inlineProps, ssPlain, ctx.lex.curStartPos, ctx.lex.curEndPos)
+    # the properties belong to this root node only; left in place, they
+    # would be applied to the root of the next document
+    ctx.inlineProps = defaultProperties
     ctx.popLevel()
     return true
   of scalarTokenKind:
     e = scalarEvent(ctx.lex.evaluated, autoScalarTag(ctx.inlineProps, ctx.lex.cur),
                     toStyle(ctx.lex.cur), ctx.lex.curStartPos, ctx.lex.curEndPos)
+    ctx.inlineProps = defaultProperties
     ctx.popLevel()
     ctx.safeNext()
     return true
+  of MapStart, SeqStart:
+    # a flow collection on the `---` line (`--- {a: b}`, YAML 1.2
+    # example 9.4) is the root node; it is parsed like any flow node
+    if ctx.inlineProps.isEmpty(): ctx.inlineStart = ctx.lex.curStartPos
+    ctx.transition(beforeFlowItemProps)
+    return false
   else:
     raise ctx.generateError("Illegal content at `---`: " & $ctx.lex.cur)
 
