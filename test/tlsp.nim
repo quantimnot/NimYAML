@@ -115,7 +115,7 @@ suite "LSP server":
 
   test "unknown requests and notifications":
     var s: Server
-    let replies = s.handle(request(7, "textDocument/hover"))
+    let replies = s.handle(request(7, "textDocument/formatting"))
     check replies.len == 1
     check replies[0]["error"]["code"].getInt() == -32601
     check s.handle(notification("$/whatever")).len == 0
@@ -133,3 +133,130 @@ suite "LSP server":
     discard s.handle(notification("exit"))
     check s.exited
     check s.exitCode == 1
+
+suite "LSP directive features":
+  const stream = """%GLOBAL TAG !e! tag:example.com,2000:
+%GLOBAL SCHEMA https://x.example/global.json
+--- !e!a 1
+...
+%TAG !e! tag:local:
+%SCHEMA https://x.example/second.json
+--- !e!b 2
+...
+--- !e!c 3
+"""
+  proc at(meth, uri: string, line, character: int): JsonNode =
+    request(1, meth, %*{"textDocument": {"uri": uri},
+        "position": {"line": line, "character": character}})
+
+  proc answer(s: var Server, msg: JsonNode): JsonNode =
+    s.handle(msg)[0]["result"]
+
+  test "capabilities":
+    var s: Server
+    let c = s.answer(request(1, "initialize"))["capabilities"]
+    check c["hoverProvider"].getBool()
+    check c["definitionProvider"].getBool()
+    check c["completionProvider"]["triggerCharacters"] == %["%", " "]
+    check c.hasKey("documentLinkProvider")
+
+  test "byteColumn inverts utf16Column":
+    for (line, units) in [("abc", 2), ("é:x", 1), ("😀x", 2), ("ab", 5)]:
+      check utf16Column(line, byteColumn(line, units)) == units
+
+  test "completion of directive names":
+    var s: Server
+    discard s.handle(didOpen("untitled:c", "%\n%GLOBAL \n%GL\nkey: %\n"))
+    var labels: seq[string]
+    for item in s.answer(at("textDocument/completion", "untitled:c", 0, 1)):
+      labels.add(item["label"].getStr())
+    check labels == @["YAML", "TAG", "SCHEMA", "GLOBAL"]
+    labels.setLen(0)
+    for item in s.answer(at("textDocument/completion", "untitled:c", 1, 8)):
+      labels.add(item["label"].getStr())
+    check labels == @["YAML", "TAG", "SCHEMA"]
+    check s.answer(at("textDocument/completion", "untitled:c", 2, 3)).len == 4
+    check s.answer(at("textDocument/completion", "untitled:c", 3, 6)).len == 0
+
+  test "hover on a global directive":
+    var s: Server
+    discard s.handle(didOpen("untitled:h", stream))
+    let r = s.answer(at("textDocument/hover", "untitled:h", 0, 3))
+    let text = r["contents"]["value"].getStr()
+    check "%TAG !e! tag:example.com,2000:" in text
+    check "Global" in text
+    check "all 3 documents" in text
+    check "except document 2, which overrides it" in text
+    check r["range"]["start"] == %*{"line": 0, "character": 0}
+
+  test "hover on a per-document directive":
+    var s: Server
+    discard s.handle(didOpen("untitled:h", stream))
+    let tag = s.answer(at("textDocument/hover", "untitled:h", 4, 2))
+    check "document 2 only" in tag["contents"]["value"].getStr()
+    check "Overrides the global `%TAG !e! tag:example.com,2000:` (line 1)" in
+        tag["contents"]["value"].getStr()
+    let schema = s.answer(at("textDocument/hover", "untitled:h", 5, 2))
+    check "https://x.example/second.json" in schema["contents"]["value"].getStr()
+
+  test "hover on an ignored directive":
+    var s: Server
+    discard s.handle(didOpen("untitled:i", "a\n...\n%GLOBAL YAML 1.2\n--- b\n"))
+    let r = s.answer(at("textDocument/hover", "untitled:i", 2, 2))
+    check "misplaced-global-directive" in r["contents"]["value"].getStr()
+
+  test "hover on document markers":
+    var s: Server
+    discard s.handle(didOpen("untitled:h", stream))
+    let second = s.answer(at("textDocument/hover", "untitled:h", 6, 1))
+    let text = second["contents"]["value"].getStr()
+    check "**Document 2**" in text
+    check "`%TAG !e! tag:local:` (document, line 5)" in text
+    check "tag:example.com" notin text # overridden
+    check "<https://x.example/second.json> (%SCHEMA, line 6)" in text
+    let thirdHover = s.answer(at("textDocument/hover", "untitled:h", 8, 0))
+    let third = thirdHover["contents"]["value"].getStr()
+    check "`%TAG !e! tag:example.com,2000:` (global, line 1)" in third
+    check "(%GLOBAL SCHEMA, line 2)" in third
+    let ending = s.answer(at("textDocument/hover", "untitled:h", 3, 0))
+    check "**Document 1**" in ending["contents"]["value"].getStr()
+    check s.answer(at("textDocument/hover", "untitled:h", 2, 6)).kind == JNull
+
+  test "definition and document links of schema references":
+    var s: Server
+    discard s.handle(didOpen("untitled:h", stream))
+    let d = s.answer(at("textDocument/definition", "untitled:h", 5, 12))
+    check d["uri"].getStr() == "https://x.example/second.json"
+    check s.answer(at("textDocument/definition", "untitled:h", 5, 3)).kind == JNull
+    let links = s.answer(request(1, "textDocument/documentLink",
+        %*{"textDocument": {"uri": "untitled:h"}}))
+    var targets: seq[string]
+    for l in links: targets.add(l["target"].getStr())
+    check targets == @["https://x.example/global.json",
+        "https://x.example/second.json"]
+    check links[1]["range"] == %*{"start": {"line": 5, "character": 8},
+        "end": {"line": 5, "character": 37}}
+
+  test "relative schema references resolve against the document":
+    let dir = getTempDir() / ("yamllsp-schema-" & $getCurrentProcessId())
+    createDir(dir)
+    defer: removeDir(dir)
+    writeFile(dir / "s.yaml", "{type: object, required: [name]}\n")
+    let uri = "file://" & dir / "x.yaml"
+    var s: Server
+    let diags = s.handle(didOpen(uri, "%SCHEMA s.yaml\n--- {age: 3}\n"))
+        .diagnosticsOf(uri)
+    check diags.len == 1
+    check diags[0]["code"].getStr() == "schema-validation"
+    check diags[0]["range"]["start"] == %*{"line": 1, "character": 4}
+    let link = s.answer(request(1, "textDocument/documentLink",
+        %*{"textDocument": {"uri": uri}}))
+    check link[0]["target"].getStr() == "file://" & dir / "s.yaml"
+
+  test "directive diagnostics":
+    var s: Server
+    let diags = s.handle(didOpen("untitled:d", "%SCHEMA s.json\n--- a\n"))
+        .diagnosticsOf("untitled:d")
+    check diags.len == 1
+    check diags[0]["code"].getStr() == "unresolvable-schema-uri"
+    check diags[0]["severity"].getInt() == 1

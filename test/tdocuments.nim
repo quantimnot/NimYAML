@@ -215,7 +215,7 @@ suite "Error recovery":
               if sep == "...\n": lastSep + sep.len
               else: lastSep + sep.len - "---\n".len
             let lastStart = YamlDocumentStart(offset: lastOffset,
-                line: input[0 ..< lastOffset].count('\l') + 1)
+                line: input[0 ..< lastOffset].count('\l') + 1, index: 2)
             # events of the first document, as parse yields them before
             # failing, then those of the last document
             var expected: seq[string]
