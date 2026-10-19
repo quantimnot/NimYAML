@@ -61,6 +61,11 @@ Changes:
 
 Bugfixes:
 
+ * properties of a root scalar on a `---` line (`--- !!str a`) were also
+   applied to the root of the next document, which then failed with "Only
+   one tag allowed per node" if it had a tag of its own
+ * a flow collection on a `---` line (`--- {a: b}`, YAML 1.2 example 9.4)
+   was rejected as "Illegal content at `---`"
  * a JSON-style surrogate pair escape like `"\uD83D\uDCA9"` in a
    double-quoted scalar now yields the one character it encodes instead of
    two invalid surrogate code points
