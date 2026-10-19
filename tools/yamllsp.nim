@@ -33,6 +33,10 @@
 ## scalars by the type they resolve to, tags, anchors, aliases, directives
 ## and comments (see the section below).
 ##
+## The custom request ``nimyaml/blockScalars`` reports where the block
+## scalars of a document are, for clients that provide the languages
+## embedded in them.
+##
 ## The directive features work on what the parser reports per document (the ``directives`` of
 ## each ``yamlStartDoc`` event) rather than on the text, so they agree with
 ## how the document is actually read. Documents with syntax errors are
@@ -603,6 +607,111 @@ proc semanticTokens(s: Server, uri: string): JsonNode =
       (previousLine, previousStart) = (line, start)
   %*{"data": data}
 
+# Block scalars
+#
+# Editors embed other languages in literal block scalars: a `run: |` holding
+# shell, a `query: | # sql`. Where such a block starts and ends, how far its
+# content is indented and which key it is the value of are YAML questions,
+# so the server answers them with the custom request
+# ``nimyaml/blockScalars``: every block scalar of a document that has
+# content, with the comment on its header and its key. Which language a
+# block holds is left to the client (editors/vscode), since only the editor
+# knows which languages exist.
+#
+# A literal scalar's value is its content lines minus the indentation, so a
+# client maps positions between the block and its value by an offset. The
+# indentation is therefore taken from the value the lexer produced, which
+# also covers indentation indicators.
+
+type
+  BlockScalar = object
+    line: int        ## the header, 0-based
+    folded: bool
+    start, last: int ## the first and last content lines, 0-based
+    indent: int      ## the indentation of the content
+    comment, key: string
+
+proc leadingSpaces(text: string): int =
+  while result < text.len and text[result] == ' ': inc(result)
+
+proc addBlockScalar(bs: var seq[BlockScalar], lines: seq[string],
+    startPos, endPos: Mark, folded: bool, value, key: string) =
+  ## Adds the block scalar from ``startPos`` to ``endPos`` unless it has no
+  ## content. The lexer's end may lie on the line after the content, which
+  ## is why an empty value is checked first.
+  if value.strip().len == 0: return
+  let header = lines[startPos.line - 1]
+  var b = BlockScalar(line: int(startPos.line) - 1, folded: folded,
+      start: int(startPos.line), last: -1, indent: -1, key: key)
+  var i = int(startPos.column) # after the indicator
+  while i < header.len and header[i] in {'0'..'9', '+', '-'}: inc(i)
+  while i < header.len and header[i] in {' ', '\t'}: inc(i)
+  if i < header.len and header[i] == '#': b.comment = header[i + 1 .. ^1].strip()
+  let valueLines = value.split('\l')
+  for line in b.start ..< min(int(endPos.line), lines.len):
+    let text = lines[line]
+    let spaces = leadingSpaces(text)
+    if spaces == text.len: continue # blank lines never end a block scalar
+    if b.indent < 0:
+      let k = line - b.start
+      b.indent =
+        if not folded and k < valueLines.len and
+            text.len - valueLines[k].len in 0 .. spaces:
+          text.len - valueLines[k].len
+        else: spaces
+    elif spaces < b.indent: break
+    b.last = line
+  if b.last >= 0: bs.add(b)
+
+proc blockScalars(text: string, lines: seq[string]): seq[BlockScalar] =
+  ## The block scalars of ``text`` in order, recovering from lexer errors as
+  ## ``highlights`` does.
+  var
+    lex: Lexer
+    candidate, key = "" # the last scalar if it may be a key; the current key
+    lastResync = -1
+  lex.directiveExtensions = true
+  lex.init(text)
+  while true:
+    try:
+      lex.next()
+    except LexerError:
+      if not lex.resync(max(lex.lineOffset() - 1, lastResync)): break
+      lastResync = lex.lineOffset()
+      let resumed = lex.currentLineNumber()
+      while result.len > 0 and result[^1].line >= resumed - 1: result.setLen(result.len - 1)
+      (candidate, key) = ("", "")
+      continue
+    case lex.cur
+    of Token.Plain, Token.SingleQuoted, Token.DoubleQuoted:
+      (candidate, key) = (lex.evaluated, "")
+    of Token.MapValueInd:
+      (candidate, key) = ("", candidate)
+    of Token.Literal, Token.Folded:
+      result.addBlockScalar(lines, lex.curStartPos, lex.curEndPos,
+          lex.cur == Token.Folded, lex.evaluated, key)
+      (candidate, key) = ("", "")
+    # node properties and line breaks may come between a key and its value
+    of Token.TagHandle, Token.Suffix, Token.VerbatimTag, Token.Anchor,
+       Token.Indentation, Token.EmptyLine:
+      candidate = ""
+    of Token.StreamEnd: break
+    else:
+      (candidate, key) = ("", "")
+
+proc blockScalarsOf(s: Server, uri: string): JsonNode =
+  result = newJArray()
+  if uri in s.docs:
+    let text = s.docs[uri]
+    var lines: seq[string]
+    for _, line in text.sourceLines: lines.add(line)
+    for b in blockScalars(text, lines):
+      let entry = %*{"line": b.line, "style": if b.folded: "folded" else: "literal",
+                     "start": b.start, "end": b.last, "indent": b.indent}
+      if b.comment.len > 0: entry["comment"] = %b.comment
+      if b.key.len > 0: entry["key"] = %b.key
+      result.add(entry)
+
 proc publish(s: var Server, uri: string): JsonNode =
   var diagnostics = newJArray()
   if uri in s.docs:
@@ -689,6 +798,8 @@ proc handle*(s: var Server, msg: JsonNode): seq[JsonNode] =
     result.add(respond(id, s.documentLinks(params["textDocument"]["uri"].getStr())))
   of "textDocument/semanticTokens/full":
     result.add(respond(id, s.semanticTokens(params["textDocument"]["uri"].getStr())))
+  of "nimyaml/blockScalars":
+    result.add(respond(id, s.blockScalarsOf(params["textDocument"]["uri"].getStr())))
   of "shutdown":
     s.shutdownRequested = true
     result.add(respond(id, newJNull()))

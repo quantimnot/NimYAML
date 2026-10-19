@@ -82,6 +82,12 @@ Features:
    anchors, aliases, directives (including `%GLOBAL` and `%SCHEMA`), markers,
    indicators and comments; after a lexer error it resumes at the next
    document
+ * embedded languages in the VS Code extension: code in literal block
+   scalars (`query: | # sql`, a `# yaml-lsp: python` directive, or a key
+   rule) is coloured by its language's grammar and served by its language's
+   extension (diagnostics, completion, hover, definition, rename, symbols,
+   semantic tokens, …) through projection files. `yamllsp` reports the
+   block scalars with the custom request `nimyaml/blockScalars`
 
 Changes:
 

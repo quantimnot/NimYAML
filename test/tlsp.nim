@@ -345,3 +345,45 @@ suite "LSP semantic tokens":
     let r = s.handle(request(1, "textDocument/semanticTokens/full",
         %*{"textDocument": {"uri": "untitled:none"}}))[0]["result"]
     check r["data"].len == 0
+
+suite "LSP block scalars":
+  proc blockScalars(text: string): JsonNode =
+    var s: Server
+    discard s.handle(didOpen("untitled:b", text))
+    s.handle(request(1, "nimyaml/blockScalars",
+        %*{"textDocument": {"uri": "untitled:b"}}))[0]["result"]
+
+  test "literal with key and header comment":
+    check blockScalars("setup: | # python\n  import os\n\n  print(1)\n\nnext: 1\n") ==
+        %*[{"line": 0, "style": "literal", "start": 1, "end": 3, "indent": 2,
+            "comment": "python", "key": "setup"}]
+
+  test "nested, in sequences, with properties":
+    check blockScalars("jobs:\n  b:\n    - run: |-\n        echo\n" &
+        "    - \"q k\": !t &a |+ #sh  \n        x\n    - |\n      y\n") == %*[
+      {"line": 2, "style": "literal", "start": 3, "end": 3, "indent": 8,
+       "key": "run"},
+      {"line": 4, "style": "literal", "start": 5, "end": 5, "indent": 8,
+       "comment": "sh", "key": "q k"},
+      {"line": 6, "style": "literal", "start": 7, "end": 7, "indent": 6}]
+
+  test "indentation indicator, leading blank lines, folded":
+    check blockScalars("- |2\n\n    x\n  y\n- >\n a\n b\n") == %*[
+      {"line": 0, "style": "literal", "start": 1, "end": 3, "indent": 2},
+      {"line": 4, "style": "folded", "start": 5, "end": 6, "indent": 1}]
+
+  test "a value is a key only in its own mapping":
+    check blockScalars("a:\n- |\n  x\n") == %*[
+      {"line": 1, "style": "literal", "start": 2, "end": 2, "indent": 2}]
+
+  test "empty block scalars, documents, lexer errors":
+    check blockScalars("a: |\nb: \"x\n--- |\n x\n...\n--- |\n") == %*[
+      {"line": 2, "style": "literal", "start": 3, "end": 3, "indent": 1}]
+
+  test "CRLF and unknown documents":
+    check blockScalars("k: |\r\n  x\r\n") == %*[
+      {"line": 0, "style": "literal", "start": 1, "end": 1, "indent": 2,
+       "key": "k"}]
+    var s: Server
+    check s.handle(request(1, "nimyaml/blockScalars",
+        %*{"textDocument": {"uri": "untitled:none"}}))[0]["result"] == %*[]
