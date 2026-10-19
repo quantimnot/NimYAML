@@ -1,3 +1,4 @@
+#!/usr/bin/env nim r -d:release -d:lto --hints:off --warnings:off --processing:off
 #            NimYAML - YAML implementation in Nim
 #        (c) Copyright 2015-2023 Felix Krause
 #
