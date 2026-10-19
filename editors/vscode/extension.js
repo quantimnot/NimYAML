@@ -14,11 +14,17 @@
 // yamllsp coexists with other YAML extensions (e.g. Red Hat's
 // yaml-language-server): VS Code merges diagnostics, hovers and completions
 // from every server attached to a document.
+//
+// The one part that is more than a shim is embedded languages (embedded/):
+// code in block scalars is served by the extensions of its language, which
+// only VS Code can reach. yamllsp still reports where the blocks are.
 
 const vscode = require("vscode");
 const { LanguageClient, TransportKind } = require("vscode-languageclient/node");
+const { activateEmbedded } = require("./embedded");
 
 let client;
+let embedded;
 
 // Documents yamllsp is told about. `file` documents get their
 // `.nimyaml-lint.yaml` and `file:` schemas resolved relative to their
@@ -42,10 +48,11 @@ async function start() {
     "nimyaml",
     "NimYAML yamllsp",
     serverOptions(),
-    { documentSelector },
+    { documentSelector, middleware: embedded.middleware },
   );
   try {
     await client.start();
+    embedded.restarted();
   } catch (e) {
     vscode.window.showErrorMessage(
       `Could not start yamllsp (${e.message}). Build it with ` +
@@ -77,11 +84,13 @@ async function activate(context) {
       if (event.affectsConfiguration("nimyaml.yamllsp")) restart();
     }),
   );
+  embedded = await activateEmbedded(context, documentSelector, () => client);
   await start();
 }
 
-function deactivate() {
-  return stop();
+async function deactivate() {
+  await embedded?.dispose();
+  await stop();
 }
 
 module.exports = { activate, deactivate };

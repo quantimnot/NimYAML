@@ -762,11 +762,14 @@ them at it:
   ```bash
   cd editors/vscode && npm install
   npx @vscode/vsce package --allow-missing-repository --skip-license
-  code --install-extension nimyaml-yamllsp-0.1.0.vsix
+  code --install-extension nimyaml-yamllsp-0.2.0.vsix
   ```
   Set `nimyaml.yamllsp.path` to use a binary that is not on `PATH`, and run
   *NimYAML: Restart yamllsp* after rebuilding it. It runs alongside other
-  YAML extensions.
+  YAML extensions. It also provides embedded languages: code in a literal
+  block scalar whose language is named (`query: | # sql`) gets that
+  language's highlighting and the features of its extension; see
+  [editors/vscode/README.md](editors/vscode/README.md).
 * **Helix**: merge `editors/helix/languages.toml` into
   `~/.config/helix/languages.toml`, or copy it to `.helix/languages.toml` in a
   project. `hx --health yaml` shows whether `yamllsp` was found.
