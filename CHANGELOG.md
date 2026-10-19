@@ -77,6 +77,11 @@ Features:
    links for directives and schema references
  * added editor bindings for `yamllsp`: a VS Code extension in
    `editors/vscode` and a Helix `languages.toml` in `editors/helix`
+ * `yamllsp` provides syntax highlighting (`textDocument/semanticTokens/full`)
+   from NimYAML's lexer: mapping keys, plain scalars by resolved type, tags,
+   anchors, aliases, directives (including `%GLOBAL` and `%SCHEMA`), markers,
+   indicators and comments; after a lexer error it resumes at the next
+   document
 
 Changes:
 

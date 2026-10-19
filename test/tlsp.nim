@@ -260,3 +260,88 @@ suite "LSP directive features":
     check diags.len == 1
     check diags[0]["code"].getStr() == "unresolvable-schema-uri"
     check diags[0]["severity"].getInt() == 1
+
+suite "LSP semantic tokens":
+  proc legend(): JsonNode =
+    var s: Server
+    s.handle(request(1, "initialize"))[0]["result"]["capabilities"][
+        "semanticTokensProvider"]["legend"]
+
+  proc highlights(text: string): seq[string] =
+    ## The decoded tokens of ``text`` as ``"line text type[+modifier]"``;
+    ## ``text`` must be ASCII so that UTF-16 offsets are byte offsets.
+    let types = legend()["tokenTypes"]
+    let modifiers = legend()["tokenModifiers"]
+    var s: Server
+    discard s.handle(didOpen("untitled:t", text))
+    let data = s.handle(request(1, "textDocument/semanticTokens/full",
+        %*{"textDocument": {"uri": "untitled:t"}}))[0]["result"]["data"]
+    let lines = text.splitLines()
+    var line, start = 0
+    for i in countup(0, data.len - 1, 5):
+      if data[i].getInt() > 0: start = 0
+      line += data[i].getInt()
+      start += data[i + 1].getInt()
+      var entry = $line & " " &
+          lines[line][start ..< start + data[i + 2].getInt()] & " " &
+          types[data[i + 3].getInt()].getStr()
+      for bit in 0 ..< modifiers.len:
+        if (data[i + 4].getInt() and (1 shl bit)) != 0:
+          entry.add("+" & modifiers[bit].getStr())
+      result.add(entry)
+
+  test "capability":
+    check "property" in legend()["tokenTypes"].to(seq[string])
+    check legend()["tokenModifiers"] == %["declaration"]
+
+  test "directives and markers":
+    check highlights("%GLOBAL TAG !e! tag:x,2000: # c\n%YAML 1.2\n" &
+        "%SCHEMA s.json\n--- !e!a b\n...\n") == @[
+      "0 %GLOBAL keyword", "0 TAG keyword", "0 !e! namespace",
+      "0 tag:x,2000: string", "0 # c comment",
+      "1 %YAML keyword", "1 1.2 number",
+      "2 %SCHEMA keyword", "2 s.json string",
+      "3 --- keyword", "3 !e! type", "3 a type", "3 b string",
+      "4 ... keyword"]
+
+  test "keys, values, properties and comments":
+    check highlights("# top\nkey: \"two\n  lines\"  # c\n? &a k\n: *a\n" &
+        "n: [1, true, ~, x, \"q\": !!str 2.5]\n") == @[
+      "0 # top comment",
+      "1 key property", "1 : operator", "1 \"two string",
+      "2 lines\" string", "2 # c comment",
+      "3 ? operator", "3 &a variable+declaration", "3 k property",
+      "4 : operator", "4 *a variable",
+      "5 n property", "5 : operator", "5 [ operator", "5 1 number",
+      "5 , operator", "5 true keyword", "5 , operator", "5 ~ keyword",
+      "5 , operator", "5 x string", "5 , operator", "5 \"q\" property",
+      "5 : operator", "5 !! type", "5 str type", "5 2.5 number",
+      "5 ] operator"]
+
+  test "block scalars: header, its comment, content":
+    check highlights("- |- # h\n  text\n\n  # not a comment\n- > \n x\n") == @[
+      "0 - operator", "0 |- operator", "0 # h comment",
+      "1 text string", "3 # not a comment string",
+      "4 - operator", "4 > operator", "5 x string"]
+
+  test "lexer errors skip to the next document":
+    check highlights("a: \"x\n--- b # c\n") == @[
+      "0 a property", "0 : operator", "1 --- keyword", "1 b string",
+      "1 # c comment"]
+
+  test "UTF-16 positions":
+    var s: Server
+    discard s.handle(didOpen("untitled:u", "é: 😀 # ü\n"))
+    let data = s.handle(request(1, "textDocument/semanticTokens/full",
+        %*{"textDocument": {"uri": "untitled:u"}}))[0]["result"]["data"]
+    var triples: seq[(int, int, int)]
+    for i in countup(0, data.len - 1, 5):
+      triples.add((data[i].getInt(), data[i + 1].getInt(), data[i + 2].getInt()))
+    # key, `:`, value, comment: deltas from the previous start, UTF-16 lengths
+    check triples == @[(0, 0, 1), (0, 1, 1), (0, 2, 2), (0, 3, 3)]
+
+  test "unknown document":
+    var s: Server
+    let r = s.handle(request(1, "textDocument/semanticTokens/full",
+        %*{"textDocument": {"uri": "untitled:none"}}))[0]["result"]
+    check r["data"].len == 0
