@@ -990,6 +990,15 @@ proc resync*(lex: var Lexer, after: int): bool {.raises: [].} =
   lex.basicInit()
   return true
 
+proc atDirectivesEndLine*(lex: Lexer): bool {.raises: [].} =
+  ## Whether the line the lexer has been positioned at by `resync` starts
+  ## with a `---` marker (rather than following a `...` line).
+  let
+    b = lex.source.buf
+    i = lex.source.lineStart
+  result = b[i] == '-' and b[i + 1] == '-' and b[i + 2] == '-' and
+      b[i + 3] in {' ', '\t', '\l', '\c', EndOfFile}
+
 proc start*(lex: var Lexer) {.raises: [].} =
   lex.basicInit()
 

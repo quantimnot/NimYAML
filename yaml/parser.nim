@@ -99,8 +99,15 @@ type
     headerProps, inlineProps: Properties
     headerStart, inlineStart: Mark
     blockIndentation: int
-    # start of the most recently started document
+    # start of the most recently started document, and the offset of the
+    # line of its `---` (its start, if it has no directives before it);
+    # error recovery must resume after both, or it would parse the failed
+    # document again from its marker
     documentStart: YamlDocumentStart
+    documentMarker: int
+    # whether the current document's directive block is being read: a
+    # document that fails there has its `---` still ahead
+    inDirectiveBlock: bool
 
   YamlDocumentError* = object
     ## An error that `parseRecovering` recovered from.
@@ -814,6 +821,7 @@ proc restore(ctx: Context, cp: YamlCheckpoint) {.raises: [ValueError].} =
   # the globals of a document start are those of the stream, except for the
   # first document, which declares them
   if ctx.documentStart.index > 0: ctx.documentStart.globals = ctx.globals
+  ctx.documentMarker = ctx.documentStart.offset
   if cp.peeked.len == 1: ctx.peek = cp.peeked[0].fromCheckpoint()
 
 proc checkpoint*(s: YamlStream): YamlCheckpoint {.raises: [ValueError].} =
@@ -1020,12 +1028,19 @@ proc readYamlDirective(ctx: Context, origin: DirectiveOrigin,
   ctx.safeNext()
 
 proc readTagDirective(ctx: Context, origin: DirectiveOrigin,
-    start: Mark): Directive =
-  ## Reads ``%TAG <handle> <prefix>``.
+    start: Mark, earlier: seq[Directive] = @[]): Directive =
+  ## Reads ``%TAG <handle> <prefix>``. YAML 1.2 (§6.8.2) makes a second
+  ## ``%TAG`` for the same handle in one document an error, even with the
+  ## same prefix; ``earlier`` are the document's directives so far. (A
+  ## document's ``%TAG`` may override a global one: those are not passed.)
   ctx.safeNext()
   if ctx.lex.cur != Token.TagHandle:
     raise ctx.generateError("Invalid token (expected tag handle): " & $ctx.lex.cur)
   let handle = ctx.lex.fullLexeme()
+  for d in earlier:
+    if d.kind == dkTag and d.handle == handle:
+      raise ctx.generateError("Duplicate %TAG for handle " & handle &
+          " (first declared in line " & $d.startPos.line & ")")
   ctx.safeNext()
   if ctx.lex.cur != Token.Suffix:
     raise ctx.generateError("Invalid token (expected tag URI): " & $ctx.lex.cur)
@@ -1162,6 +1177,7 @@ proc beforeDoc(ctx: Context, e: var Event): bool =
     seenDirectives, seenYaml, seenSchema, seenGlobalSchema = false
     start = YamlDocumentStart(offset: -1)
   template startDocument(explicit: bool) =
+    ctx.inDirectiveBlock = false
     var version: string
     let directives = ctx.effectiveDirectives(own, issues, version)
     e = startDocEvent(explicit, version, ctx.handles, ctx.lex.curStartPos,
@@ -1177,12 +1193,16 @@ proc beforeDoc(ctx: Context, e: var Event): bool =
       # set right away, so that error recovery knows the start of a
       # document that fails before its yamlStartDoc
       ctx.documentStart = start
+      ctx.documentMarker = start.offset
+      ctx.inDirectiveBlock = ctx.lex.cur in {YamlDirective, TagDirective,
+          SchemaDirective, GlobalDirective, UnknownDirective}
     case ctx.lex.cur
     of DocumentEnd:
       if seenDirectives:
         raise ctx.generateError("Missing `---` after directives")
       ctx.safeNext()
     of DirectivesEnd:
+      ctx.documentMarker = ctx.lex.lineOffset()
       startDocument(true)
       ctx.safeNext()
       ctx.transition(beforeDocEnd)
@@ -1207,7 +1227,7 @@ proc beforeDoc(ctx: Context, e: var Event): bool =
         discard # TODO
     of TagDirective:
       seenDirectives = true
-      own.add(ctx.readTagDirective(doDocument, ctx.lex.curStartPos))
+      own.add(ctx.readTagDirective(doDocument, ctx.lex.curStartPos, own))
     of SchemaDirective:
       seenDirectives = true
       let
@@ -1264,6 +1284,16 @@ proc afterDirectivesEnd(ctx: Context, e: var Event): bool =
     e = scalarEvent(ctx.lex.evaluated, autoScalarTag(ctx.inlineProps, ctx.lex.cur),
                     toStyle(ctx.lex.cur), ctx.lex.curStartPos, ctx.lex.curEndPos)
     ctx.inlineProps = defaultProperties
+    ctx.popLevel()
+    ctx.safeNext()
+    return true
+  of Alias:
+    # `--- *a`: whether the anchor exists is not a question of syntax (it
+    # never does across documents; lint's undefined-alias reports it)
+    if not ctx.inlineProps.isEmpty():
+      raise ctx.generateError("Alias may not have node properties")
+    e = aliasEvent(ctx.lex.shortLexeme().Anchor, ctx.lex.curStartPos,
+        ctx.lex.curEndPos)
     ctx.popLevel()
     ctx.safeNext()
     return true
@@ -2051,7 +2081,14 @@ proc recover(rs: YamlRecoveringStream, ce: ref CatchableError)
   ctx.peeked = false
   # continue after the start of the failed document, so that it is not
   # parsed again
-  if ctx.lex.resync(max(rs.lastResync, ctx.documentStart.offset)):
+  var resynced = ctx.lex.resync(max(rs.lastResync, ctx.documentMarker))
+  if resynced and ctx.inDirectiveBlock and ctx.lex.atDirectivesEndLine():
+    # the `---` that ends the failed directive block belongs to the failed
+    # document; parsing from it would resurrect that document without its
+    # directives
+    resynced = ctx.lex.resync(ctx.lex.lineOffset())
+  ctx.inDirectiveBlock = false
+  if resynced:
     record.resumedAt = YamlDocumentStart(offset: ctx.lex.lineOffset(),
                                          line: ctx.lex.currentLineNumber(),
                                          index: ctx.documentsBegun,

@@ -304,6 +304,59 @@ suite "Flow collections on a `---` line":
     expect YamlStreamError:
       discard shape("--- [a]\nb\n")
 
+suite "Aliases on a `---` line":
+  # `--- *a` used to be rejected as "Illegal content at `---`". Whether the
+  # anchor is defined is not the parser's business (lint reports it).
+  proc shape(source: string): seq[string] =
+    for e in initYamlParser().parse(source): result.add($e)
+
+  test "are the root node of their document":
+    check shape("--- &a x\n--- *a\n")[4 .. 6] == @["+DOC ---", "=ALI *a", "-DOC"]
+    check shape("--- *a\n...\n") == @["+STR", "+DOC ---", "=ALI *a", "-DOC ...",
+        "-STR"]
+
+  test "cannot have properties":
+    expect YamlStreamError:
+      discard shape("--- &b *a\n")
+    expect YamlStreamError:
+      discard shape("--- !!str *a\n")
+
+suite "Duplicate %TAG handles":
+  # YAML 1.2, §6.8.2: more than one TAG directive for the same handle in a
+  # document is an error, even with the same prefix.
+  test "in one document":
+    expect YamlStreamError:
+      for e in initYamlParser().parse("%TAG !e! a:\n%TAG !e! b:\n--- x\n"): discard
+    expect YamlStreamError:
+      for e in initYamlParser().parse("%TAG !e! a:\n%TAG !e! a:\n--- x\n"): discard
+
+  test "different handles and different documents are fine":
+    var n = 0
+    for e in initYamlParser().parse(
+        "%TAG !e! a:\n%TAG !f! b:\n--- x\n...\n%TAG !e! c:\n--- y\n"): inc(n)
+    check n == 8
+
+suite "Recovery after a failed directives document":
+  # A document with directives that failed on (or before) its own `---`
+  # line used to be parsed again from that marker: the error was recorded
+  # twice, or the document came back without its directives.
+  proc recovered(source: string): tuple[errors: int, scalars: seq[string]] =
+    let rs = initYamlParser().parseRecovering(source)
+    for e in rs:
+      if e.kind == yamlScalar: result.scalars.add(e.scalarContent)
+    result.errors = rs.errors.len
+
+  test "failure on the `---` line":
+    check recovered("%YAML 1.2\n--- ]\n--- b\n") == (1, @["b"])
+    check recovered("%GLOBAL TAG !e! tag:x:\n--- ]\n...\n--- !e!b 1\n") ==
+        (1, @["1"])
+
+  test "failure in the directive block":
+    check recovered("%TAG !e! a:\n%TAG !e! b:\n--- x\n...\n--- c\n") ==
+        (1, @["c"])
+    check recovered("a\n...\n%YAML 1.2\n%YAML 1.2\n--- x\n--- y\n") ==
+        (1, @["a", "y"])
+
 suite "Document starts":
   test "yaml-test-suite: parsing from each document start":
     let inputs = suiteInputs()
