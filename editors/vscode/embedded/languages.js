@@ -1,25 +1,32 @@
-// Which languages can be embedded, and the file extension their projections
-// get. Read from the `contributes.languages` of every installed extension
-// rather than from a table here: it is right for whatever is installed, and
-// a language without a file extension is one no server would pick up a
-// projection of, so the same lookup answers whether a block can be served.
+// The installed languages: what names comments may use for them and which
+// grammar colours them (grammar.js: `languageTable`), and the file
+// extension their projections get. All read from the `contributes` of the
+// installed extensions' manifests rather than from a table here, so it is
+// right for whatever is installed. A language without a file extension is
+// one no server would pick up a projection of, so the same lookup answers
+// whether a block can be served.
 
 const vscode = require("vscode");
+const { languageTable, languageOf, emptyTable } = require("./grammar");
+const { readConfig } = require("./config");
 
 class LanguageRegistry {
   constructor() {
     this.known = new Set();
     this.extensions = new Map();
+    this.table = emptyTable();
   }
 
   async refresh() {
     this.known = new Set(await vscode.languages.getLanguages());
+    // a manifest, not a typed API: grammar.js reads it defensively
+    const contributions = vscode.extensions.all.map((e) => e.packageJSON?.contributes);
+    const cfg = readConfig();
+    this.table = languageTable(contributions, cfg.aliases, cfg.grammars);
+
     const candidates = new Map();
-    for (const ext of vscode.extensions.all) {
-      // a manifest, not a typed API: read defensively
-      const languages = ext.packageJSON?.contributes?.languages;
-      if (!Array.isArray(languages)) continue;
-      for (const l of languages) {
+    for (const c of contributions) {
+      for (const l of Array.isArray(c?.languages) ? c.languages : []) {
         if (typeof l?.id !== "string" || !Array.isArray(l.extensions)) continue;
         const list = candidates.get(l.id) ?? [];
         list.push(...l.extensions.filter((e) => typeof e === "string" && e.startsWith(".")));
@@ -34,6 +41,11 @@ class LanguageRegistry {
       const own = list.find((e) => e.toLowerCase() === `.${id}`);
       if (own ?? list[0]) this.extensions.set(id, own ?? list[0]);
     }
+  }
+
+  /** The language ID a comment's `name` means, or undefined. */
+  languageOf(name) {
+    return languageOf(this.table, name);
   }
 
   /** The file extension of `id`, or undefined if it cannot be projected. */

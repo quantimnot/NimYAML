@@ -17,6 +17,7 @@ function readConfig() {
     stickyDirective: c.get("stickyDirective", "yaml-lsp"),
     compatDirective: c.get("compat.yamlEmbeddedLanguagesDirective", true),
     aliases: c.get("aliases", {}),
+    grammars: c.get("grammars", {}),
     keyRules: c.get("keyRules", []),
   };
 }

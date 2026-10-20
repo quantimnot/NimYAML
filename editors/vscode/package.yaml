@@ -1,0 +1,227 @@
+#!/usr/bin/env yq -ojson
+#!/usr/bin/env yaml as json
+# https://code.visualstudio.com/api/references/extension-manifest
+name: nimyaml-yamllsp
+displayName: NimYAML yamllsp
+description: Lint diagnostics, JSON Schema validation, %GLOBAL/%SCHEMA directive support and embedded languages in block scalars for YAML via NimYAML's yamllsp
+version: 0.6.0
+publisher: nimyaml
+license: MIT
+private: true
+engines:
+  vscode: ^1.82.0
+categories:
+  - Programming Languages
+  - Linters
+  - Snippets
+  - Formatters
+  - Visualization
+keywords:
+  - yaml
+  - json
+  - jsonc
+  - jsonl
+  - cbor
+  - data visualization
+  - drilldown
+  - hierarchy
+  - grid
+  - overview
+activationEvents:
+  - onLanguage:yaml
+  - workspaceContains:**/.nimyaml-lint.yaml
+main: ./extension.js
+scripts:
+  test: bun --test test/*.test.js
+  grammar: bun syntaxes/generate.js
+contributes:
+  languages:
+    - id: yaml
+      aliases:
+        - yaml
+        - YAML
+      extensions:
+        - .yaml
+        - .yml
+      filenames: []
+      comments:
+        lineComment: '#'
+      brackets:
+        - - '{'
+          - '}'
+        - - '['
+          - ']'
+        - - (
+          - )
+      autoClosingPairs:
+        - - '{'
+          - '}'
+        - - '['
+          - ']'
+        - - (
+          - )
+        - - '"'
+          - '"'
+        - - ''''
+          - ''''
+        - - '`'
+          - '`'
+      surroundingPairs:
+        - - '{'
+          - '}'
+        - - '['
+          - ']'
+        - - (
+          - )
+        - - '"'
+          - '"'
+        - - ''''
+          - ''''
+        - - '`'
+          - '`'
+      icon:
+        dark: icons/yaml-dark.svg
+        light: icons/yaml-light.svg
+      filenamePatterns: []
+      mimetypes:
+        - application/yaml
+        - application/x-yaml
+        - text/yaml
+        - text/x-yaml
+      folding:
+        offSide: true
+        markers:
+          start: ^\s*#\s*region\b
+          end: ^\s*#\s*endregion\b
+      indentationRules:
+        increaseIndentPattern: ^\s*.*(:|-) ?(&[^\s,\[\]{}]+)?(\{[^}"']*|\([^)"']*)?$
+        decreaseIndentPattern: ^\s+\}$
+      wordPattern: '[^\s\[\]{}:,"'']+(?:[:''][^\s\[\]{}:,"'']+)*'
+  grammars:
+    - scopeName: nimyaml.embedded.injection
+      path: ./syntaxes/yaml-embedded.tmLanguage.json
+      injectTo:
+        - source.yaml
+      embeddedLanguages:
+  configuration:
+    title: NimYAML yamllsp
+    properties:
+      nimyaml.yamllsp.path:
+        type: string
+        default: yamllsp
+        markdownDescription: 'Command that starts the `yamllsp` language server: a name looked up on `PATH` or an absolute path. Build it with `nim yamllsp config.nims` in the NimYAML repository.'
+      nimyaml.yamllsp.args:
+        type: array
+        items:
+          type: string
+        default: []
+        description: Extra arguments passed to the language server.
+      nimyaml.trace.server:
+        type: string
+        enum:
+          - "off"
+          - messages
+          - verbose
+        default: "off"
+        description: Traces the communication between VS Code and yamllsp in the output channel.
+      nimyaml.embedded.enabled:
+        type: boolean
+        default: true
+        markdownDescription: 'Provide language features (diagnostics, completion, hover, go to definition, rename, …) for code in literal block scalars whose language is known: `query: | # sql`. Each such block is written to a file of its language (a *projection*) that the language''s own extension serves.'
+      nimyaml.embedded.diagnostics.enabled:
+        type: boolean
+        default: true
+        markdownDescription: Show the diagnostics of embedded code on the YAML document. Diagnostics are only published for files a server analyzes, so this writes the projections of every open YAML document as it changes rather than on the first request.
+      nimyaml.embedded.diagnostics.debounceMs:
+        type: number
+        default: 400
+        description: Delay in milliseconds after an edit before the projections are rewritten.
+      nimyaml.embedded.projection.root:
+        type: string
+        enum:
+          - workspace
+          - temp
+        enumDescriptions:
+          - In the workspace folder, so that imports and project configuration resolve.
+          - 'In the system''s temporary directory: nothing in the workspace, but most cross-file resolution fails.'
+        default: workspace
+        description: Where projections are written.
+      nimyaml.embedded.projection.directory:
+        type: string
+        default: .yaml-embedded
+        description: The directory in the workspace folder that holds the projections when they are written to the workspace.
+      nimyaml.embedded.projection.manageExcludes:
+        type: boolean
+        default: true
+        markdownDescription: Add the projection directory to `files.exclude` and `search.exclude` in the workspace settings.
+      nimyaml.embedded.semanticTokens.enabled:
+        type: boolean
+        default: true
+        markdownDescription: Show the semantic highlighting of embedded languages that provide it. Only token types yamllsp's legend has are kept; the others keep the colours of the grammar.
+      nimyaml.embedded.warnOnFoldedScalars:
+        type: boolean
+        default: true
+        markdownDescription: 'Warn when a folded block scalar (`>`) names a language: folding joins lines, so its value is not the code shown, and it gets no language features.'
+      nimyaml.embedded.stickyDirective:
+        type: string
+        default: yaml-lsp
+        markdownDescription: 'Comment that sets the language of all block scalars below it: `# yaml-lsp: python`. A bare `# yaml-lsp` clears it. The comment on a block''s header takes precedence.'
+      nimyaml.embedded.compat.yamlEmbeddedLanguagesDirective:
+        type: boolean
+        default: true
+        markdownDescription: 'Also accept `# yaml-embedded-languages: <language>` as the sticky directive.'
+      nimyaml.embedded.aliases:
+        type: object
+        additionalProperties:
+          type: string
+        default: {}
+        markdownDescription: 'Extra names for languages in comments: name → VS Code language ID, e.g. `{"tpl": "handlebars"}`. Without it a language is known by its ID and by the aliases and file extensions its extension declares (`python`, `Python`, `py`). These names take precedence over those.'
+      nimyaml.embedded.grammars:
+        type: object
+        default: {}
+        additionalProperties:
+          anyOf:
+            - type: string
+            - type: object
+              required:
+                - scopeName
+              properties:
+                scopeName:
+                  type: string
+                  description: TextMate scope of the grammar.
+                language:
+                  type: string
+                  description: VS Code language ID the block is, for language features, comments and brackets.
+        markdownDescription: 'Grammars for names in comments: name → TextMate scope, e.g. `{"regex": "source.regexp.python"}` for a grammar that is not a language, or `{"scopeName": …, "language": …}` to colour a language with another grammar. Installed languages need no entry: each is coloured by the grammar its extension contributes. Changes take effect after reloading the window.'
+      nimyaml.embedded.keyRules:
+        type: array
+        default: []
+        items:
+          type: object
+          required:
+            - keyPattern
+            - language
+          properties:
+            keyPattern:
+              type: string
+              description: Regular expression (JavaScript) matched against the key whose value the block scalar is.
+            language:
+              type: string
+              description: VS Code language ID.
+            filePattern:
+              type: string
+              description: Glob the YAML document's path must match.
+        markdownDescription: 'Choose the language by key instead of a comment, e.g. `{"keyPattern": "^run$", "language": "shellscript", "filePattern": "**/.github/workflows/*.yml"}`. Comments take precedence.'
+  commands:
+    - command: nimyaml.yamllsp.restart
+      title: 'NimYAML: Restart yamllsp'
+    - command: nimyaml.embedded.showRegions
+      title: 'NimYAML: Show Embedded Language Regions'
+    - command: nimyaml.embedded.formatRegion
+      title: 'NimYAML: Format Embedded Language Region'
+    - command: nimyaml.embedded.revealProjection
+      title: 'NimYAML: Open Projection of Embedded Language Region'
+    - command: nimyaml.embedded.cleanProjections
+      title: 'NimYAML: Delete Projections of Embedded Language Regions'
+dependencies:
+  vscode-languageclient: 10.1.2
