@@ -86,8 +86,11 @@ Features:
    scalars (`query: | # sql`, a `# yaml-lsp: python` directive, or a key
    rule) is coloured by its language's grammar and served by its language's
    extension (diagnostics, completion, hover, definition, rename, symbols,
-   semantic tokens, …) through projection files. `yamllsp` reports the
-   block scalars with the custom request `nimyaml/blockScalars`
+   semantic tokens, …) through projection files. The languages and their
+   names come from the installed extensions plus the `aliases` and
+   `grammars` settings; the injection grammar is generated from them.
+   `yamllsp` reports the block scalars with the custom request
+   `nimyaml/blockScalars`
 
 Changes:
 

@@ -1,4 +1,4 @@
-// Tests of embedded/core.js; run with `npm test` (node --test).
+// Tests of embedded/core.js; run with `bun test` (bun --test).
 // Block scalar geometry comes from yamllsp and is tested in test/tlsp.nim.
 
 const test = require("node:test");
@@ -11,10 +11,17 @@ const {
   encodeTokens,
   mergeSemanticTokens,
 } = require("../embedded/core");
+const { languageTable, languageOf } = require("../embedded/grammar");
 
 const known = new Set(["python", "shellscript", "sql"]);
+const table = languageTable([{ languages: [
+  { id: "python", extensions: [".py"] },
+  { id: "shellscript", extensions: [".sh"] },
+  { id: "sql" },
+  { id: "cobol" },
+] }]);
 const options = (extra = {}) => ({
-  aliases: { py: "python", sh: "shellscript" },
+  languageOf: (name) => languageOf(table, name),
   stickyDirective: "yaml-lsp",
   compatDirective: true,
   keyRules: [],

@@ -1,2 +1,4 @@
-*.vsix
+.gitignore
 test/
+bun.lock
+package.yaml

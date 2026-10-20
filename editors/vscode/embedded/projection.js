@@ -166,7 +166,7 @@ class ProjectionStore {
     const lines = [];
     for (let i = 0; i < doc.lineCount; i++) lines.push(doc.lineAt(i).text);
     const { regions, folded } = resolveRegions(fetched.blocks, lines, {
-      aliases: cfg.aliases,
+      languageOf: (name) => this.registry.languageOf(name),
       stickyDirective: cfg.stickyDirective,
       compatDirective: cfg.compatDirective,
       keyRules: cfg.keyRules,

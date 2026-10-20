@@ -1,7 +1,7 @@
 // The editor-independent part of embedded languages: which block scalars
 // hold which language, how positions map between a block and its
 // projection, and how embedded semantic tokens join yamllsp's. Nothing here
-// touches the `vscode` module, so `node --test` runs it directly.
+// touches the `vscode` module, so `bun --test` runs it directly.
 //
 // Positions are plain `{line, character}` objects and ranges
 // `{start, end}`, 0-based; the VS Code side converts them.
@@ -27,17 +27,12 @@ function globToRe(glob) {
 }
 
 /**
- * The language a comment names, through `aliases`, or undefined if
- * `isKnownLanguage` does not know it.
+ * The language a comment names (`languageOf`, see grammar.js), or
+ * undefined if `isKnownLanguage` rejects it.
  */
 function resolveLanguage(name, options) {
-  const t = name.trim();
-  if (!t) return undefined;
-  const aliased = options.aliases[t] ?? options.aliases[t.toLowerCase()];
-  if (aliased) return options.isKnownLanguage(aliased) ? aliased : undefined;
-  if (options.isKnownLanguage(t)) return t;
-  const lower = t.toLowerCase();
-  return options.isKnownLanguage(lower) ? lower : undefined;
+  const id = options.languageOf(name.trim());
+  return id && options.isKnownLanguage(id) ? id : undefined;
 }
 
 /**
@@ -89,8 +84,9 @@ function keyRuleLanguage(key, options) {
  * language are returned separately so they can be reported.
  *
  * `lines` are the document's lines without line breaks. `options` holds
- * `aliases`, `stickyDirective`, `compatDirective`, `keyRules`,
+ * `languageOf(name)`, `stickyDirective`, `compatDirective`, `keyRules`,
  * `isKnownLanguage(id)` and `docPath` (for key rules' `filePattern`).
+ * Key rules name language IDs, not names.
  */
 function resolveRegions(blocks, lines, options) {
   const sticky = stickyLanguages(lines, blocks, options);

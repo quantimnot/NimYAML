@@ -4,8 +4,8 @@
 // here a language is chosen for each (core.js), the literal ones are
 // written to files of that language (projection.js), and requests in them
 // are forwarded to whatever serves those files (providers.js,
-// diagnostics.js). Colour comes from the TextMate injection grammar in
-// syntaxes/, and from the embedded servers' semantic tokens, merged into
+// diagnostics.js). Colour comes from a TextMate injection grammar generated
+// from the installed languages (grammar.js, `syncGrammar`), and from the embedded servers' semantic tokens, merged into
 // yamllsp's here.
 //
 // How much works depends on the language: a server that analyzes any file
@@ -17,7 +17,12 @@
 // found and why.
 
 const vscode = require("vscode");
+const fs = require("fs");
+const path = require("path");
 const { mergeSemanticTokens } = require("./core");
+const {
+  SCOPE_NAME, grammarText, writeGrammar, embeddedLanguages, emptyTable,
+} = require("./grammar");
 const { readConfig } = require("./config");
 const { LanguageRegistry } = require("./languages");
 const { ProjectionStore } = require("./projection");
@@ -72,6 +77,8 @@ async function activateEmbedded(context, selector, getClient) {
     }),
     vscode.workspace.onDidChangeConfiguration(async (e) => {
       if (!e.affectsConfiguration("nimyaml.embedded")) return;
+      await registry.refresh();
+      syncGrammar(registry);
       if (!readConfig().enabled) {
         await store.cleanAll();
         for (const doc of vscode.workspace.textDocuments) bridge.clear(doc.uri);
@@ -82,13 +89,20 @@ async function activateEmbedded(context, selector, getClient) {
       if (eager()) await ensureExcludes();
       scheduleAll();
     }),
-    vscode.extensions.onDidChange(() => registry.refresh()),
+    // installing or removing an extension changes the languages
+    vscode.extensions.onDidChange(async () => {
+      await registry.refresh();
+      syncGrammar(registry);
+      store.hosts.clear();
+      if (eager()) scheduleAll();
+    }),
     vscode.commands.registerCommand("nimyaml.embedded.formatRegion", () => formatRegion(store)),
     vscode.commands.registerCommand("nimyaml.embedded.revealProjection", () => revealProjection(store)),
     vscode.commands.registerCommand("nimyaml.embedded.showRegions", () => showRegions(store)),
     vscode.commands.registerCommand("nimyaml.embedded.cleanProjections", () => store.cleanAll()),
   );
 
+  syncGrammar(registry);
   if (eager()) {
     await ensureExcludes();
     scheduleAll();
@@ -104,6 +118,40 @@ async function activateEmbedded(context, selector, getClient) {
       if (eager()) scheduleAll();
     },
   };
+}
+
+/**
+ * Brings the injection grammar and its `embeddedLanguages` in
+ * package.json in line with the installed languages and the settings
+ * (grammar.js). VS Code reads both when a window starts, so a change is
+ * offered as a reload; nothing is written when nothing changed.
+ */
+function syncGrammar(registry) {
+  const table = readConfig().enabled ? registry.table : emptyTable();
+  const manifestPath = path.join(__dirname, "..", "package.json");
+  let changed = false;
+  try {
+    changed = writeGrammar(grammarText(table));
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    const contribution = manifest.contributes.grammars.find((g) => g.scopeName === SCOPE_NAME);
+    const languages = embeddedLanguages(table);
+    if (JSON.stringify(contribution.embeddedLanguages ?? {}) !== JSON.stringify(languages)) {
+      contribution.embeddedLanguages = languages;
+      fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+      changed = true;
+    }
+  } catch (e) {
+    vscode.window.showWarningMessage(
+      `NimYAML could not update the highlighting of embedded languages (${e.message}).`);
+    return;
+  }
+  if (!changed) return;
+  vscode.window.showInformationMessage(
+    "The embedded languages of YAML changed. Reload the window to update their highlighting.",
+    "Reload",
+  ).then((choice) => {
+    if (choice) vscode.commands.executeCommand("workbench.action.reloadWindow");
+  });
 }
 
 /**
