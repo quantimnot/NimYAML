@@ -87,6 +87,17 @@ test("key rules, with file patterns, have the lowest precedence", () => {
     [[0, "shellscript", "key-rule"], [2, "sql", "key-rule"], [4, "python", "inline-comment"]]);
 });
 
+test("header comment may carry the directive's name", () => {
+  const lines = ["a: | # yaml-lsp: py", "  x", "b: | #yaml-embedded-languages:sql", "  y"];
+  const blocks = [literal(0, 1, { comment: "yaml-lsp: py" }),
+    literal(2, 3, { comment: "yaml-embedded-languages:sql" })];
+  assert.deepEqual(resolveRegions(blocks, lines, options()).regions
+    .map((r) => [r.languageId, r.provenance]),
+  [["python", "inline-comment"], ["sql", "inline-comment"]]);
+  assert.deepEqual(resolveRegions(blocks, lines, options({ compatDirective: false })).regions
+    .map((r) => r.languageId), ["python"]);
+});
+
 test("folded blocks are reported, not projected", () => {
   const lines = ["a: > # python", "  x"];
   const r = resolveRegions([{ ...literal(0, 1, { comment: "python" }), style: "folded" }],

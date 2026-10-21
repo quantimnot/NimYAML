@@ -19,7 +19,7 @@
 const vscode = require("vscode");
 const fs = require("fs");
 const path = require("path");
-const { mergeSemanticTokens } = require("./core");
+const { directiveNames, mergeSemanticTokens } = require("./core");
 const {
   SCOPE_NAME, grammarText, writeGrammar, embeddedLanguages, emptyTable,
 } = require("./grammar");
@@ -127,11 +127,12 @@ async function activateEmbedded(context, selector, getClient) {
  * offered as a reload; nothing is written when nothing changed.
  */
 function syncGrammar(registry) {
-  const table = readConfig().enabled ? registry.table : emptyTable();
+  const cfg = readConfig();
+  const table = cfg.enabled ? registry.table : emptyTable();
   const manifestPath = path.join(__dirname, "..", "package.json");
   let changed = false;
   try {
-    changed = writeGrammar(grammarText(table));
+    changed = writeGrammar(grammarText(table, directiveNames(cfg)));
     const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
     const contribution = manifest.contributes.grammars.find((g) => g.scopeName === SCOPE_NAME);
     const languages = embeddedLanguages(table);

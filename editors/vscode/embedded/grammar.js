@@ -25,7 +25,8 @@ const fs = require("fs");
 const path = require("path");
 
 const SCOPE_NAME = "nimyaml.embedded.injection";
-const GRAMMAR_PATH = path.join(__dirname, "..", "syntaxes", "embedded.tmLanguage.json");
+// the `path` of the grammar's contribution in package.yaml
+const GRAMMAR_PATH = path.join(__dirname, "..", "syntaxes", "yaml-embedded.tmLanguage.json");
 
 const normal = (name) => (typeof name === "string" ? name.trim().toLowerCase() : "");
 
@@ -112,12 +113,19 @@ function colouredEntries(table) {
   return [...byKey.values()];
 }
 
-/** The injection grammar for `table` (see the top of this file). */
-function injectionGrammar(table) {
+/**
+ * The injection grammar for `table` (see the top of this file). The header
+ * comment may also be written like the sticky directive, `| # yaml-lsp:
+ * python`, for each of the `directives`' names.
+ */
+function injectionGrammar(table, directives = []) {
   const entries = colouredEntries(table);
+  const directive = directives.length
+    ? `(?:(?:${directives.map(escapeRe).join("|")})[ \\t]*:[ \\t]*)?`
+    : "";
   const rule = (e) => ({
     // longer names first, so that `c++` is not read as `c`
-    begin: `(\\|)([1-9])?([+-])?([1-9])?[ \\t]+((#)[ \\t]*(?i:${
+    begin: `(\\|)([1-9])?([+-])?([1-9])?[ \\t]+((#)[ \\t]*${directive}(?i:${
       [...e.names].sort((a, b) => b.length - a.length).map(escapeRe).join("|")}))[ \\t]*$`,
     while: "\\G",
     beginCaptures: {
@@ -156,7 +164,8 @@ function embeddedLanguages(table) {
 }
 
 const emptyTable = () => ({ entries: new Map(), names: new Map() });
-const grammarText = (table) => JSON.stringify(injectionGrammar(table), null, 2) + "\n";
+const grammarText = (table, directives) =>
+  JSON.stringify(injectionGrammar(table, directives), null, 2) + "\n";
 
 /** Writes `text` as the grammar unless it is that already; whether it wrote. */
 function writeGrammar(text) {
