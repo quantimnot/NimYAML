@@ -33,7 +33,8 @@ activationEvents:
 main: ./extension.js
 scripts:
   test: bun --test test/*.test.js
-  grammar: bun syntaxes/generate.js
+  # the placeholder grammar; the extension writes the real one on activation
+  vscode:prepublish: bun embedded/grammar.js
 contributes:
   languages:
     - id: yaml
@@ -123,7 +124,7 @@ contributes:
           - messages
           - verbose
         default: "off"
-        description: Traces the communication between VS Code and yamllsp in the output channel.
+        description: Traces the communication between VS Code and yamllsp in the "NimYAML yamllsp Trace" output channel.
       nimyaml.embedded.enabled:
         type: boolean
         default: true

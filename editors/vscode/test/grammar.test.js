@@ -2,8 +2,11 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("fs");
+const path = require("path");
 const {
   languageTable, languageOf, injectionGrammar, embeddedLanguages, grammarText, emptyTable,
+  GRAMMAR_PATH,
 } = require("../embedded/grammar");
 
 // two extensions' manifests, in extension order
@@ -79,6 +82,24 @@ test("one rule per coloured language, matching whole comments", () => {
   assert.ok(beginOf(t, "cpp").test("| # C++"));
   assert.ok(beginOf(t, "shellscript").test("| # shell script"));
   assert.ok(!beginOf(t, "c").test("| # c++"));
+});
+
+test("headers may name the language after a directive", () => {
+  const t = languageTable(contributions);
+  const begin = injectionGrammar(t, ["yaml-lsp", "yaml-embedded-languages"]).repository.python.begin;
+  const python = new RegExp(begin.replace("(?i:", "(?:"), "i");
+  for (const s of ["| # yaml-lsp: python", "|- #yaml-lsp:py", "| # yaml-embedded-languages: python"]) {
+    assert.ok(python.test(s), s);
+  }
+  for (const s of ["| # yaml-lsp:", "| # other: python"]) assert.ok(!python.test(s), s);
+  assert.ok(!beginOf(t, "python").test("| # yaml-lsp: python"));
+});
+
+test("the grammar is written where the manifest declares it", () => {
+  const manifest = fs.readFileSync(path.join(__dirname, "..", "package.yaml"), "utf8");
+  const declared = /scopeName: nimyaml\.embedded\.injection\s*\n\s*path: (\S+)/.exec(manifest);
+  assert.ok(declared, "the grammar contribution in package.yaml");
+  assert.equal(GRAMMAR_PATH, path.join(__dirname, "..", declared[1]));
 });
 
 test("embeddedLanguages maps the scopes of languages", () => {

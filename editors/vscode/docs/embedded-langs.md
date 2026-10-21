@@ -17,7 +17,8 @@ teardown: |
 
 The language of a block is, in this order:
 
-1. the comment on its header, `| # sql`;
+1. the comment on its header, `| # sql`, which may also be written like
+   the directive, `| # yaml-lsp: sql`, and then applies to that block only;
 2. the last `# yaml-lsp: <language>` comment above it, until a bare
    `# yaml-lsp` (`nimyaml.embedded.stickyDirective`;
    `# yaml-embedded-languages: <language>` is accepted too);
@@ -62,7 +63,7 @@ language's grammar. The extension generates it, with the
 brackets, from the installed languages and the settings
 ([`embedded/grammar.js`](embedded/grammar.js)); VS Code reads both when a
 window starts, so when they change (an extension installed, a setting
-edited) the extension rewrites its `syntaxes/embedded.tmLanguage.json` and
+edited) the extension rewrites its `syntaxes/yaml-embedded.tmLanguage.json` and
 `package.json` and offers to reload the window. Language features need no
 reload. Sticky directives and key rules cannot be expressed in a TextMate
 grammar, so their blocks are coloured only by semantic tokens. In all

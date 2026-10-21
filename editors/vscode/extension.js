@@ -25,6 +25,7 @@ const { activateEmbedded } = require("./embedded");
 
 let client;
 let embedded;
+let traceOutputChannel;
 
 // Documents yamllsp is told about. `file` documents get their
 // `.nimyaml-lint.yaml` and `file:` schemas resolved relative to their
@@ -43,12 +44,53 @@ function serverOptions() {
   };
 }
 
+// vscode-languageclient traces only while its channel's log level is Trace,
+// a per-channel choice in the Output view; `nimyaml.trace.server` is read
+// only then, and "off" is read as "messages". This channel reports Trace
+// exactly when the setting is not "off", so the setting decides alone, and
+// writes the messages at the info level a channel shows by default.
+function createTraceChannel() {
+  const channel = vscode.window.createOutputChannel("NimYAML yamllsp Trace", { log: true });
+  const changed = new vscode.EventEmitter();
+  const level = () =>
+    vscode.workspace.getConfiguration("nimyaml").get("trace.server", "off") === "off"
+      ? vscode.LogLevel.Off
+      : vscode.LogLevel.Trace;
+  let current = level();
+  const listener = vscode.workspace.onDidChangeConfiguration((event) => {
+    if (!event.affectsConfiguration("nimyaml.trace.server")) return;
+    current = level();
+    changed.fire(current);
+  });
+  return {
+    get name() { return channel.name; },
+    get logLevel() { return current; },
+    onDidChangeLogLevel: changed.event,
+    trace: (message, ...args) => channel.info(message, ...args),
+    debug: (message, ...args) => channel.debug(message, ...args),
+    info: (message, ...args) => channel.info(message, ...args),
+    warn: (message, ...args) => channel.warn(message, ...args),
+    error: (error, ...args) => channel.error(error, ...args),
+    append: (value) => channel.append(value),
+    appendLine: (value) => channel.appendLine(value),
+    replace: (value) => channel.replace(value),
+    clear: () => channel.clear(),
+    show: (...args) => channel.show(...args),
+    hide: () => channel.hide(),
+    dispose: () => {
+      listener.dispose();
+      changed.dispose();
+      channel.dispose();
+    },
+  };
+}
+
 async function start() {
   client = new LanguageClient(
     "nimyaml",
     "NimYAML yamllsp",
     serverOptions(),
-    { documentSelector, middleware: embedded.middleware },
+    { documentSelector, traceOutputChannel, middleware: embedded.middleware },
   );
   try {
     await client.start();
@@ -77,7 +119,10 @@ async function restart() {
 }
 
 async function activate(context) {
+  // one channel for every client, so a restart keeps the trace so far
+  traceOutputChannel = createTraceChannel();
   context.subscriptions.push(
+    traceOutputChannel,
     vscode.commands.registerCommand("nimyaml.yamllsp.restart", restart),
     // A different server command only takes effect in a new process.
     vscode.workspace.onDidChangeConfiguration((event) => {

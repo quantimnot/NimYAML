@@ -1,3 +1,3 @@
 node_modules/
 *.vsix
-syntaxes/embedded.tmLanguage.json
+syntaxes/yaml-embedded.tmLanguage.json

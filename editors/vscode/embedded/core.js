@@ -35,15 +35,30 @@ function resolveLanguage(name, options) {
   return id && options.isKnownLanguage(id) ? id : undefined;
 }
 
+/** The names of the sticky directive: `yaml-lsp` and the compatible one. */
+function directiveNames(options) {
+  const names = [options.stickyDirective];
+  if (options.compatDirective) names.push("yaml-embedded-languages");
+  return names.filter(Boolean);
+}
+
+/**
+ * The language name in a block's header comment: `python`, or the same
+ * written like the directive, `yaml-lsp: python`.
+ */
+function headerName(comment, options) {
+  const alternatives = directiveNames(options).map(escapeRe).join("|");
+  const directive = alternatives && new RegExp(`^\\s*(?:${alternatives})\\s*:\\s*(\\S.*)$`).exec(comment);
+  return directive ? directive[1] : comment;
+}
+
 /**
  * The language a sticky directive sets for each line: `# yaml-lsp: python`
  * sets it for the blocks below, a bare `# yaml-lsp` clears it. Lines inside
  * block scalars are content, not comments, and are skipped.
  */
 function stickyLanguages(lines, blocks, options) {
-  const names = [options.stickyDirective];
-  if (options.compatDirective) names.push("yaml-embedded-languages");
-  const alternatives = names.filter(Boolean).map(escapeRe).join("|");
+  const alternatives = directiveNames(options).map(escapeRe).join("|");
   const setRe = new RegExp(`^\\s*#\\s*(?:${alternatives})\\s*:\\s*(\\S+)\\s*$`);
   const clearRe = new RegExp(`^\\s*#\\s*(?:${alternatives})\\s*$`);
   const content = new Uint8Array(lines.length);
@@ -96,7 +111,7 @@ function resolveRegions(blocks, lines, options) {
     let languageId;
     let provenance;
     if (b.comment) {
-      languageId = resolveLanguage(b.comment, options);
+      languageId = resolveLanguage(headerName(b.comment, options), options);
       provenance = PROVENANCE[0];
     }
     if (!languageId && sticky[b.line]) {
@@ -253,6 +268,7 @@ function mergeSemanticTokens(hostData, legend, embedded) {
 }
 
 module.exports = {
+  directiveNames,
   globToRe,
   resolveRegions,
   RegionMap,
