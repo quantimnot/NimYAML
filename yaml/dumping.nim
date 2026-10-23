@@ -98,6 +98,17 @@ proc setJsonStyle*(dumper: var Dumper) =
 proc jsonDumper*(): Dumper =
   result.setJsonStyle()
 
+proc setJsonLinesStyle*(dumper: var Dumper) =
+  ## Output preset. Like ``setJsonStyle``, but writes each document on a
+  ## single line, as JSON Lines needs. See `dumpJsonLines`_.
+  dumper.setJsonStyle()
+  dumper.presentation.newlines = nlNone
+  dumper.presentation.condenseFlow = true
+  dumper.presentation.maxLineLength = none(int)
+
+proc jsonLinesDumper*(): Dumper =
+  result.setJsonLinesStyle()
+
 proc setBlockOnlyStyle*(dumper: var Dumper) =
   ## Output preset. Uses block style exclusively.
   dumper.presentation = PresentationOptions(
@@ -186,6 +197,40 @@ proc dumpMultiDoc*[K](
   try: result = present(events, dumper.presentation)
   except YamlStreamError as e:
     internalError("Unexpected exception: " & $e.name)
+
+proc dumpJsonLines*[K](
+  dumper: Dumper,
+  values: openArray[K],
+  target: Stream,
+) {.gcsafe, raises: [
+  YamlPresenterJsonError, YamlPresenterOutputError,
+  YamlSerializationError
+].} =
+  ## Dump each of the given Nim values on a line of its own into the given
+  ## stream, each line ending with LF: JSON Lines when ``dumper`` writes
+  ## JSON, as ``jsonLinesDumper()`` does. Whatever its options, ``dumper``
+  ## writes each value on a single line. Counterpart of ``loadJsonLines``.
+  var options = dumper.presentation
+  options.newlines = nlNone
+  options.maxLineLength = none(int)
+  for value in values:
+    var events = represent(value, dumper.serialization)
+    try: present(events, target, options)
+    except YamlStreamError as e:
+      internalError("Unexpected exception: " & $e.name)
+
+proc dumpJsonLines*[K](
+  dumper: Dumper,
+  values: openArray[K],
+): string {.gcsafe, hint[XCannotRaiseY]: off, raises: [
+  YamlPresenterJsonError, YamlPresenterOutputError,
+  YamlSerializationError
+].} =
+  ## Dump each of the given Nim values on a line of its own into a string.
+  ## See the other overload.
+  let target = newStringStream()
+  dumper.dumpJsonLines(values, target)
+  result = target.data
 
 proc transform*(
   dumper : Dumper,

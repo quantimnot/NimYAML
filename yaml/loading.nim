@@ -13,7 +13,8 @@
 ## forms the highest-level API of NimYAML.
 ##
 ## JSON is loaded like YAML, of which it is a subset. `loadJsonc`_ also
-## loads JSONC, JSON with comments and trailing commas.
+## loads JSONC, JSON with comments and trailing commas, and `loadJsonLines`_
+## loads JSON Lines, one JSON value per line.
 
 import std / [ streams, strutils ]
 import native, parser, private/internal
@@ -143,3 +144,33 @@ proc loadAsJsonc*[K](input: Stream | string): K {.raises:
     [YamlConstructionError, IOError, OSError, YamlParserError].} =
   ## Loads the given JSONC input to a value of the type K and returns it.
   loadJsonc(input, result)
+
+iterator jsonLines*[K](input: Stream | string): K {.raises:
+    [YamlConstructionError, IOError, OSError, YamlParserError].} =
+  ## Loads a value of the type K from each line of JSON Lines input
+  ## (``.jsonl``, also known as NDJSON) and yields it as soon as it has been
+  ## read. Lines end with LF or CRLF; blank lines are skipped. Each line is
+  ## loaded like the input of `load`_, so it may hold any single-line YAML.
+  ## The ``line`` of an error's ``mark`` is that of the input.
+  let s = when input is Stream: input else: newStringStream(input)
+  var
+    line: string
+    lineNumber = 0
+  while s.readLine(line):
+    inc lineNumber
+    if line.isEmptyOrWhitespace: continue
+    var item: K
+    try: load(line, item)
+    except YamlParserError as e:
+      e.mark.line = lineNumber
+      raise e
+    except YamlConstructionError as e:
+      e.mark.line = lineNumber
+      raise e
+    yield item
+
+proc loadJsonLines*[K](input: Stream | string, target: var seq[K]) {.raises:
+    [YamlConstructionError, IOError, OSError, YamlParserError].} =
+  ## Loads a value of the type K from each line of JSON Lines input and adds
+  ## them to ``target``. See `jsonLines`_.
+  for item in jsonLines[K](input): target.add(item)
