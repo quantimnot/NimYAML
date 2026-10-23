@@ -197,8 +197,8 @@
 ## for a certain YAML scalar.
 
 # top level API
-import yaml / [annotations, loading, dumping, taglib]
-export annotations, loading, dumping, taglib
+import yaml / [annotations, loading, dumping, taglib, cbor]
+export annotations, loading, dumping, taglib, cbor
 
 when not defined(gcArc) or defined(gcOrc):
   # YAML DOM may contain cycles and therefore will leak memory if used with

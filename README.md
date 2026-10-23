@@ -418,6 +418,61 @@ Both also accept a `string` or `Stream`, and `dumpJsonLines` writes to a
  * **Positions.** The line of an error is that of the input; its line
    content is that of the offending line.
 
+## CBOR
+
+[CBOR](https://www.rfc-editor.org/rfc/rfc8949) is a binary format with the
+data model of JSON plus byte strings, tags and more number types. The module
+`yaml/cbor` (also exported by `yaml`) reads and writes it as `YamlStream`, so
+CBOR loads into and dumps from Nim values and the DOM like YAML does:
+
+```nim
+import yaml
+
+type Item = object
+  name: string
+  count: int32
+
+let data = Dumper().dumpCbor(Item(name: "a", count: 1))
+# a2 64 6e616d65 61 61 65 636f756e74 01: {"name": "a", "count": 1}
+assert loadAsCbor[Item](data) == Item(name: "a", count: 1)
+
+echo cborToYaml(data)                           # name: a\ncount: 1
+echo cborToYaml(data, jsonDumper().presentation) # as JSON
+let again = yamlToCbor("name: a\ncount: 1")     # == data
+```
+
+Input holding several data items, a CBOR sequence (RFC 8742), is a stream
+of several documents: `loadCborSequence` and `dumpCborSequence` load and
+dump one value per data item. `parseCbor` and `presentCbor` are the
+event-level reader and writer.
+
+Integers, floats, booleans and null become scalars with the non-specific tag
+`?` and content that the core schema resolves to their type, text strings
+get the tag `!` and byte strings are `!!binary`. Tags 0 and 1 become
+`!!timestamp`, tags 2 and 3 (bignums) integers, and tags 28 and 29 (shared
+values) anchors and aliases, so `ref` objects keep their sharing. Other
+tags are kept as `tag:nimyaml.org,2016:cbor:N`. The module documentation
+lists the whole mapping.
+
+`presentCbor` writes the preferred serialization: the shortest argument and
+float encodings that keep their value, and definite lengths.
+
+### Caveats
+
+ * **Not streaming.** `parseCbor` reads its events lazily, but takes all of
+   its input at once; `presentCbor` returns all of its output at once,
+   since definite lengths are only known at the end of a collection.
+ * **Untyped YAML scalars are resolved by the core schema.** Writing YAML as
+   CBOR turns plain `1`, `1.5`, `true` and `null` into numbers, booleans
+   and null, all other scalars into text strings. Timestamps are text
+   strings unless tagged `!!timestamp`. Tags without a CBOR counterpart
+   are dropped.
+ * **Nested tags** other than the shareable tag 28 are rejected, since a
+   YAML node has a single tag. Tags 21 to 24, 32 to 36 and 55799 are
+   dropped when reading.
+ * **Positions.** An error's `mark` has `line` 1 and the byte offset plus
+   one as `column`.
+
 ## Fragment Identifiers
 
 `yaml/fragment` resolves URI fragment identifiers such as `doc.yaml#/a/b` or
