@@ -98,6 +98,12 @@ Features:
    one value per line, with error lines referring to the input;
    `dumpJsonLines` dumps each value on a line of its own, and
    `jsonLinesDumper()` / `setJsonLinesStyle` is the matching JSON preset
+ * added CBOR (RFC 8949) in the new module `yaml/cbor`: `parseCbor` reads
+   CBOR data items as `YamlStream` and `presentCbor` writes a `YamlStream`
+   as CBOR, with the preferred serialization; `loadCbor`, `loadAsCbor`,
+   `loadCborSequence`, `dumpCbor` and `dumpCborSequence` load and dump Nim
+   values; `yamlToCbor` and `cborToYaml` convert. A CBOR sequence is a
+   stream of documents; tags 28 and 29 map to anchors and aliases
 
 Changes:
 
