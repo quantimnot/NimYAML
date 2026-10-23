@@ -237,3 +237,10 @@ flow: {
 }""", i(0), pl("block"), mv(), pl("foo\nbar\nbaz"),
     i(0), pl("flow"), mv(), ms(), pl("foo\nbar"), mv(),
     pl("baz\n\nmi"), me(), e())
+
+  test "empty block scalar before dir end":
+    assertEquals("--- | # an empty scalar\n--- |\nvalue\n", dirE(), ls(""),
+                 dirE(), ls("value\l"), e())
+
+  test "empty folded scalar before doc end":
+    assertEquals("--- >\n...\n", dirE(), fs(""), docE(), e())

@@ -673,8 +673,10 @@ proc readBlockScalar(lex: var Lexer) =
         if indent == 0:
           indent = lex.currentIndentation()
           lex.source.buf.scalar.indentation = indent
-          if indent <= lex.indentation or
-              (indent == 0 and (lex.dirEndFollows() or lex.docEndFollows())):
+          if indent == 0 and (lex.dirEndFollows() or lex.docEndFollows()):
+            lex.state = lineStart
+            break body
+          elif indent <= lex.indentation:
             lex.state = lineIndentation
             break body
           elif indent < maxLeadingSpaces:
