@@ -341,6 +341,37 @@ type that `dump` accepts works, including `YamlNode`s.
  * **An empty list yields an empty string**, a stream with no documents.
    `loadMultiDoc` reads it back as an empty `seq`; `load` rejects it.
 
+## JSONC
+
+JSON loads with `load`, as YAML is a superset of it. JSONC (JSON with
+comments, as in VS Code's `settings.json` or `tsconfig.json`) adds `//` and
+`/* */` comments and trailing commas; `loadJsonc` and `loadAsJsonc` load it:
+
+```nim
+import yaml
+
+type Config = object
+  name: string
+  ports: seq[int]
+
+let c = loadAsJsonc[Config]("""{
+  "name": "web", // the service
+  "ports": [80, 443, /* https */],
+}""")
+```
+
+`stripJsonComments` replaces the comments by spaces, keeping line breaks, and
+the result is parsed as YAML. Positions in errors are those of the input. To
+write JSONC, write JSON with `jsonDumper()`.
+
+### Caveats
+
+ * **Lenient.** As with `load`, any YAML is accepted, not only JSONC.
+ * **Comments are dropped.** They are not part of the loaded value, so
+   loading and dumping a JSONC file loses them.
+ * **The input is read whole.** A `Stream` is read into a string before
+   parsing.
+
 ## Fragment Identifiers
 
 `yaml/fragment` resolves URI fragment identifiers such as `doc.yaml#/a/b` or
