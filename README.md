@@ -333,7 +333,8 @@ type that `dump` accepts works, including `YamlNode`s.
    output.
  * **Not JSON.** With `jsonDumper()`, each document is JSON, but the result as
    a whole is not, nor is it JSON Lines: the documents are pretty-printed and
-   separated by `...` lines.
+   separated by `...` lines. Use `dumpJsonLines` for
+   [JSON Lines](#json-lines).
  * **Anchors are local to each document.** A `ref` that occurs in two values
    gets an anchor and aliases within each document, but is written out in full
    in every document it appears in. When loading, each document gets its own
@@ -371,6 +372,51 @@ write JSONC, write JSON with `jsonDumper()`.
    loading and dumping a JSONC file loses them.
  * **The input is read whole.** A `Stream` is read into a string before
    parsing.
+
+## JSON Lines
+
+[JSON Lines](https://jsonlines.org/) (`.jsonl`, also NDJSON) holds one JSON
+value per line. `dumpJsonLines` writes each value on a line of its own, and
+`loadJsonLines` reads them back:
+
+```nim
+import yaml
+
+type Item = object
+  name: string
+  count: int
+
+let s = jsonLinesDumper().dumpJsonLines(@[Item(name: "a", count: 1),
+                                          Item(name: "b", count: 2)])
+# {"name": "a", "count": 1}
+# {"name": "b", "count": 2}
+
+var items: seq[Item]
+loadJsonLines(s, items)
+```
+
+The `jsonLines` iterator yields each value as soon as its line has been read,
+so a large file does not need to fit in memory:
+
+```nim
+for item in jsonLines[Item](newFileStream("items.jsonl")):
+  echo item.name
+```
+
+Both also accept a `string` or `Stream`, and `dumpJsonLines` writes to a
+`Stream` as well.
+
+### Caveats
+
+ * **Lenient.** Each line is loaded like the input of `load`, so a line may
+   hold any YAML that fits on one line, not only JSON.
+ * **Blank lines are skipped**, though JSON Lines does not allow them. Lines
+   end with LF or CRLF.
+ * **Any dumper writes single lines.** `dumpJsonLines` overrides the
+   dumper's newline style and line length so that each value takes one line;
+   only a JSON dumper such as `jsonLinesDumper()` makes the lines JSON.
+ * **Positions.** The line of an error is that of the input; its line
+   content is that of the offending line.
 
 ## Fragment Identifiers
 

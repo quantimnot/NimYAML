@@ -94,6 +94,10 @@ Features:
  * added JSONC loading: `loadJsonc` and `loadAsJsonc` load JSON with `//`
    and `/* */` comments and trailing commas; `stripJsonComments` blanks the
    comments out in place, so error positions refer to the input
+ * added JSON Lines: `loadJsonLines` and the lazy `jsonLines` iterator load
+   one value per line, with error lines referring to the input;
+   `dumpJsonLines` dumps each value on a line of its own, and
+   `jsonLinesDumper()` / `setJsonLinesStyle` is the matching JSON preset
 
 Changes:
 

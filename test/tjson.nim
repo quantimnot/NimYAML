@@ -4,17 +4,22 @@
 #    See the file "copying.txt", included in this
 #    distribution, for details about the copyright.
 
-import ../yaml/[ parser, stream, tojson, loading]
+import ../yaml/[ parser, stream, tojson, loading, dumping]
 
 when defined(nimPreviewSlimSystem):
   import std/assertions
 
-import unittest, json, streams
+import unittest, json, streams, options
 
-type JsoncConfig = object
-  name: string
-  ports: seq[int]
-  debug: bool
+type
+  JsoncConfig = object
+    name: string
+    ports: seq[int]
+    debug: bool
+
+  Record = object
+    kind: string
+    count: int
 
 proc ensureEqual(yamlIn, jsonIn: string) =
   try:
@@ -113,3 +118,48 @@ suite "JSONC":
       check e.mark.line == 2
       check e.mark.column == 5
       check e.lineContent == "  2 /* three\n    ^"
+
+suite "JSON Lines":
+  test "Loading":
+    var events: seq[Record]
+    loadJsonLines("""{"kind": "a", "count": 1}""" & "\r\n\n  \n" &
+      """{"kind": "b\nc", "count": 2}""" & "\n", events)
+    check events == @[Record(kind: "a", count: 1), Record(kind: "b\nc", count: 2)]
+
+  test "Loading lazily from a stream":
+    var counts: seq[int]
+    for e in jsonLines[Record](newStringStream("{\"kind\": \"a\", \"count\": 1}\n{\"kind\": \"b\", \"count\": 2}")):
+      counts.add(e.count)
+    check counts == @[1, 2]
+
+  test "Error lines refer to the input":
+    var events: seq[Record]
+    try:
+      loadJsonLines("{\"kind\": \"a\", \"count\": 1}\n\n{\"kind\": \"b\", \"count\": [}\n", events)
+      check false
+    except YamlParserError as e:
+      check e.mark.line == 3
+      check e.mark.column == 25 # the stray '}'
+    try:
+      loadJsonLines("{\"kind\": \"a\", \"count\": 1}\n{\"kind\": \"b\", \"count\": \"x\"}\n", events)
+      check false
+    except YamlConstructionError as e:
+      check e.mark.line == 2
+
+  test "Dumping":
+    let events = @[Record(kind: "a", count: 1), Record(kind: "b\nc", count: 2)]
+    let output = jsonLinesDumper().dumpJsonLines(events)
+    check output == "{\"kind\": \"a\", \"count\": 1}\n{\"kind\": \"b\\nc\", \"count\": 2}\n"
+    var loaded: seq[Record]
+    loadJsonLines(output, loaded)
+    check loaded == events
+
+  test "Dumping with any dumper takes one line per value":
+    var d = jsonDumper()
+    d.presentation.maxLineLength = some(10)
+    check d.dumpJsonLines(@[Record(kind: "a long kind", count: 1)]) ==
+      "{\"kind\": \"a long kind\", \"count\": 1}\n"
+    check Dumper().dumpJsonLines(@[@["x", "y"], @["z"]]) == "[x, y]\n[z]\n"
+
+  test "Dumping no values":
+    check jsonLinesDumper().dumpJsonLines(newSeq[Record]()) == ""
