@@ -91,6 +91,9 @@ Features:
    `grammars` settings; the injection grammar is generated from them.
    `yamllsp` reports the block scalars with the custom request
    `nimyaml/blockScalars`
+ * added JSONC loading: `loadJsonc` and `loadAsJsonc` load JSON with `//`
+   and `/* */` comments and trailing commas; `stripJsonComments` blanks the
+   comments out in place, so error positions refer to the input
 
 Changes:
 
