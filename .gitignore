@@ -43,4 +43,5 @@ tools/yamlexpand
 test/tdirectives
 test/tdocumentschema
 test/tportable
+test/tcomments
 .claude/

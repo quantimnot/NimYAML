@@ -87,6 +87,14 @@ type
 
   Properties* = tuple[anchor: Anchor, tag: Tag]
 
+  Comment* = object
+    ## A comment of a YAML character stream. Events do not carry comments;
+    ## a parser collects them on request, see ``keepComments`` of
+    ## `initYamlParser <parser.html#initYamlParser>`_.
+    startPos*: Mark ## position of the ``#``
+    content*: string ## the text after the ``#``, up to the line end
+    trailing*: bool ## whether content precedes the comment on its line
+
   # Directives
   # ----------
   #

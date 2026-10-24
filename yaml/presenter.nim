@@ -80,6 +80,32 @@ type
     ## - ``deNever``: Don't write it. Suppresses output of directives
     deAlways, deIfNecessary, deNever
 
+  CommentIndentation* = enum
+    ## Where `transform` writes a comment that has a line of its own:
+    ## - ``ciNode``: At the indentation of the node it precedes, or of the
+    ##   collection it ends.
+    ## - ``ciSource``: At its column in the input, as far as that attaches
+    ##   it to the same node when the output is read again: before a node,
+    ##   at most at the node's indentation; at the end of a collection, at
+    ##   least at the collection's indentation and less than that of a
+    ##   collection that ends along with it, and right after a block scalar
+    ##   at the collection's indentation, so that it does not become content
+    ##   of the scalar.
+    ciNode = "node", ciSource = "source"
+
+  CommentOptions* = object
+    ## How `transform` keeps the comments of its input. A comment that
+    ## follows content on its line stays at the end of the line of its node;
+    ## a comment that has a line of its own stays before the node it
+    ## precedes, or at the end of the collection or document it ends. A
+    ## collection that holds a comment is written in block style. Comments
+    ## are dropped from output without line breaks (``nlNone``) and from
+    ## JSON output (``sqJson``), which have no room for them.
+    keep*       : bool = false ## whether comments are kept
+    indentation*: CommentIndentation = ciNode ## where comment lines are indented to
+    gap*        : int = 2 ## spaces between content and a comment after it
+    blankLines* : bool = true ## whether a blank line before or after a comment line is kept
+
   PresentationOptions* = object
     ## Options for generating a YAML character stream
     containers*     : ContainerStyle = cMixed ## how mappings and sequences are presented
@@ -93,6 +119,7 @@ type
     quoting*        : ScalarQuotingStyle = sqUnset ## how scalars are quoted
     condenseFlow*   : bool = true ## whether non-nested flow containers use a single line
     explicitKeys*   : bool = false ## whether mapping keys should always use '?'
+    comments*       : CommentOptions ## whether and how `transform` keeps comments
 
   YamlPresenterJsonError* = object of ValueError
     ## Exception that may be raised by the YAML presenter when it is
@@ -127,6 +154,32 @@ type
     wroteDirectivesEnd: bool
     lastImplicitKeyLen: int
     cached: DeQue[Event]
+    # comments, see `CommentOptions`. While ``commenting``, ``target``
+    # buffers the current line, which `newline` writes to ``output`` along
+    # with the comments before it, at its end and after it.
+    commenting: bool
+    output: Stream
+    attached: seq[EventComments] # by index of the event in the stream
+    eventIndex: int
+    before, trailing: seq[KeptComment]
+    # with the range of indentations that keep a comment where it is
+    after: seq[tuple[comment: KeptComment, indentation, below: int]]
+    # the indentation of the collection the previous event ended, if any
+    lastClosed: int
+    # a flow scalar is being written / the next line is in the body of a
+    # block scalar
+    inScalar, blockScalar: bool
+    # the current line continues a scalar / is in the body of a block scalar
+    continuation, bodyLine: bool
+    lastWasBody, wroteLine, blankPending: bool
+
+  KeptComment = object
+    content: string
+    column: int # in the input
+    blankBefore, blankAfter: bool # the line before / after it is blank
+
+  EventComments = object
+    before, trailing, after: seq[KeptComment]
 
   ItemKind = enum
     ikCompactScalar, ikMultilineFlowScalar, ikBlockScalar, ikCollection
@@ -270,6 +323,9 @@ proc inspect(
       if not inLine:
         curLine.start = i
         inLine = true
+        # like a space, a tab at the beginning of a line makes it
+        # more indented
+        if c == '\t': canUseFolded = false
       if not inWord:
         if not multipleSpaces:
           if lineLength.isSome and
@@ -335,11 +391,97 @@ proc whitespace(ctx: var Context, single: bool = false) {.inline.} =
   if single or ctx.options.indentationStep == 1: ctx.needsWhitespace = 1
   else: ctx.needsWhitespace = ctx.options.indentationStep - 1
 
-proc newline(ctx: var Context) {.inline.} =
+proc lineBreak(ctx: Context): string =
   case ctx.options.newlines
-  of nlCRLF: ctx.target.write("\c\l")
-  of nlLF: ctx.target.write("\l")
-  else: ctx.target.write("\n")
+  of nlCRLF: "\c\l"
+  of nlLF: "\l"
+  else: "\n"
+
+proc commentIndentation(ctx: Context, c: KeptComment, node: int,
+    ending = false, below = int.high): int =
+  ## The indentation of a comment line, of a comment before a node at
+  ## ``node`` or, if ``ending``, at the end of a collection at ``node``.
+  ## Comments are attached by their indentation, so with ``ciSource``, it
+  ## is kept within the indentations that attach it to the same node again:
+  ## at most ``node`` before a node, and between ``node`` and ``below`` (the
+  ## indentation of a collection that ends along with it, exclusive) at the
+  ## end of a collection.
+  case ctx.options.comments.indentation
+  of ciNode: node
+  of ciSource:
+    if not ending: min(c.column - 1, node)
+    # more would make it content of the block scalar before it
+    elif ctx.lastWasBody: node
+    else: max(node, min(c.column - 1, below - 1))
+
+proc writeOutput(ctx: var Context, line: string, blankBefore = false,
+    blankAfter = false) =
+  ## Writes a line to ``output``, with a blank line before it if one is
+  ## pending. Blank lines next to comments are only written between lines.
+  if not ctx.options.comments.blankLines: ctx.blankPending = false
+  elif blankBefore and ctx.wroteLine: ctx.blankPending = true
+  if ctx.blankPending: ctx.output.write(ctx.lineBreak)
+  ctx.output.write(line)
+  ctx.output.write(ctx.lineBreak)
+  ctx.wroteLine = true
+  ctx.blankPending = blankAfter
+
+proc writeComment(ctx: var Context, c: KeptComment, indentation: int) =
+  ctx.writeOutput(repeat(' ', indentation) & '#' & c.content, c.blankBefore,
+      c.blankAfter)
+  ctx.lastWasBody = false
+
+proc ownLine(c: KeptComment): KeptComment =
+  ## A comment that followed content, to write on a line of its own.
+  result = c
+  result.column = 1
+
+proc flushLine(ctx: var Context, final = false) =
+  ## Writes the current line and the comments around it. A line inside a
+  ## scalar takes no comments; they wait for the next line that can.
+  let buffer = StringStream(ctx.target)
+  let text = buffer.data
+  buffer.data.setLen(0)
+  buffer.setPosition(0)
+  var indentation = 0
+  while indentation < text.len and text[indentation] == ' ': inc(indentation)
+  let
+    hasContent = indentation < text.len
+    insideScalar = ctx.inScalar or ctx.blockScalar
+  if not ctx.continuation and (hasContent or final):
+    for c in ctx.before: ctx.writeComment(c, ctx.commentIndentation(c, indentation))
+    ctx.before.setLen(0)
+  var line = text
+  # the header line of a block scalar takes a comment, its body does not
+  if hasContent and not ctx.inScalar and not ctx.bodyLine and
+      ctx.trailing.len > 0:
+    # without a space before it, a # does not start a comment
+    line.add(repeat(' ', max(1, ctx.options.comments.gap)) & '#' &
+        ctx.trailing[0].content)
+    for i in countdown(ctx.trailing.high, 1):
+      ctx.after.insert((ctx.trailing[i].ownLine, indentation, int.high), 0)
+    ctx.trailing.setLen(0)
+  if not final or hasContent:
+    if hasContent or ctx.continuation:
+      # an empty line inside a scalar is content
+      ctx.writeOutput(line)
+    else:
+      ctx.output.write(ctx.lineBreak)
+      ctx.blankPending = false
+    ctx.lastWasBody = ctx.bodyLine
+  if final:
+    for c in ctx.trailing: ctx.after.add((c.ownLine, 0, int.high))
+    ctx.trailing.setLen(0)
+  if not insideScalar:
+    for (c, i, below) in ctx.after:
+      ctx.writeComment(c, ctx.commentIndentation(c, i, true, below))
+    ctx.after.setLen(0)
+  ctx.continuation = insideScalar
+  ctx.bodyLine = ctx.blockScalar
+
+proc newline(ctx: var Context) {.inline.} =
+  if ctx.commenting: ctx.flushLine()
+  else: ctx.target.write(ctx.lineBreak)
   ctx.needsWhitespace = 0
   if ctx.levels.len > 0: ctx.level.wroteAnything = true
 
@@ -354,6 +496,7 @@ proc writeDoubleQuoted(
     result = 2
     ctx.append('"')
     curPos.inc()
+    ctx.inScalar = true
     for i, c in scalar:
       var nextLength = 1
       case c
@@ -387,6 +530,7 @@ proc writeDoubleQuoted(
         if ord(c) < 32: t.write("\\x" & toHex(ord(c), 2))
         else: t.write(c)
     t.write('"')
+    ctx.inScalar = false
   except CatchableError as ce:
     var e = newException(YamlPresenterOutputError,
                          "Error while writing to output stream")
@@ -470,11 +614,13 @@ proc writeLiteral(
     ctx.append('|')
     if scalar[^1] != '\l': t.write('-')
     if scalar[0] in [' ', '\t']: t.write($ctx.options.indentationStep)
+    ctx.blockScalar = true
     for line in lines:
       ctx.newline()
       t.write(repeat(' ', indentation))
       if line.finish >= line.start:
         t.write(scalar[line.start .. line.finish])
+    ctx.blockScalar = false
   except CatchableError as ce:
     var e = newException(YamlPresenterOutputError,
                          "Error while writing to output stream")
@@ -496,6 +642,7 @@ proc writeFolded(
     if scalar[^1] != '\l': t.write('-')
     if scalar[0] in [' ', '\t']: t.write($ctx.options.indentationStep)
     var curPos = lineLength
+    ctx.blockScalar = true
     for word in words:
       if word.start > 0 and scalar[word.start - 1] == '\l':
         ctx.newline()
@@ -511,6 +658,7 @@ proc writeFolded(
         curPos.inc()
       t.write(scalar[word.start .. word.finish])
       curPos += word.finish - word.start + 1
+    ctx.blockScalar = false
   except CatchableError as ce:
     var e = newException(YamlPresenterOutputError,
                          "Error while writing to output stream")
@@ -660,6 +808,29 @@ proc writeTagAndAnchor(
     e.parent = ce
     raise e
 
+proc takeBefore(ctx: var Context, trailing = true) =
+  ## Takes the comments to write before the line of the current event and
+  ## at its end. Called once the event's line has been started.
+  if ctx.commenting:
+    ctx.before.add(ctx.attached[ctx.eventIndex].before)
+    if trailing: ctx.trailing.add(ctx.attached[ctx.eventIndex].trailing)
+
+proc takeTrailing(ctx: var Context) =
+  if ctx.commenting: ctx.trailing.add(ctx.attached[ctx.eventIndex].trailing)
+
+proc takeAfter(ctx: var Context, indentation: int, trailing = true) =
+  ## Takes the comments that end the collection or document the current
+  ## event ends, to write at ``indentation`` after the current line.
+  if ctx.commenting:
+    if trailing: ctx.trailing.add(ctx.attached[ctx.eventIndex].trailing)
+    for c in ctx.attached[ctx.eventIndex].after:
+      ctx.after.add((c, indentation, ctx.lastClosed))
+
+proc endIndentation(ctx: Context, level: DumperLevel): int =
+  ## The indentation of comments that end the collection of ``level``.
+  if level.state.isFlow: max(0, level.indentation - ctx.options.indentationStep)
+  else: level.indentation
+
 proc nextItem(
   c: var Deque,
   s: YamlStream,
@@ -723,15 +894,22 @@ proc doPresent(
   var unclosedDoc = false
   ctx.cached = initDeQue[Event]()
   ctx.wroteDirectivesEnd = false
+  ctx.eventIndex = -1
   while true:
     let item = nextItem(ctx.cached, s)
+    inc(ctx.eventIndex)
+    if item.kind notin {yamlEndMap, yamlEndSeq}: ctx.lastClosed = int.high
     case item.kind
     of yamlStartStream: discard
-    of yamlEndStream: break
+    of yamlEndStream:
+      ctx.takeAfter(0)
+      break
     of yamlStartDoc:
       if unclosedDoc:
         ctx.safeWrite("...")
         ctx.safeNewline()
+      # the directives come before the line of the document start
+      ctx.takeBefore(trailing = false)
       ctx.wroteDirectivesEnd =
         item.explicitDirectivesEnd or ctx.options.directivesEnd == deAlways or (
         ctx.options.directivesEnd != deNever and not s.peek().emptyProperties())
@@ -787,6 +965,7 @@ proc doPresent(
           var e = newException(YamlPresenterOutputError, "")
           e.parent = ce
           raise e
+      ctx.takeTrailing()
       if ctx.wroteDirectivesEnd:
         ctx.safeWrite("---")
         ctx.whitespace(true)
@@ -800,7 +979,10 @@ proc doPresent(
         words = @[]
         lines = @[]
         if ctx.levels.len > 0 and ctx.state == dBlockImplicitMapKey:
-          if ctx.options.maxLineLength.isNone or
+          if ctx.commenting and ctx.attached[ctx.eventIndex].before.len > 0:
+            # the comments before a value go between it and its key
+            needsNextLine = true
+          elif ctx.options.maxLineLength.isNone or
               ctx.indentation + ctx.options.indentationStep + ctx.lastImplicitKeyLen + 4 <
               ctx.options.maxLineLength.get():
             scalarStyle = item.scalarContent.inspect(
@@ -827,12 +1009,16 @@ proc doPresent(
         of ssDoubleQuoted:
           if multiLine: ikMultilineFlowScalar else: ikCompactScalar
         else: ikCompactScalar)
+      let nextLine = ctx.levels.len > 0 and needsNextLine and
+          scalarStyle in [ssDoubleQuoted, ssSingleQuoted, ssPlain]
+      if not nextLine: ctx.takeBefore()
       discard ctx.writeTagAndAnchor(item.scalarProperties)
       if ctx.levels.len == 0:
         if ctx.wroteDirectivesEnd and scalarStyle notin [ssLiteral, ssFolded]: ctx.safeNewline()
-      elif needsNextLine and scalarStyle in [ssDoubleQuoted, ssSingleQuoted, ssPlain]:
+      elif nextLine:
         ctx.safeNewline()
         ctx.safeWrite(repeat(' ', ctx.indentation + ctx.options.indentationStep))
+        ctx.takeBefore()
       case ctx.options.quoting
       of sqJson:
         var hint = yTypeUnknown
@@ -882,6 +1068,7 @@ proc doPresent(
                            "Alias not allowed in JSON output")
       yAssert ctx.levels.len > 0
       ctx.startItem(ikCompactScalar)
+      ctx.takeBefore()
       try:
         ctx.append('*')
         ctx.target.write($item.aliasTarget)
@@ -918,6 +1105,7 @@ proc doPresent(
         indentation = ctx.indentation + ctx.options.indentationStep
         if nextState.isFlow and not ctx.state.isFlow:
           inc(indentation, ctx.options.indentationStep)
+      ctx.takeBefore()
 
       let wroteAttrs = ctx.writeTagAndAnchor(item.seqProperties)
       if wroteAttrs or (ctx.wroteDirectivesEnd and ctx.levels.len == 0):
@@ -964,6 +1152,7 @@ proc doPresent(
         indentation = ctx.indentation + ctx.options.indentationStep
         if nextState.isFlow and not ctx.state.isFlow:
           inc(indentation, ctx.options.indentationStep)
+      ctx.takeBefore()
 
       let wroteAttrs = ctx.writeTagAndAnchor(item.properties)
       if wroteAttrs or (ctx.wroteDirectivesEnd and ctx.levels.len == 0):
@@ -992,6 +1181,8 @@ proc doPresent(
       of dFlowSequenceStart: ctx.safeWrite(']')
       of dBlockSequenceItem: discard
       else: internalError("Invalid popped level")
+      ctx.takeAfter(ctx.endIndentation(level))
+      ctx.lastClosed = ctx.endIndentation(level)
     of yamlEndMap:
       yAssert ctx.levels.len > 0
       let level = ctx.levels.pop()
@@ -1009,13 +1200,24 @@ proc doPresent(
       of dFlowMapStart: ctx.safeWrite('}')
       of dBlockMapValue, dBlockInlineMap: discard
       else: internalError("Invalid level: " & $level)
+      ctx.takeAfter(ctx.endIndentation(level))
+      ctx.lastClosed = ctx.endIndentation(level)
     of yamlEndDoc:
+      ctx.takeAfter(0, trailing = false)
       ctx.safeNewline()
       if item.explicitDocumentEnd:
         ctx.safeWrite("...")
+        ctx.takeTrailing()
         ctx.safeNewline()
       else:
+        ctx.takeTrailing()
         unclosedDoc = true
+  if ctx.commenting:
+    try: ctx.flushLine(final = true)
+    except CatchableError as ce:
+      var e = newException(YamlPresenterOutputError, "")
+      e.parent = ce
+      raise e
 
 proc present*(
   s      : YamlStream,
@@ -1044,46 +1246,220 @@ proc present*(
   doPresent(c, s)
   return ss.data
 
+proc normalized(event: Event, resolveToCoreYamlTags: bool): Event =
+  ## ``event`` with its presentation style left to the presenter and, with
+  ## ``resolveToCoreYamlTags``, its non-specific tag resolved.
+  result = event
+  case result.kind
+  of yamlStartStream, yamlEndStream, yamlStartDoc, yamlEndDoc, yamlEndMap, yamlAlias, yamlEndSeq:
+    discard
+  of yamlStartMap:
+    result.mapStyle = csAny
+    if resolveToCoreYamlTags:
+      if result.mapProperties.tag in [yTagQuestionMark, yTagExclamationMark]:
+        result.mapProperties.tag = yTagMapping
+  of yamlStartSeq:
+    result.seqStyle = csAny
+    if resolveToCoreYamlTags:
+      if result.seqProperties.tag in [yTagQuestionMark, yTagExclamationMark]:
+        result.seqProperties.tag = yTagSequence
+  of yamlScalar:
+    result.scalarStyle = ssAny
+    if resolveToCoreYamlTags:
+      if result.scalarProperties.tag == yTagQuestionMark:
+        case guessType(result.scalarContent)
+        of yTypeInteger: result.scalarProperties.tag = yTagInteger
+        of yTypeFloat, yTypeFloatInf, yTypeFloatNaN:
+          result.scalarProperties.tag = yTagFloat
+        of yTypeBoolTrue, yTypeBoolFalse: result.scalarProperties.tag = yTagBoolean
+        of yTypeNull: result.scalarProperties.tag = yTagNull
+        of yTypeTimestamp: result.scalarProperties.tag = yTagTimestamp
+        of yTypeUnknown: result.scalarProperties.tag = yTagString
+      elif result.scalarProperties.tag == yTagExclamationMark:
+        result.scalarProperties.tag = yTagString
+
+# Comments are attached to the events of their input by position:
+#
+# - A comment after content on its line goes with the last event that starts
+#   (or, for a multi-line flow scalar, ends) on that line, and is written at
+#   the end of the line of that event. On a line without an event, like that
+#   of a directive, it is treated like a comment on a line of its own.
+# - A comment on a line of its own ends the innermost collection that closes
+#   after it and that it is indented into, or the document or stream that
+#   ends after it. It is written after the last line of that.
+# - Any other comment on a line of its own goes with the node after it and
+#   is written before the line of that node. A node that starts a block
+#   collection hands it to the first node in it.
+
+proc precedes(a, b: Mark): bool =
+  a.line < b.line or a.line == b.line and a.column < b.column
+
+proc isBlock(event: Event): bool =
+  event.kind in {yamlStartMap, yamlStartSeq} and event.collectionStyle != csFlow
+
+proc blockIndentations(events: seq[Event], lines: seq[string]): seq[int] =
+  ## For each event that ends a collection, the indentation of that
+  ## collection; -1 for one that every comment until its end is in: a flow
+  ## collection, a document, the stream.
+  result = newSeq[int](events.len)
+  var
+    starts: seq[int] # the starts of the collections the event is in
+    indentation = newSeq[int](events.len)
+  proc column(i: int, ownKey = true): int =
+    # the column of the node that event ``i`` starts. The start of a block
+    # collection is not where its first node is, but the indicator before
+    # its first child is, if any. A mapping that is the first key of a
+    # mapping does not own the `?` before its first key.
+    let event = events[i]
+    if not event.isBlock or i + 1 >= events.len or
+        events[i + 1].kind in {yamlEndMap, yamlEndSeq}:
+      return int(event.startPos.column)
+    let first = column(i + 1)
+    let indicator = if event.kind == yamlStartSeq: '-' else: '?'
+    if (ownKey or indicator == '-') and events[i + 1].startPos.line <= lines.len:
+      let line = lines[events[i + 1].startPos.line - 1]
+      var c = min(first - 2, line.len - 1)
+      while c >= 0 and line[c] in {' ', '\t'}: dec(c)
+      if c >= 0 and line[c] == indicator: return c + 1
+    if event.kind == yamlStartMap: return first
+    # an item on a line after its `-`
+    if event.startPos.line <= lines.len:
+      for c, ch in lines[event.startPos.line - 1]:
+        if ch notin {' ', '\t'}: return c + 1
+    int(event.startPos.column)
+  for i, event in events:
+    case event.kind
+    of yamlStartMap, yamlStartSeq:
+      if not event.isBlock: indentation[i] = -1
+      else:
+        indentation[i] = column(i, ownKey = starts.len == 0 or
+            starts[^1] != i - 1 or events[starts[^1]].kind != yamlStartMap) - 1
+        # a sequence that is not indented in its mapping ends with the
+        # mapping's indentation
+        if event.kind == yamlStartSeq and starts.len > 0 and
+            events[starts[^1]].kind == yamlStartMap and
+            indentation[starts[^1]] == indentation[i]:
+          inc(indentation[i])
+      starts.add(i)
+    of yamlEndMap, yamlEndSeq:
+      if starts.len > 0: result[i] = indentation[starts.pop()]
+    of yamlEndDoc, yamlEndStream: result[i] = -1
+    else: discard
+
+proc attachComments(events: seq[Event], comments: seq[Comment],
+    source: string): seq[EventComments] =
+  result = newSeq[EventComments](events.len)
+  var lines: seq[string]
+  for line in source.splitLines: lines.add(line)
+  proc blank(line: int): bool =
+    line >= 1 and line <= lines.len and lines[line - 1].strip.len == 0
+  let indentations = blockIndentations(events, lines)
+  # the start of a block collection is not where its first node is, and an
+  # empty node is where the next content is, not after its key or `-`
+  var positions = newSeq[Mark](events.len)
+  for i in countdown(events.high, 0):
+    positions[i] =
+      if events[i].isBlock and i < events.high and
+          events[i + 1].kind notin {yamlEndMap, yamlEndSeq}: positions[i + 1]
+      elif events[i].kind == yamlScalar and i > 0 and
+          events[i].startPos == events[i].endPos: events[i - 1].endPos
+      else: events[i].startPos
+  var
+    next = 0 # the first event that starts after the current comment
+    # comments between the same events keep their order, so a comment goes
+    # with no earlier event than the comment before it
+    gap, lastTarget = -1
+  for c in comments:
+    while next < events.len and not c.startPos.precedes(positions[next]):
+      inc(next)
+    var kept = KeptComment(content: c.content.strip(leading = false),
+        column: int(c.startPos.column))
+    if c.trailing:
+      let line = c.startPos.line
+      if next > 1 and (positions[next - 1].line == line or
+          events[next - 1].endPos.line == line):
+        result[next - 1].trailing.add(kept)
+        continue
+      # a line without an event of its own, like that of a directive
+    kept.blankBefore = blank(c.startPos.line - 1)
+    kept.blankAfter = blank(c.startPos.line + 1)
+    var target = if gap == next: max(next, lastTarget) else: next
+    while target < events.len and events[target].kind in
+        {yamlEndMap, yamlEndSeq, yamlEndDoc, yamlEndStream}:
+      if indentations[target] <= kept.column - 1: break
+      inc(target)
+    if target >= events.len: continue
+    gap = next
+    lastTarget = target
+    if events[target].kind in {yamlEndMap, yamlEndSeq, yamlEndDoc, yamlEndStream}:
+      result[target].after.add(kept)
+    else: result[target].before.add(kept)
+  for i in 0 ..< events.len - 1:
+    if events[i].isBlock and result[i].before.len > 0 and
+        events[i + 1].kind notin {yamlEndMap, yamlEndSeq}:
+      result[i + 1].before = result[i].before & result[i + 1].before
+      result[i].before.setLen(0)
+
+proc hasComments(comments: EventComments): bool =
+  comments.before.len + comments.trailing.len + comments.after.len > 0
+
+proc keepsComments*(options: PresentationOptions): bool =
+  ## Whether `transform` keeps comments with ``options``: if they ask for it
+  ## and the output has room for comments, see `CommentOptions`.
+  options.comments.keep and options.newlines != nlNone and
+      options.quoting != sqJson
+
 proc doTransform(
   ctx  : var Context,
   input: Stream,
   resolveToCoreYamlTags: bool,
 ) =
+  let keepComments = ctx.options.keepsComments
   var parser: YamlParser
-  parser.init()
-  var events = parser.parse(input)
+  parser.init(keepComments = keepComments)
+  var source: string
+  if keepComments: source = input.readAll()
+  var events =
+    if keepComments: parser.parse(source)
+    else: parser.parse(input)
   try:
     var bys: YamlStream = newBufferYamlStream()
-    for e in events:
-      var event = e
-      case event.kind
-      of yamlStartStream, yamlEndStream, yamlStartDoc, yamlEndDoc, yamlEndMap, yamlAlias, yamlEndSeq:
-        discard
-      of yamlStartMap:
-        event.mapStyle = csAny
-        if resolveToCoreYamlTags:
-          if event.mapProperties.tag in [yTagQuestionMark, yTagExclamationMark]:
-            event.mapProperties.tag = yTagMapping
-      of yamlStartSeq:
-        event.seqStyle = csAny
-        if resolveToCoreYamlTags:
-          if event.seqProperties.tag in [yTagQuestionMark, yTagExclamationMark]:
-            event.seqProperties.tag = yTagSequence
-      of yamlScalar:
-        event.scalarStyle = ssAny
-        if resolveToCoreYamlTags:
-          if event.scalarProperties.tag == yTagQuestionMark:
-            case guessType(event.scalarContent)
-            of yTypeInteger: event.scalarProperties.tag = yTagInteger
-            of yTypeFloat, yTypeFloatInf, yTypeFloatNaN:
-              event.scalarProperties.tag = yTagFloat
-            of yTypeBoolTrue, yTypeBoolFalse: event.scalarProperties.tag = yTagBoolean
-            of yTypeNull: event.scalarProperties.tag = yTagNull
-            of yTypeTimestamp: event.scalarProperties.tag = yTagTimestamp
-            of yTypeUnknown: event.scalarProperties.tag = yTagString
-          elif event.scalarProperties.tag == yTagExclamationMark:
-            event.scalarProperties.tag = yTagString
-      BufferYamlStream(bys).put(event)
+    if keepComments:
+      var buffered: seq[Event]
+      for e in events: buffered.add(e)
+      let comments =
+        try: events.comments
+        except ValueError: internalError("transform parses its own input")
+      if comments.len > 0:
+        ctx.attached = attachComments(buffered, comments, source)
+        ctx.commenting = true
+        ctx.output = ctx.target
+        ctx.target = newStringStream()
+      # a collection that holds a comment cannot be written in a single line
+      var
+        starts: seq[int]
+        commented = newSeq[bool](buffered.len)
+      for i, e in buffered:
+        let here = ctx.commenting and ctx.attached[i].hasComments
+        case e.kind
+        of yamlEndMap, yamlEndSeq:
+          # a comment at the end of the line of the end is outside
+          let start = starts.pop()
+          if here and ctx.attached[i].after.len > 0: commented[start] = true
+          if commented[start] or here:
+            if starts.len > 0: commented[starts[^1]] = true
+        else:
+          if here and starts.len > 0: commented[starts[^1]] = true
+          if e.kind in {yamlStartMap, yamlStartSeq}: starts.add(i)
+      for i, e in buffered:
+        var event = e.normalized(resolveToCoreYamlTags)
+        if commented[i]:
+          if event.kind == yamlStartMap: event.mapStyle = csBlock
+          else: event.seqStyle = csBlock
+        BufferYamlStream(bys).put(event)
+    else:
+      for e in events:
+        BufferYamlStream(bys).put(e.normalized(resolveToCoreYamlTags))
     doPresent(ctx, bys)
   except YamlStreamError as e:
     var curE: ref Exception = e
@@ -1109,6 +1485,8 @@ proc transform*(
   ## using the given presentation options.
   ## If ``resolveToCoreYamlTags`` is ``true``, non-specific tags will
   ## be replaced by specific tags according to the YAML core schema.
+  ## The comments of ``input`` are kept if ``options.comments`` says so,
+  ## see `CommentOptions`.
   var c = Context(target: output, options: options)
   doTransform(c, genInput(input), resolveToCoreYamlTags)
 
@@ -1124,6 +1502,8 @@ proc transform*(
   ## using the given presentation options. Returns the resulting string.
   ## If ``resolveToCoreYamlTags`` is ``true``, non-specific tags will
   ## be replaced by specific tags according to the YAML core schema.
+  ## The comments of ``input`` are kept if ``options.comments`` says so,
+  ## see `CommentOptions`.
   var
     ss = newStringStream()
     c = Context(target: ss, options: options)

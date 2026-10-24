@@ -82,19 +82,33 @@ issues), not the style rules, so that a file that validates is valid YAML
 that conforms to its schemas."""
 
   formatUsage = """usage: yaml format [--write | --check] [--drop-comments] [--config:FILE]
-                   [--style:STYLE] [--indent:N] [--line-length:N] [FILE...]
+                   [--style:STYLE] [--indent:N] [--line-length:N]
+                   [--comment-indentation:node|source] [--comment-gap:N]
+                   [--comment-blank-lines:keep|drop] [FILE...]
 
 Rewrites YAML in the style of the format section of the config, and prints
 it; with --write, the files are rewritten in place instead, and with
 --check, the files that are not formatted are listed (exit code 1 if
 there are any). Several files require --write or --check.
 
-Formatting drops comments, so files with comments are refused unless
---drop-comments is given.
+Comments are kept: a comment after content stays at the end of the line of
+its node, and a comment line stays before the node it precedes or at the
+end of the collection it ends. A collection that holds a comment is written
+in block style. The minimal, json and json-lines styles have no room for
+comments, so files with comments are refused with them unless
+--drop-comments is given, which drops comments with any style.
 
 --style:STYLE   default, minimal, explanatory, json, json-lines or block-only
 --indent:N      spaces per indentation level
---line-length:N maximum line length; 0 for none"""
+--line-length:N maximum line length; 0 for none
+--comment-indentation:node|source
+                indent comment lines like the node they precede or end
+                (default), or keep their column in the input where it
+                attaches them to the same node
+--comment-gap:N spaces between content and a comment after it (default 2)
+--comment-blank-lines:keep|drop
+                whether a blank line before or after a comment line is kept
+                (default keep)"""
 
   convertUsage = """usage: yaml convert [--from:FORMAT] TO [FILE...]
        yaml as TO [FILE...]  /  yaml to TO [FILE...]
@@ -140,7 +154,11 @@ is read as its lint section. All keys are optional:
   format:
     style: default          # see yaml help format
     indentation: 2
-    max-line-length: 80     # 0 for no limit"""
+    max-line-length: 80     # 0 for no limit
+    comments: keep          # or drop
+    comment-indentation: node  # or source
+    comment-gap: 2
+    comment-blank-lines: keep  # or drop"""
 
 proc usageOf(command: string): string =
   case command
@@ -299,28 +317,16 @@ proc write(output: File, events: BufferYamlStream, format: DataFormat,
 # commands
 
 proc hasComments(text: string): bool =
-  ## Whether ``text`` has a comment: a ``#`` between two tokens. False if
-  ## the lexer fails, which formatting then reports.
-  var lines: seq[string]
-  for _, line in text.sourceLines: lines.add(line)
-  proc inGap(startPos, endPos: Mark): bool =
-    for line in int(startPos.line) .. min(int(endPos.line), lines.len):
-      let
-        text = lines[line - 1]
-        first = if line == startPos.line: int(startPos.column) else: 1
-        last = if line == endPos.line: int(endPos.column) else: text.len + 1
-      for column in first ..< min(last, text.len + 1):
-        if text[column - 1] == '#': return true
-  var
-    lex: Lexer
-    gapStart = Mark(line: 1, column: 1)
+  ## Whether ``text`` has a comment. False if the lexer fails, which
+  ## formatting then reports.
+  var lex: Lexer
   lex.directiveExtensions = true
+  lex.keepComments = true
   lex.init(text)
   while true:
     try: lex.next()
     except LexerError: return false
-    if inGap(gapStart, lex.curStartPos): return true
-    gapStart = lex.curEndPos
+    if lex.comments.len > 0: return true
     if lex.cur == Token.StreamEnd: return false
 
 proc formatCommand(args: seq[string]): int =
@@ -337,6 +343,18 @@ proc formatCommand(args: seq[string]): int =
       of "write", "w": write = true
       of "check": checkOnly = true
       of "drop-comments": dropComments = true
+      of "comment-indentation":
+        for i in CommentIndentation:
+          if val == $i: overrides.commentIndentation = some(i)
+        if overrides.commentIndentation.isNone: fail("format")
+      of "comment-blank-lines":
+        for k in Keeping:
+          if val == $k: overrides.commentBlankLines = some(k)
+        if overrides.commentBlankLines.isNone: fail("format")
+      of "comment-gap":
+        let n = try: parseInt(val) except ValueError: 0
+        if n < 1: fail("format")
+        overrides.commentGap = some(n)
       of "config": configPath = val
       of "style":
         for s in FormatStyle:
@@ -365,14 +383,23 @@ proc formatCommand(args: seq[string]): int =
     if overrides.indentation.isSome: style.indentation = overrides.indentation
     if overrides.maxLineLength.isSome:
       style.maxLineLength = overrides.maxLineLength
-    if not dropComments and hasComments(content):
-      stderr.writeLine(name & ": has comments, which formatting drops; " &
+    if overrides.commentIndentation.isSome:
+      style.commentIndentation = overrides.commentIndentation
+    if overrides.commentBlankLines.isSome:
+      style.commentBlankLines = overrides.commentBlankLines
+    if overrides.commentGap.isSome: style.commentGap = overrides.commentGap
+    if dropComments: style.comments = some(kDrop)
+    let dumper = style.dumper
+    if style.comments.get(kKeep) == kKeep and
+        not dumper.presentation.keepsComments and hasComments(content):
+      stderr.writeLine(name & ": has comments, which the " &
+          $style.style.get(fsDefault) & " style cannot keep; " &
           "use --drop-comments to format it anyway")
       result = 1
       continue
     var formatted: string
     try:
-      formatted = style.dumper.transform(content)
+      formatted = dumper.transform(content)
     except YamlParserError, YamlPresenterJsonError:
       stderr.writeLine(describe(name, getCurrentException()))
       result = 1

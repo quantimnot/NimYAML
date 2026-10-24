@@ -955,13 +955,43 @@ format:
   style: default        # minimal, explanatory, json, json-lines, block-only
   indentation: 2
   max-line-length: 80   # 0 for no limit
+  comments: keep        # or drop
+  comment-indentation: node  # or source, see below
+  comment-gap: 2        # spaces between content and a comment after it
+  comment-blank-lines: keep  # or drop: blank lines next to comment lines
 ```
+
+`format` keeps comments. A comment after content stays at the end of the
+line of its node; a comment on a line of its own stays before the node it
+precedes, or at the end of the collection it ends: the innermost closing
+collection it is indented into, so that
+
+```yaml
+a:
+  b: 1
+  # ends a's mapping
+# precedes c
+c: 2
+```
+
+keeps both comments where they are. With `comment-indentation: node`,
+comment lines are indented like the node they precede or the collection
+they end; with `source`, they keep their column where that attaches them to
+the same node (at most the indentation of the node they precede), so
+commented-out lines at column 1 stay there. A collection that holds a
+comment is written in block style, and a blank line before or after a
+comment line is kept. In the library, `PresentationOptions.comments` asks
+`transform` to keep comments, and a parser initialized with `keepComments`
+collects them (`comments(stream)`).
 
 ### Caveats
 
- * `format` cannot keep comments, so it refuses files that have them unless
-   given `--drop-comments`. It also drops the original scalar and
-   collection styles; the `format` section decides them.
+ * The `minimal`, `json` and `json-lines` styles have no room for comments:
+   `format` refuses files with comments with them unless given
+   `--drop-comments` (which drops comments with any style).
+ * `format` drops the original scalar and collection styles; the `format`
+   section decides them. Blank lines are only kept next to comment lines,
+   and several become one.
  * The language server only speaks stdio (`--stdio` is accepted and
    ignored).
  * There are no parser options in the config yet.

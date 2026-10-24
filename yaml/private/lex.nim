@@ -76,6 +76,11 @@ type
       ## whether ``%GLOBAL`` and ``%SCHEMA`` are lexed as NimYAML's own
       ## directives rather than as reserved directives (YAML 1.2, §6.8).
       ## A parser setting: not part of checkpoints.
+    keepComments*: bool
+      ## whether comments are collected in ``comments``. A parser setting.
+    comments*: seq[Comment]
+      ## the comments read so far, in input order. Input that is read again
+      ## after a rollback replaces the comments read from it before.
     curStartPos*, curEndPos*: Mark
     flowDepth*: int
     # recently read scalar or URI, if any
@@ -422,6 +427,22 @@ proc readURI(lex: var Lexer, verbatim: bool) =
       raise lex.generateError("Illegal character in URI: " & escape("" & lex.c))
     lex.advance()
 
+proc addComment(lex: var Lexer, first, last: int) =
+  ## Records the comment from the ``#`` at ``first`` to ``last``, which are
+  ## in the current line.
+  let
+    b = lex.source.buf
+    pos = Mark(line: lex.lineNumber(), column: first - lex.source.lineStart + 1)
+  var trailing = false
+  for i in lex.source.lineStart ..< first:
+    if b[i] notin space: trailing = true
+  while lex.comments.len > 0 and (lex.comments[^1].startPos.line > pos.line or
+      lex.comments[^1].startPos.line == pos.line and
+      lex.comments[^1].startPos.column >= pos.column):
+    lex.comments.setLen(lex.comments.len - 1)
+  lex.comments.add(Comment(startPos: pos, content: b[first + 1 .. last],
+      trailing: trailing))
+
 proc endLine(lex: var Lexer) =
   while true:
     case lex.c
@@ -437,9 +458,11 @@ proc endLine(lex: var Lexer) =
       lex.state = streamEnd
       break
     of '#':
+      let start = lex.source.bufpos - 1
       while true:
         lex.advance()
         if lex.c in lineEnd: break
+      if lex.keepComments: lex.addComment(start, lex.source.bufpos - 2)
     else: discard
 
 proc startLine(lex: var Lexer): LineStartType =

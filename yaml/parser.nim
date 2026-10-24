@@ -27,6 +27,7 @@ type
     issueWarnings: bool
     directiveExtensions: bool
     sourceUri: string
+    keepComments: bool
 
   YamlParserError* = object of YamlLoadingError
     ## A parser error is raised if the character stream that is parsed is
@@ -213,6 +214,7 @@ proc initCommon(ctx: Context, p: YamlParser) =
   ctx.directiveExtensions = p.directiveExtensions
   ctx.sourceUri = p.sourceUri
   ctx.lex.directiveExtensions = p.directiveExtensions
+  ctx.lex.keepComments = p.keepComments
   ctx.keyCachePos = 0
   ctx.caching = false
 
@@ -229,22 +231,25 @@ proc init[T](ctx: Context, p: YamlParser, source: T) {.inline.} =
 # interface
 
 proc init*(p: var YamlParser, issueWarnings: bool = false,
-    directiveExtensions = true, sourceUri = "") =
+    directiveExtensions = true, sourceUri = "", keepComments = false) =
   ## Initializes a YAML parser. See `initYamlParser`.
   p.issueWarnings = issueWarnings
   p.directiveExtensions = directiveExtensions
   p.sourceUri = sourceUri
+  p.keepComments = keepComments
 
 proc initYamlParser*(issueWarnings: bool = false, directiveExtensions = true,
-    sourceUri = ""): YamlParser =
+    sourceUri = "", keepComments = false): YamlParser =
   ## Creates an initializes YAML parser and returns it.
   ##
   ## With ``directiveExtensions``, the parser implements NimYAML's
   ## ``%GLOBAL`` and ``%SCHEMA`` directives (see the README); without, they
   ## are reserved directives like any other, as YAML 1.2 defines them.
   ## ``sourceUri`` is the URI the input was retrieved from; relative
-  ## ``%SCHEMA`` references resolve against it.
-  result.init(issueWarnings, directiveExtensions, sourceUri)
+  ## ``%SCHEMA`` references resolve against it. With ``keepComments``, the
+  ## streams of the parser collect the comments of the input, see
+  ## `comments <#comments,YamlStream>`_.
+  result.init(issueWarnings, directiveExtensions, sourceUri, keepComments)
 
 proc parse*(p: YamlParser, s: Stream): YamlStream =
   let ctx = new(Context)
@@ -286,6 +291,17 @@ proc documentStart*(s: YamlStream): YamlDocumentStart {.raises: [ValueError].} =
   if not (s of Context):
     raise newException(ValueError, "documentStart requires a YamlStream from parse")
   Context(s).documentStart
+
+proc comments*(s: YamlStream): seq[Comment] {.raises: [ValueError].} =
+  ## The comments of the input that ``s`` has read so far, in input order.
+  ## ``s`` must come from `parse`, `resume` or `parseRecovering` of a parser
+  ## initialized with ``keepComments``; otherwise there are none. Comments
+  ## are read along with the tokens around them, so after the last event,
+  ## all comments of the input are there.
+  if s of YamlRecoveringStream: return YamlRecoveringStream(s).ctx.lex.comments
+  if not (s of Context):
+    raise newException(ValueError, "comments requires a YamlStream from parse")
+  Context(s).lex.comments
 
 type
   YamlFeedParser* = ref object
@@ -359,6 +375,13 @@ proc finish*(fp: YamlFeedParser) =
 proc finished*(fp: YamlFeedParser): bool =
   ## ``true`` once the ``yamlEndStream`` event has been returned.
   fp.ended
+
+proc comments*(fp: YamlFeedParser): seq[Comment] =
+  ## Like `comments <#comments,YamlStream>`_: the comments of the input
+  ## that ``fp`` has parsed so far, if its parser was initialized with
+  ## ``keepComments``. Input that an attempt read before running out of
+  ## input is read again by the next attempt, which replaces its comments.
+  fp.ctx.lex.comments
 
 proc tryNext*(fp: YamlFeedParser, e: var Event): bool
     {.raises: [YamlParserError].} =

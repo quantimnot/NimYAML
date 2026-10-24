@@ -60,6 +60,19 @@ suite "toolconfig":
       discard parseToolConfig("format: {indentation: 0}\n")
     expect ToolConfigError:
       discard parseToolConfig("format: {style: fancy}\n")
+    expect ToolConfigError:
+      discard parseToolConfig("format: {comment-gap: 0}\n")
+    expect ToolConfigError:
+      discard parseToolConfig("format: {comments: maybe}\n")
+
+  test "comment keys":
+    check parseToolConfig("").format.dumper.presentation.comments ==
+        CommentOptions(keep: true)
+    let options = parseToolConfig("format: {comments: drop, " &
+        "comment-indentation: source, comment-gap: 1, " &
+        "comment-blank-lines: drop}\n").format.dumper.presentation.comments
+    check options == CommentOptions(keep: false, indentation: ciSource, gap: 1,
+        blankLines: false)
 
   test "found by walking up; .yaml before the legacy file":
     let base = tmp / "walk"
@@ -153,14 +166,29 @@ suite "yaml":
     check cli("format", "f.yaml", "a.yaml").exitCode == 2
     check cli("format", "--write").exitCode == 2
 
-  test "format refuses to drop comments":
-    writeFile(dir / "comment.yaml", "a:   1 # why\n")
-    let refused = cli("format", "comment.yaml")
-    check refused.exitCode == 1
-    check "has comments" in refused.output
-    check cli("format", "--drop-comments", "comment.yaml") == ("a: 1\n", 0)
+  test "format keeps comments":
+    writeFile(dir / "comment.yaml",
+        "# head\n\na:   1 # why\nb:\n    # lead\n    - x\n")
+    check cli("format", "comment.yaml") ==
+        ("# head\n\na: 1  # why\nb:\n  # lead\n  - x\n", 0)
+    check cli("format", "--comment-gap:1", "--comment-blank-lines:drop",
+        "--comment-indentation:source", "comment.yaml") ==
+        ("# head\na: 1 # why\nb:\n  # lead\n  - x\n", 0)
+    # without its comment, the sequence fits in a line
+    check cli("format", "--drop-comments", "comment.yaml") ==
+        ("a: 1\nb: [x]\n", 0)
+    check cli("format", "--comment-gap:0", "comment.yaml").exitCode == 2
+    check cli("format", "--comment-indentation:far", "comment.yaml").exitCode == 2
     # a # in a scalar is no comment
-    check cli(@["format"], input = "a:   'b # c'\n") == ("a: \"b # c\"\n", 0)
+    check cli(@["format", "--style:json"], input = "a:   'b # c'\n") ==
+        ("{\n  \"a\": \"b # c\"\n}\n", 0)
+
+  test "format refuses to drop comments where the style has no room":
+    let refused = cli("format", "--style:json", "comment.yaml")
+    check refused.exitCode == 1
+    check "the json style cannot keep" in refused.output
+    check cli("format", "--style:json", "--drop-comments", "comment.yaml") ==
+        ("{\n  \"a\": 1,\n  \"b\": [\n    \"x\"\n  ]\n}\n", 0)
 
   test "format --check and --write":
     writeFile(dir / "w.yaml", "a:   1\n")
@@ -179,6 +207,10 @@ suite "yaml":
     writeFile(project / "t.yaml", "k: yes\nm:\n  p: 1\n  q: 2\n")
     check cli(@["format", "t.yaml"], workingDir = project) ==
         ("k: yes\nm:\n    p: 1\n    q: 2\n", 0)
+    writeFile(project / "c.yaml", "k: 1 # c\n")
+    writeFile(project / "drop.yaml", "format: {comments: drop}\n")
+    check cli(@["format", "--config:drop.yaml", "c.yaml"],
+        workingDir = project) == ("k: 1\n", 0)
     check cli(@["lint", "t.yaml"], workingDir = project) == ("t.yaml:1:4: " &
         "error: \"yes\" is a boolean in YAML 1.1; quote it or use " &
         "true/false [truthy]\n", 1)

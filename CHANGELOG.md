@@ -29,6 +29,17 @@ Features:
  * added `yaml/toolconfig`: one config file, `.yaml` or `.yaml.yaml`, for
    linting, validation and formatting, read by the `yaml` command, `yamllint`
    and the language server; `.nimyaml-lint.yaml` is still read.
+ * `yaml format` keeps comments: after content, before the node they
+   precede and at the end of the collection they end. The `format` section
+   of the config takes `comments`, `comment-indentation` (`node` or
+   `source`), `comment-gap` and `comment-blank-lines`, which the command
+   also takes as options. Only the `minimal`, `json` and `json-lines` styles
+   still refuse files with comments unless given `--drop-comments`.
+ * added comment collection: a parser initialized with `keepComments`
+   collects the comments of its input (`comments` of its `YamlStream` or
+   `YamlFeedParser`, as `Comment` values with position and text), and
+   `transform` keeps them with `PresentationOptions.comments`
+   (`CommentOptions`; `keepsComments` tells whether the output has room).
  * added `checkLintConfig` to `yaml/lint`.
  * the lexer no longer depends on `std/lexbase`; consumed input is dropped
    between events, so memory use for `Stream` input stays bounded.
@@ -129,6 +140,10 @@ Bugfixes:
 
  * JSON output (`jsonDumper`, `quoting: sqJson`) no longer quotes numbers,
    booleans and nulls that are sequence items or block mapping values.
+
+ * the presenter wrote a scalar with a line that starts with a tab in folded
+   style, whose line break before such a (more indented) line is not folded,
+   so the scalar read back with an extra line break
 
  * properties of a root scalar on a `---` line (`--- !!str a`) were also
    applied to the root of the next document, which then failed with "Only
