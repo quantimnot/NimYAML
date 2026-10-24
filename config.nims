@@ -35,6 +35,11 @@ task feedTests, "Run feed parser tests":
   --verbosity:0
   setCommand "c", "test/tfeed"
 
+task commentTests, "Run comment collection and formatting tests":
+  --r
+  --verbosity:0
+  setCommand "c", "test/tcomments"
+
 task checkpointTests, "Run checkpoint and resume tests":
   --r
   --verbosity:0

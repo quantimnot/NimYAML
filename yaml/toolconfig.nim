@@ -25,6 +25,14 @@
 ##                      # or block-only
 ##     indentation: 2
 ##     max-line-length: 80  # 0 for no limit
+##     comments: keep   # or drop
+##     comment-indentation: node  # or source: the column in the input
+##     comment-gap: 2   # spaces between content and a comment after it
+##     comment-blank-lines: keep  # or drop: blank lines next to comments
+##
+## The comment keys are described at ``CommentOptions`` of
+## `yaml/presenter <presenter.html>`_. The ``minimal``, ``json`` and
+## ``json-lines`` styles have no room for comments.
 ##
 ## A legacy ``.nimyaml-lint.yaml`` holds only what the ``lint`` section
 ## holds; it is still found, as a config with defaults for the other
@@ -41,6 +49,9 @@ type
     fsDefault = "default", fsMinimal = "minimal",
     fsExplanatory = "explanatory", fsJson = "json", fsJsonLines = "json-lines", fsBlockOnly = "block-only"
 
+  Keeping* = enum
+    kKeep = "keep", kDrop = "drop"
+
   ValidateConfig* {.sparse.} = object
     schema*: Option[bool] ## none: validate
 
@@ -49,6 +60,11 @@ type
     indentation*: Option[int]
     maxLineLength* {.yamlKey: "max-line-length".}: Option[int]
       ## 0: no limit
+    comments*: Option[Keeping] ## none: keep
+    commentIndentation* {.yamlKey: "comment-indentation".}:
+      Option[CommentIndentation]
+    commentGap* {.yamlKey: "comment-gap".}: Option[int]
+    commentBlankLines* {.yamlKey: "comment-blank-lines".}: Option[Keeping]
 
   ToolConfig* = object
     lint* {.defaultVal: defaultConfig().}: LintConfig
@@ -78,8 +94,9 @@ proc dumper*(style: FormatStyle): Dumper =
   of fsBlockOnly: blockOnlyDumper()
 
 proc dumper*(config: FormatConfig): Dumper =
-  ## The `Dumper` of ``style`` with ``indentation`` and ``max-line-length``
-  ## applied.
+  ## The `Dumper` of ``style`` with ``indentation``, ``max-line-length`` and
+  ## the comment keys applied. Its `transform` keeps comments unless
+  ## ``comments`` is ``drop``.
   result = dumper(config.style.get(fsDefault))
   if config.indentation.isSome:
     result.presentation.indentationStep = config.indentation.get()
@@ -87,6 +104,11 @@ proc dumper*(config: FormatConfig): Dumper =
     let length = config.maxLineLength.get()
     result.presentation.maxLineLength =
       if length == 0: none(int) else: some(length)
+  result.presentation.comments = CommentOptions(
+    keep: config.comments.get(kKeep) == kKeep,
+    indentation: config.commentIndentation.get(ciNode),
+    gap: config.commentGap.get(2),
+    blankLines: config.commentBlankLines.get(kKeep) == kKeep)
 
 proc isBlank(content: string): bool =
   for line in content.splitLines:
@@ -116,6 +138,9 @@ proc parseToolConfig*(content: string): ToolConfig =
       result.format.maxLineLength.get() < 0:
     raise newException(ToolConfigError,
         "format: max-line-length must not be negative")
+  if result.format.commentGap.isSome and result.format.commentGap.get() < 1:
+    raise newException(ToolConfigError,
+        "format: comment-gap must be at least 1")
 
 proc loadToolConfig*(path: string): ToolConfig =
   ## Loads the config file at ``path``: a legacy lint config if it is named

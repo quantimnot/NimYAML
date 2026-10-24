@@ -120,6 +120,12 @@ suite "Presenter":
       "  folded scalar\n" &
       "- 'single'''\n")
 
+  test "No folded style for a line that starts with a tab":
+    # it is more indented, so the line break before it is not folded
+    var input = inputSingle(startSeqEvent(),
+      scalarEvent("folded\n\tindented\n", style = ssFolded), endSeqEvent())
+    assertOutput(input, "- |\n  folded\n  \tindented\n")
+
   test "Collection output with explicit style set":
     var input = inputSingle(
       startMapEvent(), scalarEvent("a", style = ssDoubleQuoted),
