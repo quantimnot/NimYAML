@@ -9,4 +9,4 @@ import tlex, tjson, tnative, tparser, tfeed, tcheckpoint, tdocuments, tinternal,
 
 when not defined(gcArc) or defined(gcOrc):
   import tdom, tfragment, tjsonpath, tjsonschema, thyperschema, turitemplate,
-      tdocumentschema, tedit
+      tdocumentschema, tedit, tdiff

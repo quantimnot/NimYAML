@@ -215,3 +215,19 @@ bun test        # unit tests (bun --test)
 bun run build   # bundle dist/extension.js, the `main` VS Code loads, and dist/grid
 bun run typecheck  # check the grid webview's TypeScript (needs `tsc` on PATH)
 ```
+
+## Semantic Diff
+
+"YAML+: Compare Semantically with File…", "…with Saved" and "…with HEAD"
+compare the active YAML, JSON or JSONC editor with another file, its saved
+version or its version in git's HEAD; "Compare Selected Semantically" in
+the explorer's context menu compares two selected files. Key order,
+styles, quotes, comments, anchors and aliases make no difference, numbers
+are compared by value, and YAML can be compared with JSON.
+
+The changes are listed like "Go to Path…", by JSON Pointer or JSON Path
+(`yaml+lsp.paths.format`): selecting one shows it, the new version where
+the editor is and the old one beside it. The buttons of the list open the
+JSON Patch that makes the changes, or VS Code's text diff. yamllsp
+computes the diff (`nimyaml/diff`); `yaml diff` does the same on the
+command line.

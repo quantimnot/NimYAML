@@ -41,6 +41,7 @@
 ## documents for a client's grid view of them. ``nimyaml/pathAt`` names the
 ## node at a position as a JSON Pointer and a JSON Path, and
 ## ``nimyaml/paths`` lists every node by its paths, for navigating by them.
+## ``nimyaml/diff`` compares two texts by meaning, for a semantic diff.
 ##
 ## The directive features work on what the parser reports per document (the ``directives`` of
 ## each ``yamlStartDoc`` event) rather than on the text, so they agree with
@@ -51,7 +52,8 @@ import std/[algorithm, json, os, sets, streams, strutils, tables, uri]
 when defined(nimPreviewSlimSystem):
   import std/syncio
 import ../yaml/[data, parser, stream, lint, jsonschema, documentschema,
-    schemavalidation, toolconfig, dom, edit, jsonpath, loading, native]
+    schemavalidation, toolconfig, dom, edit, jsonpath, loading, native, diff,
+    dumping]
 import ../yaml/private/[lex, jsonmodel]
 from ../yaml/hints import guessType, TypeHint
 
@@ -1020,6 +1022,100 @@ proc pathsOf(text: string, json: bool): JsonNode =
     w.nodes.setLen(0)
   %*{"nodes": nodes}
 
+# Semantic diff
+# ============================================================================
+#
+# ``nimyaml/diff`` compares the documents of two texts, ``old`` and ``new``
+# (each ``{text, json}``), as ``yaml diff`` does (see
+# `yaml/diff <../yaml/diff.html>`_), document by document. Each change has
+# its kind, document, the JSON Pointer and JSON Path on both sides, the
+# values on one line, and the range on both sides: that of the node (a
+# member's from its key), or, where the node is not, that of the nearest
+# collection around where it would be. A document that only one text has
+# is a change of its root. With ``patch``, the answer also has the JSON
+# Patch that makes the changes, as YAML (JSON if ``new`` is), when both
+# texts have the same number of documents. A text that does not load
+# answers ``error``: the position, its message and the ``side``.
+
+proc locate(root: YamlNode, path: DiffPath): tuple[first, last: Mark] =
+  ## The range of the node at ``path``, or of the deepest node on the way.
+  var node = root
+  result = (root.startPos, root.endPos)
+  for segment in path:
+    var found = false
+    if segment.isIndex:
+      if node.kind == ySequence and segment.index < node.elems.len:
+        node = node.elems[segment.index]
+        result = (node.startPos, node.endPos)
+        found = true
+    elif node.kind == yMapping:
+      for (key, value) in node.orderedFields:
+        let name = if key.kind == yScalar: key.content else: key.flowText
+        if name == segment.name:
+          node = value
+          result = (key.startPos, value.endPos)
+          found = true
+          break
+    if not found: return
+
+proc diffOf(params: JsonNode): JsonNode =
+  var
+    sides: array[2, seq[YamlNode]]
+    texts: array[2, string]
+    lines: array[2, seq[string]]
+  for i, side in ["old", "new"]:
+    let p = params[side]
+    texts[i] = p["text"].getStr()
+    for _, line in texts[i].sourceLines: lines[i].add(line)
+    try:
+      loadMultiDoc(if p{"json"}.getBool(): stripJsonComments(texts[i])
+                   else: texts[i], sides[i])
+    except YamlLoadingError as e:
+      let error = errorPosition(texts[i], e.mark)
+      error["message"] = %e.msg
+      error["side"] = %side
+      return %*{"changes": [], "error": error}
+  let
+    (old, new) = (sides[0], sides[1])
+    count = max(old.len, new.len)
+  var changes = newJArray()
+  for document in 0 ..< count:
+    let found =
+      if document >= old.len: @[DiffChange(kind: dkAdded, newNode: new[document])]
+      elif document >= new.len:
+        @[DiffChange(kind: dkRemoved, oldNode: old[document])]
+      else: diff(old[document], new[document])
+    for change in found:
+      var entry = %*{"kind": $change.kind, "document": document}
+      for i, side in ["old", "new"]:
+        let
+          path = if i == 0: change.oldPath else: change.newPath
+          node = if i == 0: change.oldNode else: change.newNode
+          roots = if i == 0: old else: new
+        entry[side & "Pointer"] = %path.toJsonPointer
+        entry[side & "Path"] = %path.toJsonPath
+        if not node.isNil: entry[side] = %node.flowText
+        if roots.len > 0:
+          # where the node is not, its path can name the item it would come
+          # before, but the collection is where it would be
+          let (first, last) = locate(roots[min(document, roots.high)],
+              if node.isNil and path.len > 0: path[0 ..< ^1] else: path)
+          entry[side & "Range"] = lspRange(lines[i], first, last)
+      changes.add(entry)
+  result = %*{"documents": [old.len, new.len], "changes": changes}
+  if params{"patch"}.getBool() and old.len == new.len:
+    let json = params["new"]{"json"}.getBool()
+    var dumper = if json: jsonDumper() else: Dumper()
+    dumper.serialization.tagStyle = tsNone
+    var text = ""
+    for document in 0 ..< count:
+      let patch = toJsonPatch(diff(old[document], new[document]))
+      if json: text.add(dumper.dump(patch))
+      else:
+        if count > 1: text.add("---\n")
+        text.add(dumper.dump(patch))
+    result["patch"] = %text
+
 proc publish(s: var Server, uri: string): JsonNode =
   var diagnostics = newJArray()
   if uri in s.docs:
@@ -1124,6 +1220,8 @@ proc handle*(s: var Server, msg: JsonNode): seq[JsonNode] =
   of "nimyaml/paths":
     result.add(respond(id, pathsOf(params["text"].getStr(),
         params{"json"}.getBool())))
+  of "nimyaml/diff":
+    result.add(respond(id, diffOf(params)))
   of "shutdown":
     s.shutdownRequested = true
     result.add(respond(id, newJNull()))

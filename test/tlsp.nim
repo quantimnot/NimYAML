@@ -558,3 +558,59 @@ suite "LSP path at a position":
   test "json, and a text with an error":
     check paths("{\"a\": [true]}", json = true).len == 3
     check paths("a: 1\nb: [\n").len == 3
+
+suite "LSP semantic diff":
+  proc diffOf(old, new: string, json = false, patch = false): JsonNode =
+    var s: Server
+    s.handle(request(1, "nimyaml/diff", %*{"old": {"text": old},
+        "new": {"text": new, "json": json}, "patch": patch}))[0]["result"]
+
+  proc range(startLine, startCharacter, endLine, endCharacter: int): JsonNode =
+    %*{"start": {"line": startLine, "character": startCharacter},
+       "end": {"line": endLine, "character": endCharacter}}
+
+  test "changes with their paths, values and ranges":
+    let r = diffOf("a: 1\nb: [x, y]\n", "b: [x, z, y]\na: 2\n")
+    check r["documents"] == %*[1, 1]
+    check r["changes"].len == 2
+    let changed = r["changes"][0]
+    check changed["kind"].getStr() == "changed"
+    check changed["oldPointer"].getStr() == "/a"
+    check changed["newPath"].getStr() == "$.a"
+    check changed["old"].getStr() == "1"
+    check changed["new"].getStr() == "2"
+    # a member from its key
+    check changed["oldRange"] == range(0, 0, 0, 4)
+    check changed["newRange"] == range(1, 0, 1, 4)
+    let added = r["changes"][1]
+    check added["kind"].getStr() == "added"
+    check added["newPointer"].getStr() == "/b/1"
+    check not added.hasKey("old")
+    check added["newRange"] == range(0, 7, 0, 8)
+    # where it is not: the collection around it (here a member)
+    check added["oldRange"] == range(1, 0, 1, 9)
+
+  test "the same, however written":
+    check diffOf("{a: 1, b: [x]}", "{\"b\": [\"x\"], // c\n\"a\": 1.0}",
+        json = true)["changes"].len == 0
+
+  test "documents only one text has":
+    let r = diffOf("a: 1\n", "a: 1\n--- x\n")
+    check r["documents"] == %*[1, 2]
+    check r["changes"].len == 1
+    check r["changes"][0]["kind"].getStr() == "added"
+    check r["changes"][0]["document"].getInt() == 1
+    check r["changes"][0]["new"].getStr() == "x"
+
+  test "the JSON Patch":
+    check diffOf("a: 1\n", "a: 2\n", patch = true)["patch"].getStr() ==
+        "- op: replace\n  path: /a\n  value: 2\n"
+    check "\"op\": \"replace\"" in diffOf("a: 1\n", "{\"a\": 2}", json = true,
+        patch = true)["patch"].getStr()
+    check not diffOf("a: 1\n", "a: 1\n--- x\n", patch = true).hasKey("patch")
+
+  test "a text that does not load":
+    let r = diffOf("a: 1\n", "a: [\n")
+    check r["changes"].len == 0
+    check r["error"]["side"].getStr() == "new"
+    check r["error"]["message"].getStr().len > 0

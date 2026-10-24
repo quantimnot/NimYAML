@@ -224,7 +224,8 @@ proc constructChild*(
       ctx.constructChild(value)
       if result.fields.hasKeyOrPut(key, value):
         raise ctx.input.constructionError(key.startPos, "Duplicate key: " & $key)
-    discard ctx.input.next()
+    # a collection ends where its end event does
+    result.endPos = ctx.input.next().endPos
   of yamlStartSeq:
     result = YamlNode(
       tag: start.seqProperties.tag,
@@ -239,7 +240,7 @@ proc constructChild*(
       var item: YamlNode = nil
       ctx.constructChild(item)
       result.elems.add(item)
-    discard ctx.input.next()
+    result.endPos = ctx.input.next().endPos
   of yamlScalar:
     result = YamlNode(
       tag: start.scalarProperties.tag,

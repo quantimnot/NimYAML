@@ -23,6 +23,8 @@
 ##   (RFC 7396)
 ## * ``merge``: applies merge keys (``<<``)
 ## * ``canonical`` (or ``jcs``): writes the RFC 8785 canonical JSON form
+## * ``diff``: the semantic differences between two files, or the JSON
+##   Patch or JSON Merge Patch that makes them
 ## * ``expand``: makes ``%GLOBAL`` directives portable
 ## * ``config``: writes the config in effect, with all defaults, to
 ##   ``.yaml.yaml``
@@ -35,14 +37,15 @@
 ## directory (see `yaml/toolconfig <../yaml/toolconfig.html>`_).
 ##
 ## Exit code: 0 on success, 1 if an input is invalid or has error
-## diagnostics (or, with ``format --check``, is not formatted), 2 for usage,
-## I/O and config errors.
+## diagnostics (or, with ``format --check``, is not formatted, or with
+## ``diff``, the files differ), 2 for usage, I/O and config errors (and with
+## ``diff``, invalid inputs).
 
-import std/[os, parseopt, streams, strutils]
+import std/[os, parseopt, streams, strutils, terminal]
 when defined(nimPreviewSlimSystem):
   import std/syncio
 import ../yaml/[data, dom, dumping, loading, parser, presenter, stream, cbor,
-    jsonpath, toolconfig, edit, jsonpatch, mergepatch, merge, jcs]
+    jsonpath, toolconfig, edit, jsonpatch, mergepatch, merge, jcs, diff]
 import ../yaml/private/lex
 from ../yaml/hints import guessType, TypeHint
 import yamllint, yamlexpand, yamllsp
@@ -71,6 +74,8 @@ commands:
   merge     apply merge keys (<<)
   canonical write the canonical JSON form (RFC 8785) of each document
             (also: jcs)
+  diff      the semantic differences between two files, or the JSON Patch
+            or JSON Merge Patch that makes them
   expand    expand %GLOBAL directives into the documents
   config    write the config in effect, with all defaults, to .yaml.yaml
   lsp       the language server, over stdio
@@ -176,6 +181,36 @@ written as ECMAScript writes them. Documents that JSON cannot represent
 faithfully (non-string or duplicate keys, cycles, .inf, .nan) are refused
 with exit code 1."""
 
+  diffUsage = """usage: yaml diff [--from:FORMAT] [--paths:pointer|path] [--color:WHEN] [-q] OLD NEW
+       yaml diff (--patch | --merge-patch) [--from:FORMAT] [--to:FORMAT] OLD NEW
+
+Compares the documents of the files OLD and NEW (- for standard input) by
+what they mean, not how they are written: key order, styles, quotes,
+comments, anchors and aliases make no difference, and numbers are compared
+by value. Sequences are aligned, so an inserted item is one change. Each
+added (+), removed (-) or changed (~) node is printed on a line with its
+JSON Pointer (or JSON Path with --paths:path) and its value; removed nodes
+have their path in OLD, the others in NEW. When a file has several
+documents, they are compared in order, and paths start with #N, the number
+of the document. --color:WHEN is auto (if standard output is a terminal),
+always or never. With -q (or --quiet), nothing is printed.
+
+With --patch, the JSON Patch (RFC 6902) that turns each document of OLD
+into that of NEW is written instead, which yaml patch applies; with
+--merge-patch, the JSON Merge Patch (RFC 7396), which cannot set a member
+to null. They are written as by yaml convert, in the format of NEW unless
+--to. A patch addresses only members whose keys are strings.
+
+Exit code 0 if the files are the same, 1 if they differ, 2 for invalid
+inputs.
+
+As a git diff driver, yaml diff is called with the 7 arguments PATH
+OLD-FILE OLD-HEX OLD-MODE NEW-FILE NEW-HEX NEW-MODE, and prints the
+changes of PATH under a heading; its exit code is then 0. Set it up with
+
+  git config diff.yaml.command 'yaml diff'
+  echo '*.yaml diff=yaml' >> .gitattributes"""
+
   expandUsage = """usage: yaml expand [--modeline] [FILE]
 
 Writes FILE (or standard input) with every %GLOBAL directive expanded into
@@ -230,6 +265,7 @@ proc usageOf(command: string): string =
   of "patch": patchUsage
   of "merge": mergeUsage
   of "canonical", "jcs": canonicalUsage
+  of "diff": diffUsage
   of "expand": expandUsage
   of "lsp": lspUsage
   of "help": helpUsage
@@ -848,6 +884,132 @@ proc canonicalCommand(args: seq[string]): int =
       stderr.writeLine(input.name & ": " & e.msg)
       return 1
 
+type
+  ColorMode = enum
+    cmAuto = "auto", cmAlways = "always", cmNever = "never"
+
+proc readInput(file: string): Input =
+  ## ``file``, or standard input for ``-``.
+  if file == "-": ("<stdin>", stdin.readAll())
+  else: (file, readFile(file))
+
+proc diffLine(change: DiffChange, document: int, numbered, asJsonPath,
+    color: bool): string =
+  ## ``change`` as a line of the report, its path prefixed with ``#N`` if
+  ## ``numbered``.
+  let
+    path = if change.kind == dkRemoved: change.oldPath else: change.newPath
+    (sign, code) = case change.kind
+      of dkAdded: ("+", "32")
+      of dkRemoved: ("-", "31")
+      of dkChanged: ("~", "33")
+  var name = if asJsonPath: path.toJsonPath else: path.toJsonPointer
+  if numbered:
+    name = "#" & $(document + 1) & (if name.len > 0: " " & name else: "")
+  elif name.len == 0: name = "(root)"
+  let value = case change.kind
+    of dkAdded: change.newNode.flowText
+    of dkRemoved: change.oldNode.flowText
+    of dkChanged: change.oldNode.flowText & " -> " & change.newNode.flowText
+  result = sign & " " & name & ": " & value
+  if color: result = "\e[" & code & "m" & result & "\e[0m"
+
+proc diffCommand(args: seq[string]): int =
+  var
+    positional: seq[string]
+    source, target = none(DataFormat)
+    asJsonPath, quiet, patch, mergePatch = false
+    colorMode = cmAuto
+  for kind, key, val in options(args):
+    case kind
+    of cmdArgument: positional.add(key)
+    of cmdLongOption, cmdShortOption:
+      case key
+      of "": positional.add("-") # a lone - is standard input
+      of "from": source = some(parseFormat("diff", val))
+      of "to": target = some(parseFormat("diff", val))
+      of "paths":
+        if val notin ["pointer", "path"]: fail("diff")
+        asJsonPath = val == "path"
+      of "color", "colour":
+        var known = false
+        for m in ColorMode:
+          if val == $m:
+            colorMode = m
+            known = true
+        if not known: fail("diff")
+      of "quiet", "q": quiet = true
+      of "patch": patch = true
+      of "merge-patch": mergePatch = true
+      else: fail("diff")
+    of cmdEnd: discard
+  # git calls a diff driver with PATH OLD-FILE OLD-HEX OLD-MODE NEW-FILE
+  # NEW-HEX NEW-MODE, and stops if it exits with anything but 0
+  let gitDriver = positional.len == 7
+  if positional.len notin [2, 7] or (patch and mergePatch) or
+      (target.isSome and not (patch or mergePatch)): fail("diff")
+  let
+    files = if gitDriver: @[positional[1], positional[4]] else: positional
+    # git's temporary files need not have the extension of the path
+    names = if gitDriver: @[positional[0], positional[0]] else: files
+  var
+    sides: array[2, seq[YamlNode]]
+    formats: array[2, DataFormat]
+  for i in 0 .. 1:
+    let input = readInput(files[i])
+    formats[i] = source.get(if files[i] == "-": dfYaml else: formatOf(names[i]))
+    try:
+      sides[i] = documents(input, formats[i])
+    except YamlStreamError, YamlParserError, YamlConstructionError:
+      stderr.writeLine(describe(input.name, getCurrentException()))
+      return 2
+  let
+    (old, new) = (sides[0], sides[1])
+    count = max(old.len, new.len)
+  if patch or mergePatch:
+    if old.len != new.len:
+      stderr.writeLine("the files have " & $old.len & " and " & $new.len &
+          " documents; a patch needs the same number")
+      return 2
+    let output = newStream()
+    for i in 0 ..< count:
+      if not semanticEquals(old[i], new[i]): result = 1
+      let made =
+        if patch: toJsonPatch(diff(old[i], new[i]))
+        else: createMergePatch(old[i], new[i])
+      # tsAll keeps every node's own tag, so "1" stays a string
+      output.collect(represent(made, SerializationOptions(tagStyle: tsAll)))
+    let yamlStyle = toolConfigFor(
+        if files[1] == "-": getCurrentDir() / "-" else: files[1]).format
+    try:
+      stdout.write(output, target.get(formats[1]), yamlStyle)
+    except YamlPresenterJsonError, YamlPresenterCborError, YamlStreamError:
+      stderr.writeLine(describe("<output>", getCurrentException()))
+      return 2
+    return
+  let
+    color = case colorMode
+      of cmAuto: isatty(stdout)
+      of cmAlways: true
+      of cmNever: false
+    numbered = count > 1
+  var printedHeading = false
+  for i in 0 ..< count:
+    let changes =
+      if i >= old.len: @[DiffChange(kind: dkAdded, newNode: new[i])]
+      elif i >= new.len: @[DiffChange(kind: dkRemoved, oldNode: old[i])]
+      else: diff(old[i], new[i])
+    if changes.len == 0: continue
+    result = 1
+    if quiet: break
+    if gitDriver and not printedHeading:
+      let heading = "semantic diff " & positional[0]
+      stdout.writeLine(if color: "\e[1m" & heading & "\e[0m" else: heading)
+      printedHeading = true
+    for change in changes:
+      stdout.writeLine(change.diffLine(i, numbered, asJsonPath, color))
+  if gitDriver: result = 0
+
 proc configCommand(args: seq[string]): int =
   var
     dir = ""
@@ -927,6 +1089,7 @@ proc run*(args: seq[string]): int =
     of "patch": patchCommand(rest)
     of "merge": mergeCommand(rest)
     of "canonical", "jcs": canonicalCommand(rest)
+    of "diff": diffCommand(rest)
     of "expand": yamlexpand.run(rest, stdin, stdout)
     of "config": configCommand(rest)
     of "lsp": lspCommand(rest)

@@ -108,6 +108,11 @@ task mergePatchTests, "Run JSON Merge Patch tests":
   --verbosity:0
   setCommand "c", "test/tmergepatch"
 
+task diffTests, "Run semantic diff tests":
+  --r
+  --verbosity:0
+  setCommand "c", "test/tdiff"
+
 task mergeTests, "Run YAML merge key tests":
   --r
   --verbosity:0

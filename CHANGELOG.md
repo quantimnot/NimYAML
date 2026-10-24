@@ -13,6 +13,15 @@ Features:
    Canonicalization Scheme; passes the JCS reference test vectors.
  * the `yaml` command has new commands `patch` (JSON Patch or JSON Merge
    Patch), `merge` (merge keys) and `canonical` (JCS).
+ * new module `yaml/diff` compares `YamlNode` graphs by meaning (key order,
+   styles, comments and aliases aside; numbers by value; sequences aligned)
+   and turns the changes into a JSON Patch. The `yaml` command has a new
+   command `diff`, also usable as a git diff driver, and the language server
+   a request `nimyaml/diff`, which the VS Code extension's "Compare
+   Semantically" commands use.
+ * `YamlNode` collections end where their end event does (`endPos` was that
+   of their start event), and merge patches remove members with a plain
+   `null` instead of `!!null null`.
  * the `yaml` command has a new command `config`, which writes the config in
    effect, with all defaults, to `.yaml.yaml` (or with `--print` to standard
    output). `yaml/toolconfig` has `resolved` and `$` for `ToolConfig`, and

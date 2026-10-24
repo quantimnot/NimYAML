@@ -75,7 +75,8 @@ proc applyMergePatch*(target, patch: YamlNode): YamlNode {.raises: [].} =
           if isNil(current): emptyMapping() else: current, value))
 
 proc nullNode(): YamlNode =
-  YamlNode(kind: yScalar, tag: yTagNull, content: "null")
+  # plain, so that it is written without a tag
+  YamlNode(kind: yScalar, tag: yTagQuestionMark, content: "null")
 
 proc createMergePatch*(source, target: YamlNode): YamlNode {.raises: [].} =
   ## Returns a merge patch that turns ``source`` into ``target``, so that

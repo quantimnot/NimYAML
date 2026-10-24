@@ -4,7 +4,7 @@ name: yaml-plus-lsp
 displayName: yaml+lsp
 description: >-
   Lint diagnostics, JSON Schema validation, %GLOBAL/%SCHEMA directive support,
-  embedded languages in block scalars and a grid view for YAML
+  embedded languages in block scalars, a grid view and a semantic diff for YAML
 version: 0.7.0
 publisher: nimyaml
 license: MIT
@@ -23,6 +23,7 @@ keywords:
   - hierarchy
   - grid
   - overview
+  - diff
 activationEvents:
   - "onLanguage:yaml"
   # the path at the cursor is shown for JSON too
@@ -385,6 +386,14 @@ contributes:
       title: "YAML+: Copy JSON Path"
     - command: yaml+lsp.paths.goTo
       title: "YAML+: Go to Path…"
+    - command: yaml+lsp.diff.withFile
+      title: "YAML+: Compare Semantically with File…"
+    - command: yaml+lsp.diff.withSaved
+      title: "YAML+: Compare Semantically with Saved"
+    - command: yaml+lsp.diff.withHead
+      title: "YAML+: Compare Semantically with HEAD"
+    - command: yaml+lsp.diff.selected
+      title: "YAML+: Compare Selected Semantically"
   # the grid of greenflute/yaml-grid-viewer: offered, never the default
   customEditors:
     - viewType: yaml+lsp.grid
@@ -403,6 +412,15 @@ contributes:
         when: editorLangId =~ /^(yaml|json|jsonc)$/
       - command: yaml+lsp.paths.goTo
         when: editorLangId =~ /^(yaml|json|jsonc)$/
+      - command: yaml+lsp.diff.withFile
+        when: editorLangId =~ /^(yaml|json|jsonc)$/
+      - command: yaml+lsp.diff.withSaved
+        when: editorLangId =~ /^(yaml|json|jsonc)$/ && resourceScheme != untitled
+      - command: yaml+lsp.diff.withHead
+        when: editorLangId =~ /^(yaml|json|jsonc)$/ && resourceScheme == file
+      # it needs files selected in the explorer
+      - command: yaml+lsp.diff.selected
+        when: "false"
     editor/context:
       - command: yaml+lsp.paths.copyPointer
         when: editorLangId =~ /^(yaml|json|jsonc)$/
@@ -421,5 +439,9 @@ contributes:
       - command: yaml+lsp.grid.open
         when: resourceLangId =~ /^(yaml|json|jsonc)$/
         group: navigation
+      # next to VS Code's own "Compare Selected"
+      - command: yaml+lsp.diff.selected
+        when: listDoubleSelection && resourceLangId =~ /^(yaml|json|jsonc)$/
+        group: 3_compare@30
 # devDependencies only: the bundle carries what the extension needs
 devDependencies: {"vscode-languageclient": 10.1.2, esbuild: 0.28.2}

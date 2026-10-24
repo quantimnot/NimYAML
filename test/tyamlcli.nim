@@ -399,6 +399,52 @@ suite "yaml":
         "--- 1e21\n") == ("{\"a\":[true,null,\"x\"],\"b\":1000}\n1e+21\n", 0)
     check cli(@["jcs"], input = "{1: x}").exitCode == 1
 
+  test "diff":
+    writeFile(dir / "old.yaml", "server:\n  host: a  # the host\n" &
+        "  port: 80\ntags: [x, y]\ndebug: true\n")
+    writeFile(dir / "new.json", "{\"tags\": [\"x\", \"z\", \"y\"], " &
+        "\"server\": {\"port\": 8080, \"host\": \"a\"}, \"note\": \"a\\nb\"}")
+    check cli("diff", "old.yaml", "new.json") == ("~ /server/port: 80 -> 8080\n" &
+        "+ /tags/1: z\n- /debug: true\n+ /note: \"a\\nb\"\n", 1)
+    check cli("diff", "--paths:path", "old.yaml", "new.json").output.startsWith(
+        "~ $.server.port: 80 -> 8080\n")
+    check cli("diff", "--color:always", "old.yaml", "new.json").output.startsWith(
+        "\e[33m~ /server/port: 80 -> 8080\e[0m\n")
+    # formatting, comments and key order make no difference
+    check cli(@["diff", "old.yaml", "-"], input = "{debug: true, " &
+        "tags: [x, 'y'], server: {port: 80, host: a}}") == ("", 0)
+    check cli("diff", "-q", "old.yaml", "new.json") == ("", 1)
+    check cli("diff", "old.yaml").exitCode == 2
+    check cli(@["diff", "old.yaml", "-"], input = "a: [").exitCode == 2
+
+  test "diff of several documents":
+    writeFile(dir / "docs.yaml", "a: 1\n--- [1, 2]\n")
+    check cli(@["diff", "docs.yaml", "-"], input = "a: 2\n--- [1, 2]\n--- x\n") ==
+        ("~ #1 /a: 1 -> 2\n+ #3: x\n", 1)
+
+  test "diff --patch and --merge-patch":
+    let patch = cli("diff", "--patch", "old.yaml", "new.json", "--to:yaml")
+    check patch.exitCode == 1
+    check patch.output.startsWith("- op: add\n  path: /note\n")
+    writeFile(dir / "made.yaml", patch.output)
+    let patched = cli("patch", "made.yaml", "old.yaml", "--to:json")
+    writeFile(dir / "patched.json", patched.output)
+    check cli("diff", "patched.json", "new.json") == ("", 0)
+    check cli("diff", "--merge-patch", "old.yaml", "new.json", "--to:jsonl") ==
+        ("{\"debug\": null, \"note\": \"a\\nb\", \"server\": {\"port\": 8080}, " &
+         "\"tags\": [\"x\", \"z\", \"y\"]}\n", 1)
+    check cli("diff", "--patch", "docs.yaml", "old.yaml").exitCode == 2
+    check cli("diff", "--to:json", "old.yaml", "new.json").exitCode == 2
+
+  test "diff as a git diff driver":
+    # PATH OLD-FILE OLD-HEX OLD-MODE NEW-FILE NEW-HEX NEW-MODE; git's
+    # temporary files need not have the extension of PATH
+    copyFile(dir / "new.json", dir / "tmp-new")
+    check cli("diff", "conf.json", "old.yaml", "1111", "100644", "tmp-new",
+        "2222", "100644") == ("semantic diff conf.json\n" &
+        "~ /server/port: 80 -> 8080\n+ /tags/1: z\n- /debug: true\n" &
+        "+ /note: \"a\\nb\"\n", 0)
+
   test "lsp":
     let body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"," &
         "\"params\":{}}"

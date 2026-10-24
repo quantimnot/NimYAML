@@ -855,6 +855,59 @@ echo canonicalJson(loadAs[YamlNode]("{b: 1.0e+3, a: [true, ~]}"))
    give different documents the same signature. Integers are written as the
    doubles they round to, as ECMAScript does.
 
+## Semantic Diff
+
+`yaml/diff` compares two `YamlNode` graphs by what they mean rather than
+how they are written: key order, styles, quotes, comments, anchors and
+aliases make no difference, and numbers are compared by value. The result
+is the list of nodes that were added, removed or changed, each with its
+path in both graphs, and `toJsonPatch` makes a JSON Patch of it:
+
+```nim
+import yaml, yaml/[dom, diff, jsonpatch]
+
+let
+  old = loadAs[YamlNode]("{server: {host: a, port: 80}, tags: [x, y]}")
+  new = loadAs[YamlNode]("tags: [x, z, y]\nserver: {port: 8080, host: a}")
+for change in diff(old, new):
+  echo change.kind, " ", change.newPath.toJsonPointer
+# changed /server/port
+# added /tags/1
+let patched = old.applyJsonPatch(toJsonPatch(diff(old, new)))  # equals new
+```
+
+Sequences are aligned by their longest common subsequence, so an inserted
+item is one change rather than a change of every item after it, and a
+replaced item that is a collection is compared item by item. Mapping
+entries are matched by the content of their keys whatever their tag, so a
+YAML `200:` and a JSON `"200":` are the same member. Tags that say more
+than JSON can (`!Ref`) must be equal. The patches made from every pair of
+documents in the JSON Patch test suite turn one into the other.
+
+`yaml diff OLD NEW` prints the changes of two files, which may be in
+different formats; `--patch` and `--merge-patch` write the patch instead,
+which `yaml patch` applies. It is also a git diff driver:
+
+```bash
+$ yaml diff config.yaml config.json
+~ /server/port: 80 -> 8080
++ /tags/1: z
+- /debug: true
+$ git config diff.yaml.command 'yaml diff'
+$ echo '*.yaml diff=yaml' >> .gitattributes   # git diff is now semantic
+```
+
+### Caveats
+
+ * **Patches name members by JSON Pointer**, which only reaches members
+   whose keys are strings, so a change under a key like `200` or `[a, b]`
+   is reported but its patch operation does not apply.
+ * **Long sequences** whose differing middle parts have more than four
+   million pairs of items are compared item by item at the same index
+   instead of being aligned.
+ * **Hexadecimal and octal integers** (`0x10`) are compared as the strings
+   that the JSON reading of the graph makes of them.
+
 ## `%SCHEMA` and `%GLOBAL` Directives
 
 NimYAML gives meaning to two directive names that YAML 1.2 reserves:
@@ -1031,6 +1084,7 @@ yaml query [--to:FORMAT] [--paths] '$.servers[*].port' [FILE...]
 yaml '$.servers[*].port' [FILE...]                     # the same
 yaml '$.servers[*].port = 8080' [-i] [FILE...]         # replace, -i in place
 yaml expand [--modeline] [FILE]                        # portable %GLOBAL
+yaml diff [--patch | --merge-patch] OLD NEW           # semantic diff
 yaml config [--config:FILE] [--print] [--force] [DIR]  # write .yaml.yaml
 yaml lsp                                               # language server, stdio
 yaml help [COMMAND]
@@ -1039,6 +1093,8 @@ yaml help [COMMAND]
 Commands read standard input when no file is given. Exit codes: 0 on
 success, 1 if an input is invalid, has error diagnostics or (with
 `format --check`) is not formatted, 2 for usage, I/O and config errors.
+`diff` exits like `diff(1)`: 0 if the files mean the same, 1 if they
+differ, 2 for errors, invalid inputs included.
 
 `validate` reports only what makes a file invalid (syntax errors, duplicate
 keys, undefined aliases, directive errors, schema violations); `lint` adds

@@ -25,12 +25,16 @@
 //
 // And paths (paths/): the JSON Pointer or JSON Path of the node at the
 // cursor in the status bar, commands that copy it, and "Go to Path…".
+//
+// And diff (diff/): a semantic diff of two YAML or JSON texts, which
+// yamllsp computes and a quick pick lists.
 
 const vscode = require("vscode");
 const { LanguageClient, TransportKind } = require("vscode-languageclient/node");
 const { activateEmbedded } = require("./embedded");
 const { registerGrid } = require("./grid");
 const { registerPaths } = require("./paths");
+const { registerDiff } = require("./diff");
 
 let client;
 let embedded;
@@ -149,6 +153,7 @@ async function activate(context) {
   context.subscriptions.push(grid.disposable);
   paths = registerPaths(() => client);
   context.subscriptions.push(paths.disposable);
+  context.subscriptions.push(registerDiff(() => client));
   await start();
 }
 
