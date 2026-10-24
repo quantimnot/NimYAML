@@ -253,6 +253,28 @@ suite "LSP directive features":
         %*{"textDocument": {"uri": uri}}))
     check link[0]["target"].getStr() == "file://" & dir / "s.yaml"
 
+  test ".yaml config: lint rules and schema validation, reloaded on save":
+    let dir = getTempDir() / ("yamllsp-config-" & $getCurrentProcessId())
+    createDir(dir)
+    defer: removeDir(dir)
+    writeFile(dir / "s.yaml", "{type: object, required: [name]}\n")
+    let config = dir / ".yaml"
+    writeFile(config, "lint: {rules: {truthy: {level: off}}}\n" &
+        "validate: {schema: false}\n")
+    let uri = "file://" & dir / "x.yaml"
+    var s: Server
+    check s.handle(didOpen(uri, "%SCHEMA s.yaml\n--- {age: yes}\n"))
+        .diagnosticsOf(uri).len == 0
+    writeFile(config, "")
+    let saved = s.handle(notification("textDocument/didSave",
+        %*{"textDocument": {"uri": "file://" & config}})).diagnosticsOf(uri)
+    check saved.len == 2
+    writeFile(config, "nope: 1\n")
+    let invalid = s.handle(notification("textDocument/didSave",
+        %*{"textDocument": {"uri": "file://" & config}})).diagnosticsOf(uri)
+    check invalid[0]["code"].getStr() == "config"
+    check "Unknown field" in invalid[0]["message"].getStr()
+
   test "directive diagnostics":
     var s: Server
     let diags = s.handle(didOpen("untitled:d", "%SCHEMA s.json\n--- a\n"))

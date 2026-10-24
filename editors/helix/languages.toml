@@ -1,15 +1,16 @@
-# Helix binding for yamllsp, NimYAML's language server.
+# Helix binding for `yaml lsp`, NimYAML's language server.
 #
 # Helix needs no extension: a language server is a command plus the
 # languages it serves. Merge this into ~/.config/helix/languages.toml, or
 # copy it to .helix/languages.toml in a project to enable it only there.
 #
-# `command` is looked up on PATH; build the server with
-# `nim yamllsp config.nims` and put the binary there, or replace the
-# command with an absolute path in your own copy.
+# `command` is looked up on PATH; build the `yaml` tool with
+# `nim c -d:release -o:yaml tools/yamlcli.nim` and put the binary there, or
+# replace the command with an absolute path in your own copy.
 
 [language-server.yamllsp]
-command = "yamllsp"
+command = "yaml"
+args = ["lsp"]
 
 # `language-servers` replaces Helix's default list for YAML instead of
 # extending it, so yaml-language-server is listed again to keep it. Helix

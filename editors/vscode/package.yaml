@@ -30,6 +30,8 @@ keywords:
 activationEvents:
   - onLanguage:yaml
   - workspaceContains:**/.nimyaml-lint.yaml
+  - workspaceContains:**/.yaml
+  - workspaceContains:**/.yaml.yaml
 main: ./extension.js
 scripts:
   test: bun --test test/*.test.js
@@ -109,14 +111,15 @@ contributes:
     properties:
       nimyaml.yamllsp.path:
         type: string
-        default: yamllsp
-        markdownDescription: 'Command that starts the `yamllsp` language server: a name looked up on `PATH` or an absolute path. Build it with `nim yamllsp config.nims` in the NimYAML repository.'
+        default: yaml
+        markdownDescription: 'Command that starts the language server: a name looked up on `PATH` or an absolute path. Build the `yaml` tool with `nim c -d:release -o:yaml tools/yamlcli.nim` in the NimYAML repository.'
       nimyaml.yamllsp.args:
         type: array
         items:
           type: string
-        default: []
-        description: Extra arguments passed to the language server.
+        default:
+          - lsp
+        markdownDescription: 'Arguments passed to the command. `yaml` needs `lsp`; set this to `[]` for the standalone `yamllsp`.'
       nimyaml.trace.server:
         type: string
         enum:

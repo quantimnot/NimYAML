@@ -59,6 +59,16 @@ task yamllint, "Compile the yamllint tool":
   --d:release
   setCommand "c", "tools/yamllint"
 
+task yamlcliTests, "Run yaml command line tool tests":
+  --r
+  --verbosity:0
+  setCommand "c", "test/tyamlcli"
+
+task yaml, "Compile the yaml command line tool":
+  --d:release
+  --out:yaml
+  setCommand "c", "tools/yamlcli"
+
 task lspTests, "Run language server tests":
   --r
   --verbosity:0

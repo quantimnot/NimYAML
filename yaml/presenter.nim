@@ -836,7 +836,11 @@ proc doPresent(
       case ctx.options.quoting
       of sqJson:
         var hint = yTypeUnknown
-        if ctx.levels.len == 0 or ctx.state == dFlowMapValue: hint = guessType(item.scalarContent)
+        # keys are always strings in JSON; values and items may be keywords
+        # and numbers
+        if ctx.levels.len == 0 or ctx.state notin {dBlockExplicitMapKey,
+            dBlockImplicitMapKey, dFlowImplicitMapKey, dFlowExplicitMapKey}:
+          hint = guessType(item.scalarContent)
         let tag = item.scalarProperties.tag
         if tag in [yTagQuestionMark, yTagBoolean] and
             hint in {yTypeBoolTrue, yTypeBoolFalse}:

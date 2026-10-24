@@ -22,6 +22,14 @@ Features:
    mapping key, anchor and text rules, configured by `.nimyaml-lint.yaml`,
    plus the `tools/yamllint` command line tool and the `tools/yamllsp`
    language server.
+ * added `tools/yamlcli`, built as the `yaml` command: `lint`, `validate`,
+   `format`, `convert` (between YAML, JSON, JSONC, JSON Lines and CBOR),
+   `query` (JSONPath), `expand`, `lsp` and `help`. Editor bindings now start
+   `yaml lsp`.
+ * added `yaml/toolconfig`: one config file, `.yaml` or `.yaml.yaml`, for
+   linting, validation and formatting, read by the `yaml` command, `yamllint`
+   and the language server; `.nimyaml-lint.yaml` is still read.
+ * added `checkLintConfig` to `yaml/lint`.
  * the lexer no longer depends on `std/lexbase`; consumed input is dropped
    between events, so memory use for `Stream` input stays bounded.
  * new module `yaml/fragment` resolves RFC 9512 fragment identifiers
@@ -118,6 +126,9 @@ Changes:
    chain, also when the read fails in the middle of a token.
 
 Bugfixes:
+
+ * JSON output (`jsonDumper`, `quoting: sqJson`) no longer quotes numbers,
+   booleans and nulls that are sequence items or block mapping values.
 
  * properties of a root scalar on a `---` line (`--- !!str a`) were also
    applied to the root of the next document, which then failed with "Only

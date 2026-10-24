@@ -8,12 +8,14 @@
 ## yamllsp: a language server for YAML, built on NimYAML.
 ##
 ## Speaks JSON-RPC 2.0 over stdin/stdout with full document sync. When a
-## document is opened, changed or saved, it is linted with the
-## ``.nimyaml-lint.yaml`` found by walking up from the document's directory
-## (defaults for documents without a ``file://`` URI), its documents are
-## validated against the JSON Schemas they declare (``file:`` schemas only;
-## the server never accesses the network), and the diagnostics are
-## published. Saving a ``.nimyaml-lint.yaml`` reloads the configs and
+## document is opened, changed or saved, it is linted with the config
+## (``.yaml``, ``.yaml.yaml`` or ``.nimyaml-lint.yaml``, see
+## `yaml/toolconfig <../yaml/toolconfig.html>`_) found by walking up from the
+## document's directory (defaults for documents without a ``file://`` URI),
+## its documents are validated against the JSON Schemas they declare unless
+## the config's ``validate.schema`` is false (``file:`` schemas only; the
+## server never accesses the network), and the diagnostics are published.
+## Saving a config file reloads the configs and
 ## republishes the diagnostics of all open documents.
 ##
 ## The other features are about directives, the part of YAML editors know
@@ -46,12 +48,12 @@ import std/[json, os, streams, strutils, tables, uri]
 when defined(nimPreviewSlimSystem):
   import std/syncio
 import ../yaml/[data, parser, stream, lint, jsonschema, documentschema,
-    schemavalidation]
+    schemavalidation, toolconfig]
 import ../yaml/private/lex
 from ../yaml/hints import guessType, TypeHint
 
 type
-  ConfigEntry = tuple[config: LintConfig, error: string]
+  ConfigEntry = tuple[config: ToolConfig, error: string]
 
   Server* = object
     docs: Table[string, string]        # uri -> text
@@ -157,16 +159,15 @@ proc documentPath(uri: string): string =
 
 proc configFor(s: var Server, uri: string): ConfigEntry =
   let path = documentPath(uri)
-  if path.len == 0: return (defaultConfig(), "")
+  if path.len == 0: return (defaultToolConfig(), "")
   let dir = path.parentDir()
   if dir notin s.configs:
-    var entry: ConfigEntry = (defaultConfig(), "")
-    let configPath = findLintConfig(dir)
-    if configPath.len > 0:
-      try:
-        entry.config = loadLintConfig(configPath)
-      except LintConfigError as e:
-        entry.error = e.msg
+    var entry: ConfigEntry = (defaultToolConfig(), "")
+    try:
+      let configPath = findToolConfig(dir)
+      if configPath.len > 0: entry.config = loadToolConfig(configPath)
+    except ToolConfigError as e:
+      entry.error = e.msg
     s.configs[dir] = entry
   s.configs[dir]
 
@@ -721,16 +722,17 @@ proc publish(s: var Server, uri: string): JsonNode =
       diagnostics.add(%*{"range": {"start": {"line": 0, "character": 0},
                                    "end": {"line": 0, "character": 1}},
                          "severity": 1, "source": "nimyaml", "code": "config",
-                         "message": "invalid lint config: " & error})
+                         "message": "invalid config: " & error})
     var lines: seq[string]
     for _, line in text.sourceLines: lines.add(line)
     let sourceUri = sourceUriOf(uri)
-    for d in lint(text, config, sourceUri): diagnostics.add(d.toLsp(lines))
-    # a fresh registry per publish, so that edits of schema files take
-    # effect on the next change
-    let registry = newSchemaRegistry(fileSchemaLoader())
-    for d in validateDocuments(text, registry, sourceUri):
-      diagnostics.add(d.toLsp(lines))
+    for d in lint(text, config.lint, sourceUri): diagnostics.add(d.toLsp(lines))
+    if config.validateSchemas:
+      # a fresh registry per publish, so that edits of schema files take
+      # effect on the next change
+      let registry = newSchemaRegistry(fileSchemaLoader())
+      for d in validateDocuments(text, registry, sourceUri):
+        diagnostics.add(d.toLsp(lines))
   %*{"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics",
      "params": {"uri": uri, "diagnostics": diagnostics}}
 
@@ -771,7 +773,7 @@ proc handle*(s: var Server, msg: JsonNode): seq[JsonNode] =
     result.add(s.publish(uri))
   of "textDocument/didSave":
     let uri = params["textDocument"]["uri"].getStr()
-    if documentPath(uri).extractFilename() == configFileName:
+    if isToolConfigFile(documentPath(uri)):
       s.configs.clear()
       var uris: seq[string]
       for open in s.docs.keys: uris.add(open)

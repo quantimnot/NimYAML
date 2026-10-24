@@ -32,15 +32,17 @@ proc run*(args: seq[string], input: File, output: File): int =
     options = ExpandOptions()
     files: seq[string]
     p = initOptParser(args)
-  for kind, key, val in p.getopt():
-    case kind
-    of cmdArgument: files.add(key)
-    of cmdLongOption, cmdShortOption:
-      if key == "modeline" and val.len == 0: options.schemas = soModeline
-      else:
-        stderr.writeLine(usage)
-        return 2
-    of cmdEnd: discard
+  # the parser of an empty command line reads the process's own instead
+  if args.len > 0:
+    for kind, key, val in p.getopt():
+      case kind
+      of cmdArgument: files.add(key)
+      of cmdLongOption, cmdShortOption:
+        if key == "modeline" and val.len == 0: options.schemas = soModeline
+        else:
+          stderr.writeLine(usage)
+          return 2
+      of cmdEnd: discard
   if files.len > 1:
     stderr.writeLine(usage)
     return 2
