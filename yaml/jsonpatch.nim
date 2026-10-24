@@ -197,7 +197,7 @@ proc own(p: var Patcher, node: YamlNode): YamlNode =
   p.kept.add(result)
 
 proc disown(p: var Patcher, node: YamlNode) =
-  ## Called when ``copy`` puts ``node`` in a second place: from now on, it
+  ## Called before ``copy`` puts ``node`` in a second place: from now on, it
   ## and the owned collections in it must be copied before being changed.
   ## Owned collections are only ever reachable through owned parents, so
   ## the walk stops at the first node the patch does not own.
@@ -311,9 +311,11 @@ proc apply(p: var Patcher, op: Operation) =
     if op.source.tokens == op.path.tokens: discard p.resolve(op.source)
     else: p.add(op.path, p.remove(op.source))
   of opCopy:
+    # Disowned first: if ``path`` lies inside ``from``, walking to it must
+    # copy the source rather than insert the source into itself.
     let value = p.resolve(op.source)
-    p.add(op.path, value)
     p.disown(value)
+    p.add(op.path, value)
   of opTest:
     if not jsonEquals(p.resolve(op.path), op.value):
       raise patchError(jpeTestFailed, p.index,

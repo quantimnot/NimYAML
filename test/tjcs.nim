@@ -101,6 +101,12 @@ flags: [true, ~, "true"]
     check canonicalJson(node("\"\\u0001\\u001f\\u007f\\t/\"")) ==
         "\"\\u0001\\u001f\x7f\\t/\""
 
+  test "surrogates and code points beyond Unicode are refused":
+    for yaml in ["\"\\uD800\"", "\"\\U00110000\"", "{\"\\uDC00\": 1}"]:
+      expect YamlJcsError:
+        discard canonicalJson(node(yaml))
+    check canonicalJson(node("\"\\U0001F602\"")) == "\"\u{1F602}\""
+
   test "non-string keys are refused":
     for yaml in ["{1: one}", "{[a]: b}", "{null: x}"]:
       expect YamlJcsError:

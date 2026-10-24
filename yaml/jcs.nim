@@ -139,9 +139,18 @@ proc ecmaNumber*(x: float64): string {.raises: [YamlJcsError].} =
 # U+007F and non-ASCII, is written as UTF-8.
 # ============================================================================
 
+proc checkUtf8(s: string) {.raises: [YamlJcsError].} =
+  ## ``validateUtf8`` accepts encoded surrogates (as produced for a lone
+  ## ``\uD800``) and code points beyond U+10FFFF, which UTF-8 excludes and
+  ## which have no UTF-16 form to sort by.
+  var valid = s.validateUtf8 < 0
+  if valid:
+    for rune in s.runes:
+      if int(rune) in 0xD800 .. 0xDFFF or int(rune) > 0x10FFFF: valid = false
+  if not valid: raise jcsError("string is not valid UTF-8: " & escape(s))
+
 proc addEcmaString(output: var string, s: string) {.raises: [YamlJcsError].} =
-  if s.validateUtf8 >= 0:
-    raise jcsError("string is not valid UTF-8: " & escape(s))
+  checkUtf8(s)
   output.add('"')
   for c in s:
     case c

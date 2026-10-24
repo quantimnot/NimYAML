@@ -93,6 +93,10 @@ base: *base
     let root = merged("{? {<<: {a: 1}} : value}")
     check root[node("{a: 1}")].content == "value"
 
+  test "a mapping key that was merged through another path":
+    let root = merged("[&k {<<: {a: 1}}, {*k : v, <<: {{a: 1}: w}}]")
+    check root.elems[1] == node("{{a: 1}: v}")
+
   test "invalid merge values":
     for yaml in ["{<<: 1}", "{<<: [{a: 1}, 2]}"]:
       expect YamlMergeError:
@@ -163,3 +167,9 @@ derived: {<<: *b}
     loadMerged("&top {self: *top, <<: {x: 1}}", root)
     check cast[pointer](root["self"]) == cast[pointer](root)
     check root["x"].content == "1"
+
+  test "cycles made by merging keep an alias":
+    var root: YamlNode
+    loadMerged("a: &a {k: {<<: *a}}", root)
+    let inner = root["a"]["k"]
+    check cast[pointer](inner["k"]) == cast[pointer](inner)

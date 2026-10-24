@@ -90,6 +90,19 @@ type
     states: Table[pointer, MergeState]
     visited: HashSet[pointer]
 
+proc rehash(mapping: YamlNode) =
+  ## A key's hash covers its content, so a mapping key that has had merge
+  ## keys applied is filed under a stale hash: rebuild the table.
+  let fields = newTable[YamlNode, YamlNode]()
+  for key, value in mapping.fields.pairs:
+    if fields.hasKeyOrPut(key, value):
+      raise mergeError(key, "applying merge keys made two keys equal")
+  mapping.fields = fields
+
+proc hasCollectionKeys(mapping: YamlNode): bool =
+  for key in mapping.fields.keys:
+    if key.kind != yScalar: return true
+
 proc resolve(m: var Merger, mapping: YamlNode) =
   ## Applies the merge keys of ``mapping`` itself (not of its children).
   let p = cast[pointer](mapping)
@@ -97,10 +110,14 @@ proc resolve(m: var Merger, mapping: YamlNode) =
     if m.states.getOrDefault(p) == msResolved: return
     raise mergeError(mapping, "mapping merges itself")
   m.states[p] = msResolving
+  # Its keys may have been resolved already, through another path; merged
+  # keys must be checked against their current hashes.
+  if mapping.hasCollectionKeys: mapping.rehash()
   var
     mergeKeys: seq[YamlNode]
     sources: seq[YamlNode]
-  for key, value in mapping.fields.pairs:
+  # in document order, should a mapping have both << and !!merge keys
+  for (key, value) in mapping.orderedFields:
     if not key.isMergeKey: continue
     mergeKeys.add(key)
     case value.kind
@@ -128,19 +145,11 @@ proc walk(m: var Merger, node: YamlNode) =
     for item in node.elems: m.walk(item)
   of yMapping:
     m.resolve(node)
-    var collectionKeys = false
     for key, value in node.fields.pairs:
       m.walk(key)
       m.walk(value)
-      if key.kind != yScalar: collectionKeys = true
-    # A key's hash covers its content, so a mapping key that just had merge
-    # keys applied is filed under a stale hash: rebuild the table.
-    if collectionKeys:
-      let fields = newTable[YamlNode, YamlNode]()
-      for key, value in node.fields.pairs:
-        if fields.hasKeyOrPut(key, value):
-          raise mergeError(key, "applying merge keys made two keys equal")
-      node.fields = fields
+    # walking the keys may have applied merge keys within them
+    if node.hasCollectionKeys: node.rehash()
   of yScalar: discard
 
 proc applyMergeKeys*(root: YamlNode) {.raises: [YamlMergeError].} =
@@ -164,7 +173,9 @@ proc applyMergeKeys*(root: YamlNode) {.raises: [YamlMergeError].} =
 # leave an anchored node referenced only once (when its only alias was a
 # merge value). A node is therefore written as an alias only where it was
 # shared both before and after merging; everywhere else it is written out
-# in full. Cycles are shared by necessity, so they keep their aliases.
+# in full. Cycles must keep an alias, also where merging made them: the
+# node that a cycle reaches again while it is being written gets an anchor
+# in any case.
 # ============================================================================
 
 proc countReferences(node: YamlNode, counts: var CountTable[pointer]) =
@@ -181,8 +192,29 @@ proc countReferences(node: YamlNode, counts: var CountTable[pointer]) =
       countReferences(key, counts)
       countReferences(value, counts)
 
+proc findCycles(node: YamlNode, onPath, done, reachedAgain: var HashSet[pointer]) =
+  ## Collects in ``reachedAgain`` the nodes that the depth-first walk of
+  ## ``emit``, which visits in the same order, reaches again while they are
+  ## on its path.
+  let p = cast[pointer](node)
+  if p in onPath:
+    reachedAgain.incl(p)
+    return
+  if node.kind == yScalar or done.containsOrIncl(p): return
+  onPath.incl(p)
+  case node.kind
+  of ySequence:
+    for item in node.elems: findCycles(item, onPath, done, reachedAgain)
+  of yMapping:
+    for (key, value) in node.orderedFields:
+      findCycles(key, onPath, done, reachedAgain)
+      findCycles(value, onPath, done, reachedAgain)
+  of yScalar: discard
+  onPath.excl(p)
+
 type Emitter = object
   wasShared, isShared: CountTable[pointer]
+  cyclic: HashSet[pointer]
   anchors: Table[pointer, Anchor]
   events: seq[Event]
 
@@ -193,7 +225,7 @@ proc emit(em: var Emitter, node: YamlNode) =
         node.endPos))
     return
   var anchor = yAnchorNone
-  if em.wasShared[p] > 1 and em.isShared[p] > 1:
+  if p in em.cyclic or em.wasShared[p] > 1 and em.isShared[p] > 1:
     anchor = Anchor("m" & $em.anchors.len)
     em.anchors[p] = anchor
   case node.kind
@@ -208,7 +240,7 @@ proc emit(em: var Emitter, node: YamlNode) =
   of yMapping:
     em.events.add(startMapEvent(node.mapStyle, node.tag, anchor,
         node.startPos, node.endPos))
-    for key, value in node.fields.pairs:
+    for (key, value) in node.orderedFields:
       em.emit(key)
       em.emit(value)
     em.events.add(endMapEvent(node.endPos, node.endPos))
@@ -225,6 +257,8 @@ proc mergedDocument(source: YamlStream): seq[Event] =
   countReferences(root, em.wasShared)
   root.applyMergeKeys()
   countReferences(root, em.isShared)
+  var onPath, done: HashSet[pointer]
+  findCycles(root, onPath, done, em.cyclic)
   em.emit(root)
   result = move em.events
   result.add(source.next())

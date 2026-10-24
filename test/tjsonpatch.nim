@@ -85,6 +85,20 @@ suite "JSON Patch on YAML":
 """))
     check jsonEquals(patched, node("{a: {v: 1}, b: {v: 3, w: 2}}"))
 
+  test "copying a location into itself":
+    # the source was copied by the first operation, so the patch owns it
+    let patched = node("{a: {y: 0}}").applyJsonPatch(node("""
+- {op: add, path: /a/x, value: 1}
+- {op: copy, from: /a, path: /a/b}
+"""))
+    check jsonEquals(patched, node("{a: {y: 0, x: 1, b: {y: 0, x: 1}}}"))
+    check cast[pointer](patched["a"]["b"]) != cast[pointer](patched["a"])
+    let root = node("{a: 1}").applyJsonPatch(node("""
+- {op: add, path: /b, value: 2}
+- {op: copy, from: "", path: /c}
+"""))
+    check jsonEquals(root, node("{a: 1, b: 2, c: {a: 1, b: 2}}"))
+
   test "new keys stay strings":
     let patched = node("{}").applyJsonPatch(node("""
 - {op: add, path: /1, value: one}
