@@ -14,8 +14,8 @@
   status: todo
   info:
   - ~/ws/rei/corpus/rei/_2proto/math/frame.nim
-  - ~/ws/rei/corpus/rei/_2proto/math/frame.nim
-  - ~/ws/rei/corpus/rei/_2proto/math/frame.nim
+  - ~/ws/rei/corpus/rei/_2proto/math/patch.nim
+  - ~/ws/rei/corpus/rei/_2proto/math/stream_fold.nim
 
 - id: json-schema-database
   status: todo
