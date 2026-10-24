@@ -19,6 +19,19 @@ suite "DOM":
     let result = loadAs[YamlNode]("&a [b, *a]")
     assert result == result
     assert result[1] == result
+  test "Equality is structural":
+    check loadAs[YamlNode]("{a: [1, {b: c}]}") ==
+        loadAs[YamlNode]("{a: [1, {b: c}]}")
+    check loadAs[YamlNode]("[x]") != loadAs[YamlNode]("[y]")
+    check loadAs[YamlNode]("[x]") != loadAs[YamlNode]("[!!str x]")
+    check loadAs[YamlNode]("{? [k]: v}") == loadAs[YamlNode]("{? [k]: v}")
+    check loadAs[YamlNode]("[&x [1], *x]") == loadAs[YamlNode]("[[1], [1]]")
+  test "Equal cyclic graphs":
+    check loadAs[YamlNode]("&a [b, *a]") == loadAs[YamlNode]("&c [b, *c]")
+    check loadAs[YamlNode]("&a [b, *a]") != loadAs[YamlNode]("&c [d, *c]")
+  test "Collection keys are found by structure":
+    let root = loadAs[YamlNode]("{? [k]: v}")
+    check root[loadAs[YamlNode]("[k]")].content == "v"
   test "Composing simple Scalar":
     let
       input  = newStringStream("scalar")

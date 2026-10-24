@@ -65,47 +65,42 @@ proc hash*(o: YamlNode): Hash =
       result = result !& item.hash
   result = !$result
 
-proc eqImpl(x, y: YamlNode, alreadyVisited: var HashSet[pointer]): bool =
-  template compare(a, b: YamlNode) {.dirty.} =
-    if cast[pointer](a) != cast[pointer](b):
-      if cast[pointer](a) in alreadyVisited and
-          cast[pointer](b) in alreadyVisited:
-        # prevent infinite loop!
-        return false
-      elif a != b: return false
-
+proc eqImpl(x, y: YamlNode, assumedEqual: var HashSet[(pointer, pointer)]):
+    bool =
+  ## Structural equality: same kind, tag and content, recursively. On cyclic
+  ## graphs, a pair of nodes already being compared further up is assumed
+  ## equal; the comparison then fails only if something else differs.
   if cast[pointer](x) == cast[pointer](y): return true
   if x.kind != y.kind or x.tag != y.tag: return false
-  alreadyVisited.incl(cast[pointer](x))
-  alreadyVisited.incl(cast[pointer](y))
+  if x.kind == yScalar: return x.content == y.content
+  if assumedEqual.containsOrIncl((cast[pointer](x), cast[pointer](y))):
+    return true
   case x.kind
-  of yScalar: result = x.content == y.content
+  of yScalar: discard # handled above
   of ySequence:
     if x.elems.len != y.elems.len: return false
     for i in 0..<x.elems.len:
-      compare(x.elems[i], y.elems[i])
+      if not eqImpl(x.elems[i], y.elems[i], assumedEqual): return false
   of yMapping:
     if x.fields.len != y.fields.len: return false
     for xKey, xValue in x.fields.pairs:
-      let xKeyVisited = cast[pointer](xKey) in alreadyVisited
-      var matchingValue: ref YamlNodeObj = nil
+      # Keys are matched by scanning rather than by hashing, because hash()
+      # does not terminate on cyclic keys. A failed match must not leave
+      # its assumptions behind, so it works on a copy of them.
+      var matchingValue: YamlNode = nil
       for yKey, yValue in y.fields.pairs:
-        if cast[pointer](yKey) != cast[pointer](xKey):
-          if cast[pointer](yKey) in alreadyVisited and xKeyVisited:
-            # prevent infinite loop!
-            continue
-          if xKey == yKey:
-            matchingValue = yValue
-            break
-        else:
+        var trial = assumedEqual
+        if eqImpl(xKey, yKey, trial):
+          assumedEqual = trial
           matchingValue = yValue
           break
-      if isNil(matchingValue): return false
-      compare(xValue, matchingValue)
+      if isNil(matchingValue) or
+          not eqImpl(xValue, matchingValue, assumedEqual): return false
+  result = true
 
 proc `==`*(x, y: YamlNode): bool =
-  var alreadyVisited = initHashSet[pointer]()
-  result = eqImpl(x, y, alreadyVisited)
+  var assumedEqual = initHashSet[(pointer, pointer)]()
+  result = eqImpl(x, y, assumedEqual)
 
 proc `$`*(n: YamlNode): string =
   result = "!<" & $n.tag & "> "
