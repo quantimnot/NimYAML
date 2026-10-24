@@ -1031,6 +1031,7 @@ yaml query [--to:FORMAT] [--paths] '$.servers[*].port' [FILE...]
 yaml '$.servers[*].port' [FILE...]                     # the same
 yaml '$.servers[*].port = 8080' [-i] [FILE...]         # replace, -i in place
 yaml expand [--modeline] [FILE]                        # portable %GLOBAL
+yaml config [--config:FILE] [--print] [--force] [DIR]  # write .yaml.yaml
 yaml lsp                                               # language server, stdio
 yaml help [COMMAND]
 ```
@@ -1068,6 +1069,13 @@ format:
   comment-gap: 2        # spaces between content and a comment after it
   comment-blank-lines: keep  # or drop: blank lines next to comment lines
 ```
+
+`yaml config` writes the config in effect for a directory (default: the
+current one) to `.yaml.yaml` in it, with every key set to its configured or
+default value and every lint rule listed with its level, so it shows what
+applies and is a starting point for a config of its own. `--print` writes
+it to standard output instead; an existing `.yaml.yaml` is only replaced
+with `--force`, and a directory that has a `.yaml` is refused.
 
 `format` keeps comments. A comment after content stays at the end of the
 line of its node; a comment on a line of its own stays before the node it

@@ -281,6 +281,16 @@ proc builtinRuleIds*(): seq[string] =
 
 proc defaultConfig*(): LintConfig = LintConfig()
 
+proc resolved*(config: LintConfig): LintConfig =
+  ## ``config`` with every builtin rule listed and its level, and the ``max``
+  ## of ``line-length``, set to the configured or default value.
+  for r in builtinRules():
+    var rule = config.rules.getOrDefault(r.id)
+    if rule.level.isNone: rule.level = some(r.level)
+    if r.id == "line-length" and rule.max.isNone:
+      rule.max = some(defaultMaxLineLength)
+    result.rules[r.id] = rule
+
 proc isBlank(content: string): bool =
   for line in content.splitLines:
     let text = line.strip()

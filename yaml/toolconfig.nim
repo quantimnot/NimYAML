@@ -110,6 +110,50 @@ proc dumper*(config: FormatConfig): Dumper =
     gap: config.commentGap.get(2),
     blankLines: config.commentBlankLines.get(kKeep) == kKeep)
 
+proc resolved*(config: ToolConfig): ToolConfig =
+  ## ``config`` with every key set: the configured value or the default
+  ## that applies to it, so that dumping it shows the config in effect.
+  result.lint = config.lint.resolved
+  result.validate.schema = some(config.validateSchemas)
+  let
+    format = config.format
+    style = format.style.get(fsDefault)
+    presentation = format.dumper.presentation
+  result.format = FormatConfig(
+    style: some(style),
+    indentation: some(presentation.indentationStep),
+    maxLineLength: some(presentation.maxLineLength.get(0)),
+    comments: some(format.comments.get(kKeep)),
+    commentIndentation: some(presentation.comments.indentation),
+    commentGap: some(presentation.comments.gap),
+    commentBlankLines: some(format.commentBlankLines.get(kKeep)))
+
+proc `$`*(config: ToolConfig): string =
+  ## The content of a config file that `parseToolConfig` reads as
+  ## ``config.resolved``: every key, the lint rules in their builtin order,
+  ## with comments naming the alternatives.
+  let c = config.resolved
+  result = "lint:\n  rules:  # level: off, info, warning or error\n"
+  for r in builtinRules():
+    let rule = c.lint.rules[r.id]
+    result.add("    " & r.id & ": {level: " & $rule.level.get())
+    if rule.max.isSome: result.add(", max: " & $rule.max.get())
+    result.add("}\n")
+  result.add("validate:\n  schema: " & $c.validate.schema.get() &
+      "  # validate against declared JSON Schemas\n")
+  let f = c.format
+  result.add("format:\n" &
+      "  style: " & $f.style.get() & "  # default, minimal, explanatory, " &
+      "json, json-lines or block-only\n" &
+      "  indentation: " & $f.indentation.get() & "\n" &
+      "  max-line-length: " & $f.maxLineLength.get() & "  # 0 for no limit\n" &
+      "  comments: " & $f.comments.get() & "  # keep or drop\n" &
+      "  comment-indentation: " & $f.commentIndentation.get() &
+      "  # node or source\n" &
+      "  comment-gap: " & $f.commentGap.get() & "\n" &
+      "  comment-blank-lines: " & $f.commentBlankLines.get() &
+      "  # keep or drop\n")
+
 proc isBlank(content: string): bool =
   for line in content.splitLines:
     let text = line.strip()

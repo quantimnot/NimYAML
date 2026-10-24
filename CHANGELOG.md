@@ -13,6 +13,10 @@ Features:
    Canonicalization Scheme; passes the JCS reference test vectors.
  * the `yaml` command has new commands `patch` (JSON Patch or JSON Merge
    Patch), `merge` (merge keys) and `canonical` (JCS).
+ * the `yaml` command has a new command `config`, which writes the config in
+   effect, with all defaults, to `.yaml.yaml` (or with `--print` to standard
+   output). `yaml/toolconfig` has `resolved` and `$` for `ToolConfig`, and
+   `yaml/lint` has `resolved` for `LintConfig`.
  * added `YamlFeedParser`, a push-style parser for input that arrives in
    chunks (`newYamlFeedParser`, `feed`, `finish`, `tryNext`, `events`).
    `tryNext` returns `false` when more input is needed and resumes once more

@@ -91,6 +91,31 @@ suite "toolconfig":
     writeFile(base / "x" / ".yaml.yaml", "")
     expect ToolConfigError: discard findToolConfig(base / "x" / "y")
 
+  test "resolved, and $ as a config file":
+    let defaults = defaultToolConfig().resolved
+    check defaults.lint.rules.len == builtinRuleIds().len
+    check defaults.lint.rules["line-length"] ==
+        RuleConfig(level: some(levelWarning), max: some(defaultMaxLineLength))
+    check defaults.validate.schema == some(true)
+    check defaults.format.style == some(fsDefault)
+    check defaults.format.indentation == some(2)
+    check defaults.format.maxLineLength == some(80)
+    check parseToolConfig($defaultToolConfig()) == defaults
+    let c = parseToolConfig("lint: {rules: {truthy: {level: off}, " &
+        "line-length: {max: 90}}}\nvalidate: {schema: false}\n" &
+        "format: {style: json, max-line-length: 0, comment-gap: 3}\n")
+    let r = c.resolved
+    check r.lint.rules["truthy"].level == some(levelOff)
+    check r.lint.rules["line-length"] ==
+        RuleConfig(level: some(levelWarning), max: some(90))
+    check r.validate.schema == some(false)
+    check r.format.style == some(fsJson)
+    check r.format.maxLineLength == some(0)
+    check r.format.commentGap == some(3)
+    check r.format.dumper.presentation == c.format.dumper.presentation
+    check parseToolConfig($c) == r
+    check "  max-line-length: 0  # 0 for no limit\n" in $c
+
 suite "yaml":
   test "help":
     check cli().exitCode == 2
@@ -100,7 +125,10 @@ suite "yaml":
     check cli("--help") == overview
     check cli("help", "format").output.startsWith("usage: yaml format")
     check cli("format", "--help").output.startsWith("usage: yaml format")
-    check cli("help", "config").output.startsWith("Configuration:")
+    let configHelp = cli("help", "config").output
+    check configHelp.startsWith("usage: yaml config")
+    check "Configuration:" in configHelp
+    check cli("config", "--help").output == configHelp
     check cli("help", "nope").exitCode == 2
     let unknown = cli("frob")
     check unknown.exitCode == 2
@@ -381,5 +409,56 @@ suite "yaml":
     check r.output.startsWith("Content-Length: ")
     check "\"serverInfo\":{\"name\":\"yamllsp\"}" in r.output
     check cli("lsp", "--socket=8080").exitCode == 2
+
+suite "yaml config":
+  createDir(tmp / "config" / "sub")
+  let project = expandFilename(tmp / "config")
+
+  test "defaults, --print":
+    let printed = cli(@["config", "--print"], workingDir = project / "sub")
+    check printed.exitCode == 0
+    check printed.output.startsWith("# the config in effect for\n#   " &
+        project / "sub" & "\n# from\n#   the defaults\n")
+    check parseToolConfig(printed.output) == defaultToolConfig().resolved
+    check not fileExists(project / "sub" / ".yaml.yaml")
+
+  test "the nearest config, written to DIR/.yaml.yaml":
+    writeFile(project / ".yaml", "format: {indentation: 4}\n")
+    check cli(@["config", "sub"], workingDir = project) == ("", 0)
+    let written = readFile(project / "sub" / ".yaml.yaml")
+    check written.startsWith("# the config in effect for\n#   " &
+        project / "sub" & "\n# from\n#   " & project / ".yaml\n")
+    check parseToolConfig(written).format.indentation == some(4)
+    check parseToolConfig(written) ==
+        loadToolConfig(project / ".yaml").resolved
+
+  test "an existing file is replaced only with --force":
+    writeFile(project / "sub" / ".yaml.yaml", "format: {indentation: 3}\n")
+    let refused = cli(@["config", "sub"], workingDir = project)
+    check refused.exitCode == 1
+    check "use --force" in refused.output
+    check readFile(project / "sub" / ".yaml.yaml") ==
+        "format: {indentation: 3}\n"
+    check cli(@["config", "--force", "sub"], workingDir = project) == ("", 0)
+    check loadToolConfig(project / "sub" / ".yaml.yaml").format.indentation ==
+        some(3)
+    check "comment-gap: 2" in readFile(project / "sub" / ".yaml.yaml")
+
+  test "--config:FILE; never next to a .yaml":
+    writeFile(project / "other.yaml", "validate: {schema: false}\n")
+    check cli(@["config", "--config:" & (project / "other.yaml"), "--print"],
+        workingDir = project).output.contains("  schema: false")
+    let refused = cli(@["config", "--force"], workingDir = project)
+    check refused.exitCode == 1
+    check "cannot have both" in refused.output
+    check not fileExists(project / ".yaml.yaml")
+
+  test "usage and config errors":
+    check cli("config", "a", "b").exitCode == 2
+    check cli("config", "--frob").exitCode == 2
+    check cli("config", "--print", "nope").exitCode == 2
+    writeFile(project / "bad.yaml", "nope: 1\n")
+    check cli(@["config", "--print", "--config:bad.yaml"],
+        workingDir = project).exitCode == 2
 
 removeDir(tmp)

@@ -24,6 +24,8 @@
 ## * ``merge``: applies merge keys (``<<``)
 ## * ``canonical`` (or ``jcs``): writes the RFC 8785 canonical JSON form
 ## * ``expand``: makes ``%GLOBAL`` directives portable
+## * ``config``: writes the config in effect, with all defaults, to
+##   ``.yaml.yaml``
 ## * ``lsp``: the language server, over stdio
 ## * ``help``: this overview, or the usage of a command
 ##
@@ -70,6 +72,7 @@ commands:
   canonical write the canonical JSON form (RFC 8785) of each document
             (also: jcs)
   expand    expand %GLOBAL directives into the documents
+  config    write the config in effect, with all defaults, to .yaml.yaml
   lsp       the language server, over stdio
   help      this overview, or the usage of COMMAND
 
@@ -187,7 +190,18 @@ output. Editors start it as the command `yaml` with the argument `lsp`."""
 
   helpUsage = """usage: yaml help [COMMAND]"""
 
-  configHelp = """Configuration: the file .yaml or .yaml.yaml (not both) in a file's
+  configUsage = """usage: yaml config [--config:FILE] [--print] [--force] [DIR]
+
+Writes the config in effect for DIR (default: the current directory) to
+DIR/.yaml.yaml, with every key set to its configured or default value: the
+nearest .yaml or .yaml.yaml file (or --config:FILE), or the defaults if
+there is none. --print writes it to standard output instead. An existing
+DIR/.yaml.yaml is only replaced with --force; a DIR/.yaml is never, as a
+directory cannot have both.
+
+"""
+
+  configHelp = configUsage & """Configuration: the file .yaml or .yaml.yaml (not both) in a file's
 directory or the nearest ancestor that has one; a legacy .nimyaml-lint.yaml
 is read as its lint section. All keys are optional:
 
@@ -834,6 +848,49 @@ proc canonicalCommand(args: seq[string]): int =
       stderr.writeLine(input.name & ": " & e.msg)
       return 1
 
+proc configCommand(args: seq[string]): int =
+  var
+    dir = ""
+    configPath = ""
+    print, force = false
+  for kind, key, val in options(args):
+    case kind
+    of cmdArgument:
+      if dir.len > 0: fail("config")
+      dir = key
+    of cmdLongOption, cmdShortOption:
+      case key
+      of "config":
+        if val.len == 0: fail("config")
+        configPath = val
+      of "print": print = true
+      of "force", "f": force = true
+      else: fail("config")
+    of cmdEnd: discard
+  if dir.len == 0: dir = getCurrentDir()
+  if not dirExists(dir): raise newException(OSError, dir & ": no such directory")
+  if configPath.len == 0: configPath = findToolConfig(dir)
+  let
+    config =
+      if configPath.len > 0: loadToolConfig(configPath)
+      else: defaultToolConfig()
+    source = if configPath.len > 0: absolutePath(configPath) else: "the defaults"
+    content = "# the config in effect for\n#   " & absolutePath(dir) &
+        "\n# from\n#   " & source & "\n" & $config
+  if print:
+    stdout.write(content)
+    return 0
+  let target = dir / toolConfigFileNames[1]
+  if fileExists(dir / toolConfigFileNames[0]):
+    stderr.writeLine(dir / toolConfigFileNames[0] & " exists, and a " &
+        "directory cannot have both .yaml and .yaml.yaml; remove it or use " &
+        "--print")
+    return 1
+  if fileExists(target) and not force:
+    stderr.writeLine(target & " exists; use --force to replace it")
+    return 1
+  writeFile(target, content)
+
 proc lspCommand(args: seq[string]): int =
   for arg in args:
     if arg != "--stdio" and not arg.startsWith("--clientProcessId"):
@@ -856,7 +913,7 @@ proc run*(args: seq[string]): int =
     command = args[0]
     rest = args[1 .. ^1]
   if command in ["-h", "--help"]: return helpCommand(@[])
-  if usageOf(command).len > 0 and command notin ["help", "config"] and
+  if usageOf(command).len > 0 and command != "help" and
       rest.wantsHelp:
     return helpCommand(@[command])
   try:
@@ -871,6 +928,7 @@ proc run*(args: seq[string]): int =
     of "merge": mergeCommand(rest)
     of "canonical", "jcs": canonicalCommand(rest)
     of "expand": yamlexpand.run(rest, stdin, stdout)
+    of "config": configCommand(rest)
     of "lsp": lspCommand(rest)
     of "help": helpCommand(rest)
     else:
