@@ -29,6 +29,11 @@ Features:
  * added `yaml/toolconfig`: one config file, `.yaml` or `.yaml.yaml`, for
    linting, validation and formatting, read by the `yaml` command, `yamllint`
    and the language server; `.nimyaml-lint.yaml` is still read.
+ * `yaml query` takes assignments, `yaml '$.a.b = VALUE' [FILE...]`: each
+   selected node is replaced by VALUE (read as YAML) and all documents are
+   written; with `-i` (or `--in-place`), each file with a selected node is
+   rewritten in its own format instead. `yaml format` takes `-i` and
+   `--in-place` as synonyms of `--write`.
  * `yaml format` keeps comments: after content, before the node they
    precede and at the end of the collection they end. The `format` section
    of the config takes `comments`, `comment-indentation` (`node` or

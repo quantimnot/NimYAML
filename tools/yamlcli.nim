@@ -18,7 +18,7 @@
 ## * ``convert`` (or ``as``, ``to``): converts between YAML, JSON, JSONC,
 ##   JSON Lines and CBOR
 ## * ``query`` (or just a JSONPath starting with ``$``): selects nodes with
-##   an RFC 9535 JSONPath
+##   an RFC 9535 JSONPath, or with ``PATH = VALUE`` replaces them
 ## * ``expand``: makes ``%GLOBAL`` directives portable
 ## * ``lsp``: the language server, over stdio
 ## * ``help``: this overview, or the usage of a command
@@ -59,7 +59,8 @@ commands:
             validation
   format    rewrite YAML in a uniform style
   convert   convert between yaml, json, jsonc, jsonl and cbor (also: as, to)
-  query     select nodes with a JSONPath (also: yaml '$...' [FILE...])
+  query     select nodes with a JSONPath (also: yaml '$...' [FILE...]),
+            or replace them: yaml '$... = VALUE' [-i] [FILE...]
   expand    expand %GLOBAL directives into the documents
   lsp       the language server, over stdio
   help      this overview, or the usage of COMMAND
@@ -81,15 +82,15 @@ spec (syntax errors, duplicate keys, undefined aliases and directive
 issues), not the style rules, so that a file that validates is valid YAML
 that conforms to its schemas."""
 
-  formatUsage = """usage: yaml format [--write | --check] [--drop-comments] [--config:FILE]
+  formatUsage = """usage: yaml format [--write | -i | --check] [--drop-comments] [--config:FILE]
                    [--style:STYLE] [--indent:N] [--line-length:N]
                    [--comment-indentation:node|source] [--comment-gap:N]
                    [--comment-blank-lines:keep|drop] [FILE...]
 
 Rewrites YAML in the style of the format section of the config, and prints
-it; with --write, the files are rewritten in place instead, and with
---check, the files that are not formatted are listed (exit code 1 if
-there are any). Several files require --write or --check.
+it; with --write (or -i, --in-place), the files are rewritten in place
+instead, and with --check, the files that are not formatted are listed
+(exit code 1 if there are any). Several files require --write or --check.
 
 Comments are kept: a comment after content stays at the end of the line of
 its node, and a comment line stays before the node it precedes or at the
@@ -120,12 +121,19 @@ otherwise), standard input is YAML; --from:FORMAT sets it for all inputs.
 YAML is written in the style of the format section of the config."""
 
   queryUsage = """usage: yaml query [--from:FORMAT] [--to:FORMAT] [--paths] PATH [FILE...]
-       yaml PATH [FILE...]   (when PATH starts with $)
+       yaml query [--from:FORMAT] [--to:FORMAT] [-i] 'PATH = VALUE' [FILE...]
+       yaml PATH [FILE...]   (when PATH starts with $; also with = VALUE)
 
 Applies the RFC 9535 JSONPath PATH to each document and writes the
 selected nodes, each as a document, in the format --to (default: yaml; see
 yaml help convert). With --paths, their Normalized Paths are printed
-instead, one per line."""
+instead, one per line.
+
+With = VALUE (the first = outside of brackets and quotes), each selected
+node is replaced by VALUE, read as YAML, and all documents are written
+instead. With -i (or --in-place), each file in which a node is selected is
+rewritten in its own format (or --from) instead; the documents are
+rewritten from their content, so comments and styles are not kept."""
 
   expandUsage = """usage: yaml expand [--modeline] [FILE]
 
@@ -281,10 +289,10 @@ proc normalize(events: BufferYamlStream, resolveTags: bool) =
           e.scalarProperties.tag = yTagString
     else: discard
 
-proc writeEach(output: File, events: BufferYamlStream,
+proc renderEach(output: var string, events: BufferYamlStream,
     options: PresentationOptions) =
-  ## Writes each document of ``events`` as a stream of its own, ending with
-  ## a line break.
+  ## Renders each document of ``events`` as a stream of its own, ending
+  ## with a line break.
   var doc: BufferYamlStream
   for e in events:
     case e.kind
@@ -294,25 +302,31 @@ proc writeEach(output: File, events: BufferYamlStream,
     of yamlEndDoc:
       doc.put(e)
       doc.put(endStreamEvent())
-      output.write(present(doc, options).strip(leading = false) & "\n")
+      output.add(present(doc, options).strip(leading = false) & "\n")
     of yamlStartStream, yamlEndStream: discard
     else: doc.put(e)
 
-proc write(output: File, events: BufferYamlStream, format: DataFormat,
-    yamlStyle: FormatConfig) =
-  ## Writes the stream ``events``, which has no end event yet. JSON gets one
-  ## value per document, like JSON Lines but not limited to one line each.
+proc render(events: BufferYamlStream, format: DataFormat,
+    yamlStyle: FormatConfig): string =
+  ## Renders the stream ``events``, which has no end event yet. JSON gets
+  ## one value per document, like JSON Lines but not limited to one line
+  ## each.
   events.put(endStreamEvent())
   events.normalize(resolveTags = format in {dfJson, dfJsonc, dfJsonLines})
   case format
-  of dfYaml: output.write(present(events, yamlStyle.dumper.presentation))
-  of dfJson, dfJsonc: output.writeEach(events, jsonDumper().presentation)
-  of dfCbor: output.write(presentCbor(events))
+  of dfYaml: result = present(events, yamlStyle.dumper.presentation)
+  of dfJson, dfJsonc: result.renderEach(events, jsonDumper().presentation)
+  of dfCbor: result = presentCbor(events)
   of dfJsonLines:
     var options = jsonLinesDumper().presentation
     options.newlines = nlNone
     options.maxLineLength = none(int)
-    output.writeEach(events, options)
+    result.renderEach(events, options)
+
+proc write(output: File, events: BufferYamlStream, format: DataFormat,
+    yamlStyle: FormatConfig) =
+  ## Writes the stream ``events``, which has no end event yet; see `render`.
+  output.write(render(events, format, yamlStyle))
 
 # commands
 
@@ -340,7 +354,7 @@ proc formatCommand(args: seq[string]): int =
     of cmdArgument: files.add(key)
     of cmdLongOption, cmdShortOption:
       case key
-      of "write", "w": write = true
+      of "write", "w", "in-place", "i": write = true
       of "check": checkOnly = true
       of "drop-comments": dropComments = true
       of "comment-indentation":
@@ -444,12 +458,38 @@ proc convertCommand(command: string, args: seq[string]): int =
     stderr.writeLine(describe("<output>", getCurrentException()))
     return 1
 
+proc splitAssignment(expr: string):
+    tuple[path, value: string, assigns: bool] =
+  ## Splits ``PATH = VALUE`` at its first ``=`` outside of brackets,
+  ## parentheses and string literals; comparisons are in filters, so in
+  ## brackets.
+  var
+    depth = 0
+    quote = '\0'
+    i = 0
+  while i < expr.len:
+    let c = expr[i]
+    if quote != '\0':
+      if c == '\\': inc i
+      elif c == quote: quote = '\0'
+    else:
+      case c
+      of '\'', '"': quote = c
+      of '[', '(': inc depth
+      of ']', ')': dec depth
+      of '=':
+        if depth == 0:
+          return (expr[0 ..< i].strip(), expr[i + 1 .. ^1].strip(), true)
+      else: discard
+    inc i
+  (expr, "", false)
+
 proc queryCommand(args: seq[string]): int =
   var
     positional: seq[string]
     source = none(DataFormat)
     target = dfYaml
-    paths = false
+    paths, inPlace = false
   for kind, key, val in options(args):
     case kind
     of cmdArgument: positional.add(key)
@@ -458,23 +498,38 @@ proc queryCommand(args: seq[string]): int =
       of "from": source = some(parseFormat("query", val))
       of "to": target = parseFormat("query", val)
       of "paths": paths = true
+      of "in-place", "i": inPlace = true
       else: fail("query")
     of cmdEnd: discard
   if positional.len == 0: fail("query")
+  let
+    (pathText, valueText, assigns) = splitAssignment(positional[0])
+    files = positional[1 .. ^1]
+  if (assigns and paths) or (inPlace and (not assigns or files.len == 0)):
+    fail("query")
   var path: JsonPath
   try:
-    path = parseJsonPath(positional[0])
+    path = parseJsonPath(pathText)
   except YamlJsonPathError as e:
     stderr.writeLine("invalid JSONPath: " & e.msg)
     return 2
+  if assigns:
+    try:
+      var value: YamlNode
+      load(valueText, value)
+    except YamlParserError, YamlConstructionError:
+      stderr.writeLine("invalid value: " & getCurrentExceptionMsg())
+      return 2
   let
-    files = positional[1 .. ^1]
     yamlStyle = toolConfigFor(
         if files.len > 0: files[0] else: getCurrentDir() / "-").format
     selected = newStream()
   for input in readInputs(files):
-    let format = source.get(
-        if files.len == 0: dfYaml else: formatOf(input.name))
+    let
+      format = source.get(
+          if files.len == 0: dfYaml else: formatOf(input.name))
+      documents = if inPlace: newStream() else: selected
+    var changed = false
     try:
       var s = events(input, format)
       discard s.next() # yamlStartStream
@@ -483,11 +538,25 @@ proc queryCommand(args: seq[string]): int =
         construct(s, root)
         for found in root.queryLocated(path):
           if paths: stdout.writeLine(found.path)
+          elif assigns:
+            # a value of its own for each node, so that none is an alias
+            var value: YamlNode
+            load(valueText, value)
+            found.node[] = value[]
+            changed = true
           else: selected.collect(represent(found.node))
+        if assigns: documents.collect(represent(root))
     except YamlStreamError, YamlParserError, YamlConstructionError:
       stderr.writeLine(describe(input.name, getCurrentException()))
       return 1
-  if not paths:
+    if inPlace and changed:
+      try:
+        writeFile(input.name,
+            render(documents, format, toolConfigFor(input.name).format))
+      except YamlPresenterJsonError, YamlPresenterCborError, YamlStreamError:
+        stderr.writeLine(describe(input.name, getCurrentException()))
+        return 1
+  if not (paths or inPlace):
     try:
       stdout.write(selected, target, yamlStyle)
     except YamlPresenterJsonError, YamlPresenterCborError, YamlStreamError:

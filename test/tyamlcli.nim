@@ -198,6 +198,48 @@ suite "yaml":
     check readFile(dir / "w.yaml") == "a: 1\n"
     check cli("format", "--check", "w.yaml", "ok.yaml") == ("", 0)
 
+  test "format -i and --in-place":
+    writeFile(dir / "i.yaml", "a:   1\n")
+    check cli("format", "-i", "i.yaml") == ("", 0)
+    check readFile(dir / "i.yaml") == "a: 1\n"
+    writeFile(dir / "i.yaml", "a:   [1,   2]\n")
+    check cli("format", "--in-place", "i.yaml", "ok.yaml") == ("", 0)
+    check readFile(dir / "i.yaml") == "a: [1, 2]\n"
+    check cli("format", "-i").exitCode == 2
+    check cli("format", "-i", "--check", "i.yaml").exitCode == 2
+
+  test "assignment":
+    writeFile(dir / "s.yaml", "a: 1\nb: [x, {c: 2}]\n---\nb: []\n")
+    check cli("$.a = 3", "s.yaml") ==
+        ("a: 3\nb:\n  - x\n  - c: 2\n...\nb: []\n", 0)
+    check cli(@["$.b[1].c={d: [1, 2]}"], input = "b: [x, {c: 2}]\n") ==
+        ("b:\n  - x\n  - c:\n      d: [1, 2]\n", 0)
+    # each selected node gets a value of its own, not an alias of one
+    check cli(@["$..c = [1]"], input = "- c: 1\n- c: 2\n") ==
+        ("- c: [1]\n- c: [1]\n", 0)
+    # = in filters and strings does not assign
+    check cli(@["$[?@.k == 'a=b'].v = 0"],
+        input = "- {k: a=b, v: 1}\n- {k: c, v: 2}\n") ==
+        ("- k: a=b\n  v: 0\n- k: c\n  v: 2\n", 0)
+    check cli(@["query", "--to:json", "$ = {a: 1}"], input = "x\n") ==
+        ("{\n  \"a\": 1\n}\n", 0)
+    check cli("$.a = [", "s.yaml").exitCode == 2
+    check cli("query", "--paths", "$.a = 3", "s.yaml").exitCode == 2
+
+  test "assignment -i and --in-place":
+    writeFile(dir / "t.yaml", "a: 1\nb: 2\n")
+    writeFile(dir / "t.json", "{\"a\": 1}\n")
+    writeFile(dir / "u.yaml", "b:   2\n")
+    check cli("$.a = 5", "-i", "t.yaml", "t.json", "u.yaml") == ("", 0)
+    check readFile(dir / "t.yaml") == "a: 5\nb: 2\n"
+    check readFile(dir / "t.json") == "{\n  \"a\": 5\n}\n"
+    # a file without a selected node is left alone
+    check readFile(dir / "u.yaml") == "b:   2\n"
+    check cli("query", "--in-place", "$.b = x", "t.yaml") == ("", 0)
+    check readFile(dir / "t.yaml") == "a: 5\nb: x\n"
+    check cli(@["$.a = 1", "-i"], input = "a: 2\n").exitCode == 2
+    check cli("$.a", "-i", "t.yaml").exitCode == 2
+
   test "format and lint read the config":
     let project = tmp / "project"
     createDir(project)

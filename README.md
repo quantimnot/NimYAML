@@ -920,10 +920,11 @@ Build it as `yaml` with `nim yaml config.nims` or
 ```bash
 yaml lint [--config:FILE] [--no-schema] [FILE...]      # all lint rules + schemas
 yaml validate [--config:FILE] [--no-schema] [FILE...]  # YAML spec + schemas only
-yaml format [--write | --check] [--drop-comments] [FILE...]
+yaml format [--write | -i | --check] [--drop-comments] [FILE...]
 yaml convert [--from:FORMAT] yaml|json|jsonc|jsonl|cbor [FILE...]  # also: as, to
 yaml query [--to:FORMAT] [--paths] '$.servers[*].port' [FILE...]
 yaml '$.servers[*].port' [FILE...]                     # the same
+yaml '$.servers[*].port = 8080' [-i] [FILE...]         # replace, -i in place
 yaml expand [--modeline] [FILE]                        # portable %GLOBAL
 yaml lsp                                               # language server, stdio
 yaml help [COMMAND]
