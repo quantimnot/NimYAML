@@ -27,11 +27,16 @@ activationEvents:
   - "workspaceContains:**/.nimyaml-lint.yaml"
   - "workspaceContains:**/.yaml"
   - "workspaceContains:**/.yaml.yaml"
-main: ./extension.js
+# bundled from extension.js and its dependencies by `bun run build`
+main: ./dist/extension.js
 scripts:
   test: "bun --test test/*.test.js"
-  # the placeholder grammar; the extension writes the real one on activation
-  "vscode:prepublish": bun embedded/grammar.js
+  build: >-
+    esbuild extension.js --bundle --platform=node --format=cjs --target=node18
+    --external:vscode --minify --outfile=dist/extension.js
+  # the placeholder grammar (the extension writes the real one on activation)
+  # and the bundle
+  "vscode:prepublish": bun embedded/grammar.js && bun run build
 contributes:
   languages:
     - id: yaml
@@ -343,4 +348,5 @@ contributes:
       title: "YAML+: Open Projection of Embedded Language Region"
     - command: yaml+lsp.embedded.cleanProjections
       title: "YAML+: Delete Projections of Embedded Language Regions"
-dependencies: {"vscode-languageclient": 10.1.2}
+# devDependencies only: the bundle carries what the extension needs
+devDependencies: {"vscode-languageclient": 10.1.2, esbuild: 0.28.2}

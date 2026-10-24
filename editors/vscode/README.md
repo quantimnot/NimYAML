@@ -174,4 +174,5 @@ API for other VSCode extensions to attribute schemas to documents.
 ```bash
 bun install     # install deps
 bun test        # unit tests (bun --test)
+bun run build   # bundle dist/extension.js, the `main` VS Code loads
 ```

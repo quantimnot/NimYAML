@@ -2,3 +2,7 @@
 test/
 bun.lock
 package.yaml
+# bundled into dist/extension.js
+node_modules/
+extension.js
+embedded/
