@@ -5,7 +5,7 @@ displayName: yaml+lsp
 description: >-
   Lint diagnostics, JSON Schema validation, %GLOBAL/%SCHEMA directive support and
   embedded languages in block scalars for YAML
-version: 0.6.0
+version: 0.7.0
 publisher: nimyaml
 license: MIT
 private: true
@@ -38,6 +38,8 @@ scripts:
   # the placeholder grammar (the extension writes the real one on activation)
   # and the bundle
   "vscode:prepublish": bun embedded/grammar.js && bun run build
+  vscode:package: vsce package --allow-missing-repository --skip-license --baseContentUrl .
+  vscode:install: code-server --force --install-extension yaml-plus-lsp-*.vsix
 contributes:
   languages:
     - id: yaml
