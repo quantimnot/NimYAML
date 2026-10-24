@@ -1,10 +1,10 @@
-// The `nimyaml.embedded` settings, read on every use so that changes apply
+// The `yaml+lsp.embedded` settings, read on every use so that changes apply
 // without a restart.
 
 const vscode = require("vscode");
 
 function readConfig() {
-  const c = vscode.workspace.getConfiguration("nimyaml.embedded");
+  const c = vscode.workspace.getConfiguration("yaml+lsp.embedded");
   return {
     enabled: c.get("enabled", true),
     diagnosticsEnabled: c.get("diagnostics.enabled", true),

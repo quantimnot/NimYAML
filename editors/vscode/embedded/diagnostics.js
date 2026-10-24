@@ -13,7 +13,7 @@ const { readConfig } = require("./config");
 class DiagnosticBridge {
   constructor(store) {
     this.store = store;
-    this.collection = vscode.languages.createDiagnosticCollection("nimyaml-embedded");
+    this.collection = vscode.languages.createDiagnosticCollection("yaml-embedded");
     this.disposables = [
       this.collection,
       vscode.languages.onDidChangeDiagnostics((e) => {
@@ -44,7 +44,7 @@ class DiagnosticBridge {
             "joins its lines, so its value is not the text shown. Language features are " +
             "only provided in literal block scalars (|).",
           vscode.DiagnosticSeverity.Warning);
-        d.source = "nimyaml-embedded";
+        d.source = "yaml-embedded";
         out.push(d);
       }
     }

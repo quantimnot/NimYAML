@@ -18,7 +18,7 @@ const path = require("path");
 const { resolveRegions, RegionMap } = require("./core");
 const { readConfig } = require("./config");
 
-const tempRoot = path.join(os.tmpdir(), "nimyaml-embedded");
+const tempRoot = path.join(os.tmpdir(), "yaml-embedded");
 
 function sha1(s) {
   return crypto.createHash("sha1").update(s).digest("hex");

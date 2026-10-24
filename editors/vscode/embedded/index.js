@@ -51,7 +51,7 @@ async function activateEmbedded(context, selector, getClient) {
     clearTimeout(timers.get(key));
     timers.set(key, setTimeout(() => {
       timers.delete(key);
-      store.ensure(doc).catch((e) => console.error("nimyaml: projection failed", e));
+      store.ensure(doc).catch((e) => console.error("yaml+lsp: projection failed", e));
     }, delay));
   };
   const scheduleAll = () => {
@@ -76,7 +76,7 @@ async function activateEmbedded(context, selector, getClient) {
       await store.forget(doc.uri);
     }),
     vscode.workspace.onDidChangeConfiguration(async (e) => {
-      if (!e.affectsConfiguration("nimyaml.embedded")) return;
+      if (!e.affectsConfiguration("yaml+lsp.embedded")) return;
       await registry.refresh();
       syncGrammar(registry);
       if (!readConfig().enabled) {
@@ -96,10 +96,10 @@ async function activateEmbedded(context, selector, getClient) {
       store.hosts.clear();
       if (eager()) scheduleAll();
     }),
-    vscode.commands.registerCommand("nimyaml.embedded.formatRegion", () => formatRegion(store)),
-    vscode.commands.registerCommand("nimyaml.embedded.revealProjection", () => revealProjection(store)),
-    vscode.commands.registerCommand("nimyaml.embedded.showRegions", () => showRegions(store)),
-    vscode.commands.registerCommand("nimyaml.embedded.cleanProjections", () => store.cleanAll()),
+    vscode.commands.registerCommand("yaml+lsp.embedded.formatRegion", () => formatRegion(store)),
+    vscode.commands.registerCommand("yaml+lsp.embedded.revealProjection", () => revealProjection(store)),
+    vscode.commands.registerCommand("yaml+lsp.embedded.showRegions", () => showRegions(store)),
+    vscode.commands.registerCommand("yaml+lsp.embedded.cleanProjections", () => store.cleanAll()),
   );
 
   syncGrammar(registry);

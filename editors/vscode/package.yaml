@@ -1,15 +1,16 @@
 #!/usr/bin/env yq -ojson
 #!/usr/bin/env yaml as json
 # https://code.visualstudio.com/api/references/extension-manifest
-name: nimyaml-yamllsp
-displayName: NimYAML yamllsp
+name: yaml-plus-lsp
+displayName: yaml+lsp
 description: >-
   Lint diagnostics, JSON Schema validation, %GLOBAL/%SCHEMA directive support and
-  embedded languages in block scalars for YAML via NimYAML's yamllsp
+  embedded languages in block scalars for YAML
 version: 0.6.0
 publisher: nimyaml
 license: MIT
 private: true
+repository: https://localhost/
 engines: {vscode: ^1.82.0}
 categories: [Programming Languages, Linters, Snippets, Formatters, Visualization]
 keywords:
@@ -28,7 +29,8 @@ activationEvents:
   - "workspaceContains:**/.nimyaml-lint.yaml"
   - "workspaceContains:**/.yaml"
   - "workspaceContains:**/.yaml.yaml"
-main: ./extension.js
+# bundled from extension.js and its dependencies by `bun run build`
+main: dist/extension.js
 scripts:
   test: "bun --test test/*.test.js"
   # the placeholder grammar; the extension writes the real one on activation
@@ -168,45 +170,43 @@ contributes:
   grammars:
     - language: json
       scopeName: source.json
-      path: ./syntaxes/json.tmLanguage.json
+      path: syntaxes/json.tmLanguage.json
     - language: jsonc
       scopeName: source.json.comments
-      path: ./syntaxes/jsonc.tmLanguage.json
+      path: syntaxes/jsonc.tmLanguage.json
     - language: jsonl
       scopeName: source.json.lines
-      path: ./syntaxes/jsonl.tmLanguage.json
+      path: syntaxes/jsonl.tmLanguage.json
     - language: cbor
       scopeName: source.cbor
-      path: ./syntaxes/cbor.tmLanguage.json
-    - scopeName: nimyaml.embedded.injection
-      path: "./syntaxes/yaml-embedded.tmLanguage.json"
+      path: syntaxes/cbor.tmLanguage.json
+    - scopeName: yaml+lsp.embedded.injection
+      path: syntaxes/yaml-embedded.tmLanguage.json
       injectTo: [source.yaml]
       embeddedLanguages:
   configuration:
-    title: NimYAML yamllsp
+    title: yaml+lsp
     properties:
-      nimyaml.yamllsp.path:
+      yaml+lsp.path:
         type: string
         default: yaml
         markdownDescription: >-
           Command that starts the language server: a name looked up on `PATH` or
-          an absolute path. Build the `yaml` tool with `nim c -d:release -o:yaml
-          tools/yamlcli.nim` in the NimYAML repository.
-      nimyaml.yamllsp.args:
+          an absolute path.
+      yaml+lsp.args:
         type: array
         items: {type: string}
         default: [lsp]
         markdownDescription: >-
-          Arguments passed to the command. `yaml` needs `lsp`; set this to `[]`
-          for the standalone `yamllsp`.
-      nimyaml.trace.server:
+          Arguments passed to the command. `yaml` needs `lsp`.
+      yaml+lsp.trace.server:
         type: string
         enum: [off, messages, verbose]
         default: off
         description: >-
-          Traces the communication between VS Code and yamllsp in the "NimYAML
-          yamllsp Trace" output channel.
-      nimyaml.embedded.enabled:
+          Traces the communication between VS Code and yamllsp in the "yaml+lsp
+          Trace" output channel.
+      yaml+lsp.embedded.enabled:
         type: boolean
         default: true
         markdownDescription: >-
@@ -215,7 +215,7 @@ contributes:
           language is known: `query: | # sql`. Each such block is written to a
           file of its language (a *projection*) that the language's own extension
           serves.
-      nimyaml.embedded.diagnostics.enabled:
+      yaml+lsp.embedded.diagnostics.enabled:
         type: boolean
         default: true
         markdownDescription: >-
@@ -223,13 +223,13 @@ contributes:
           are only published for files a server analyzes, so this writes the
           projections of every open YAML document as it changes rather than on
           the first request.
-      nimyaml.embedded.diagnostics.debounceMs:
+      yaml+lsp.embedded.diagnostics.debounceMs:
         type: number
         default: 400
         description: >-
           Delay in milliseconds after an edit before the projections are
           rewritten.
-      nimyaml.embedded.projection.root:
+      yaml+lsp.embedded.projection.root:
         type: string
         enum: [workspace, temp]
         enumDescriptions:
@@ -241,46 +241,46 @@ contributes:
             most cross-file resolution fails.
         default: workspace
         description: Where projections are written.
-      nimyaml.embedded.projection.directory:
+      yaml+lsp.embedded.projection.directory:
         type: string
         default: ".yaml-embedded"
         description: >-
           The directory in the workspace folder that holds the projections when
           they are written to the workspace.
-      nimyaml.embedded.projection.manageExcludes:
+      yaml+lsp.embedded.projection.manageExcludes:
         type: boolean
         default: true
         markdownDescription: >-
           Add the projection directory to `files.exclude` and `search.exclude` in
           the workspace settings.
-      nimyaml.embedded.semanticTokens.enabled:
+      yaml+lsp.embedded.semanticTokens.enabled:
         type: boolean
         default: true
         markdownDescription: >-
           Show the semantic highlighting of embedded languages that provide it.
           Only token types yamllsp's legend has are kept; the others keep the
           colours of the grammar.
-      nimyaml.embedded.warnOnFoldedScalars:
+      yaml+lsp.embedded.warnOnFoldedScalars:
         type: boolean
         default: true
         markdownDescription: >-
           Warn when a folded block scalar (`>`) names a language: folding joins
           lines, so its value is not the code shown, and it gets no language
           features.
-      nimyaml.embedded.stickyDirective:
+      yaml+lsp.embedded.stickyDirective:
         type: string
         default: "yaml-lsp"
         markdownDescription: >-
           Comment that sets the language of all block scalars below it: `#
           yaml-lsp: python`. A bare `# yaml-lsp` clears it. The comment on a
           block's header takes precedence.
-      nimyaml.embedded.compat.yamlEmbeddedLanguagesDirective:
+      yaml+lsp.embedded.compat.yamlEmbeddedLanguagesDirective:
         type: boolean
         default: true
         markdownDescription: >-
           Also accept `# yaml-embedded-languages: <language>` as the sticky
           directive.
-      nimyaml.embedded.aliases:
+      yaml+lsp.embedded.aliases:
         type: object
         additionalProperties: {type: string}
         default: {}
@@ -289,7 +289,7 @@ contributes:
           e.g. `{"tpl": "handlebars"}`. Without it a language is known by its ID
           and by the aliases and file extensions its extension declares
           (`python`, `Python`, `py`). These names take precedence over those.
-      nimyaml.embedded.grammars:
+      yaml+lsp.embedded.grammars:
         type: object
         default: {}
         additionalProperties:
@@ -313,7 +313,7 @@ contributes:
           with another grammar. Installed languages need no entry: each is
           coloured by the grammar its extension contributes. Changes take effect
           after reloading the window.
-      nimyaml.embedded.keyRules:
+      yaml+lsp.embedded.keyRules:
         type: array
         default: []
         items:
@@ -336,14 +336,14 @@ contributes:
           "^run$", "language": "shellscript", "filePattern":
           "**/.github/workflows/*.yml"}`. Comments take precedence.
   commands:
-    - command: nimyaml.yamllsp.restart
-      title: "NimYAML: Restart yamllsp"
-    - command: nimyaml.embedded.showRegions
-      title: "NimYAML: Show Embedded Language Regions"
-    - command: nimyaml.embedded.formatRegion
-      title: "NimYAML: Format Embedded Language Region"
-    - command: nimyaml.embedded.revealProjection
-      title: "NimYAML: Open Projection of Embedded Language Region"
-    - command: nimyaml.embedded.cleanProjections
-      title: "NimYAML: Delete Projections of Embedded Language Regions"
+    - command: yaml+lsp.restart
+      title: "YAML+: Restart yamllsp"
+    - command: yaml+lsp.embedded.showRegions
+      title: "YAML+: Show Embedded Language Regions"
+    - command: yaml+lsp.embedded.formatRegion
+      title: "YAML+: Format Embedded Language Region"
+    - command: yaml+lsp.embedded.revealProjection
+      title: "YAML+: Open Projection of Embedded Language Region"
+    - command: yaml+lsp.embedded.cleanProjections
+      title: "YAML+: Delete Projections of Embedded Language Regions"
 dependencies: {"vscode-languageclient": 10.1.2}

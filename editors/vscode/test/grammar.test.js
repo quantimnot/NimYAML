@@ -97,7 +97,7 @@ test("headers may name the language after a directive", () => {
 
 test("the grammar is written where the manifest declares it", () => {
   const manifest = fs.readFileSync(path.join(__dirname, "..", "package.yaml"), "utf8");
-  const declared = /scopeName: nimyaml\.embedded\.injection\s*\n\s*path: (\S+)/.exec(manifest);
+  const declared = /scopeName: yaml\+lsp\.embedded\.injection\s*\n\s*path: (\S+)/.exec(manifest);
   assert.ok(declared, "the grammar contribution in package.yaml");
   assert.equal(GRAMMAR_PATH, path.join(__dirname, "..", declared[1]));
 });

@@ -8,7 +8,7 @@
 //
 // The server is not bundled. It is a native binary built from this
 // repository, and where it lives depends on the machine, so the command
-// comes from the `nimyaml.yamllsp.path` and `nimyaml.yamllsp.args` settings
+// comes from the `yaml+lsp.path` and `yaml+lsp.args` settings
 // and defaults to `yaml lsp`, with `yaml` looked up on PATH.
 //
 // yamllsp coexists with other YAML extensions (e.g. Red Hat's
@@ -36,7 +36,7 @@ const documentSelector = [
 ];
 
 function serverOptions() {
-  const config = vscode.workspace.getConfiguration("nimyaml.yamllsp");
+  const config = vscode.workspace.getConfiguration("yaml+lsp");
   return {
     command: config.get("path", "yaml"),
     args: config.get("args", ["lsp"]),
@@ -45,20 +45,20 @@ function serverOptions() {
 }
 
 // vscode-languageclient traces only while its channel's log level is Trace,
-// a per-channel choice in the Output view; `nimyaml.trace.server` is read
+// a per-channel choice in the Output view; `yaml+lsp.trace.server` is read
 // only then, and "off" is read as "messages". This channel reports Trace
 // exactly when the setting is not "off", so the setting decides alone, and
 // writes the messages at the info level a channel shows by default.
 function createTraceChannel() {
-  const channel = vscode.window.createOutputChannel("NimYAML yamllsp Trace", { log: true });
+  const channel = vscode.window.createOutputChannel("yaml+lsp Trace", { log: true });
   const changed = new vscode.EventEmitter();
   const level = () =>
-    vscode.workspace.getConfiguration("nimyaml").get("trace.server", "off") === "off"
+    vscode.workspace.getConfiguration("yaml+lsp").get("trace.server", "off") === "off"
       ? vscode.LogLevel.Off
       : vscode.LogLevel.Trace;
   let current = level();
   const listener = vscode.workspace.onDidChangeConfiguration((event) => {
-    if (!event.affectsConfiguration("nimyaml.trace.server")) return;
+    if (!event.affectsConfiguration("yaml+lsp.trace.server")) return;
     current = level();
     changed.fire(current);
   });
@@ -87,8 +87,8 @@ function createTraceChannel() {
 
 async function start() {
   client = new LanguageClient(
-    "nimyaml",
-    "NimYAML yamllsp",
+    "yaml+lsp",
+    "yaml+lsp",
     serverOptions(),
     { documentSelector, traceOutputChannel, middleware: embedded.middleware },
   );
@@ -99,7 +99,7 @@ async function start() {
     vscode.window.showErrorMessage(
       `Could not start yamllsp (${e.message}). Build it with ` +
         "`nim yamllsp config.nims` and put it on PATH, or set " +
-        "`nimyaml.yamllsp.path`.",
+        "`yaml+lsp.path`.",
     );
   }
 }
@@ -123,10 +123,10 @@ async function activate(context) {
   traceOutputChannel = createTraceChannel();
   context.subscriptions.push(
     traceOutputChannel,
-    vscode.commands.registerCommand("nimyaml.yamllsp.restart", restart),
+    vscode.commands.registerCommand("yaml+lsp.restart", restart),
     // A different server command only takes effect in a new process.
     vscode.workspace.onDidChangeConfiguration((event) => {
-      if (event.affectsConfiguration("nimyaml.yamllsp")) restart();
+      if (event.affectsConfiguration("yaml+lsp")) restart();
     }),
   );
   embedded = await activateEmbedded(context, documentSelector, () => client);

@@ -20,17 +20,17 @@ The language of a block is, in this order:
 1. the comment on its header, `| # sql`, which may also be written like
    the directive, `| # yaml-lsp: sql`, and then applies to that block only;
 2. the last `# yaml-lsp: <language>` comment above it, until a bare
-   `# yaml-lsp` (`nimyaml.embedded.stickyDirective`;
+   `# yaml-lsp` (`yaml+lsp.embedded.stickyDirective`;
    `# yaml-embedded-languages: <language>` is accepted too);
 3. a key rule, which picks the language by key and, optionally, file:
 
    ```jsonc
-   "nimyaml.embedded.keyRules": [
+   "yaml+lsp.embedded.keyRules": [
      { "keyPattern": "^run$", "language": "shellscript", "filePattern": "**/.github/workflows/*.yml" }
    ]
    ```
 
-Names are VS Code language IDs or `nimyaml.embedded.aliases` (`py`, `sh`,
+Names are VS Code language IDs or `yaml+lsp.embedded.aliases` (`py`, `sh`,
 `js`, …). *NimYAML: Show Embedded Language Regions* lists the blocks found,
 their language and where it came from.
 
@@ -44,10 +44,10 @@ add to that:
 
 ```jsonc
 // more names for languages; these win over the declared ones
-"nimyaml.embedded.aliases": { "tpl": "handlebars", "h": "c" },
+"yaml+lsp.embedded.aliases": { "tpl": "handlebars", "h": "c" },
 // grammars by TextMate scope: one that is no VS Code language, or another
 // grammar for a language
-"nimyaml.embedded.grammars": {
+"yaml+lsp.embedded.grammars": {
   "regex": "source.regexp.python",
   "nimble": { "scopeName": "source.nim", "language": "nim" }
 }
@@ -94,10 +94,10 @@ How much works depends on the language's extension:
 - A language without a file extension cannot be projected.
 - Folded block scalars (`>`) are not served: folding joins lines, so the
   value is not the text shown. One that names a language gets a warning
-  (`nimyaml.embedded.warnOnFoldedScalars`).
+  (`yaml+lsp.embedded.warnOnFoldedScalars`).
 - Projections are files in the workspace, so servers that analyze the whole
   project may report on them, and a rename can edit project files outside
-  the YAML document, as it should. `nimyaml.embedded.projection.root: temp`
+  the YAML document, as it should. `yaml+lsp.embedded.projection.root: temp`
   keeps them out of the workspace, at the cost of imports and project
   configuration.
 - Projections are numbered in document order, so adding a block renames the
@@ -105,5 +105,5 @@ How much works depends on the language's extension:
 - Completion items' follow-up commands (auto-imports, say) and code actions
   that are only commands are dropped: they would run on the projection.
 
-`nimyaml.embedded.enabled: false` turns all of this off and deletes the
+`yaml+lsp.embedded.enabled: false` turns all of this off and deletes the
 projections.

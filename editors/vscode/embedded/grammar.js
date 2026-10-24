@@ -24,7 +24,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const SCOPE_NAME = "nimyaml.embedded.injection";
+const SCOPE_NAME = "yaml+lsp.embedded.injection";
 // the `path` of the grammar's contribution in package.yaml
 const GRAMMAR_PATH = path.join(__dirname, "..", "syntaxes", "yaml-embedded.tmLanguage.json");
 
