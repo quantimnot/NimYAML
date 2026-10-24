@@ -119,6 +119,20 @@ Features:
    `grammars` settings; the injection grammar is generated from them.
    `yamllsp` reports the block scalars with the custom request
    `nimyaml/blockScalars`
+ * a grid view in the VS Code extension, ported from
+   greenflute/yaml-grid-viewer in plain TypeScript and CSS: *Open With… ›
+   YAML+ Grid* (or *YAML+: Open in Grid*) shows the documents of a YAML,
+   JSON or JSONC file as nested tables with resizable columns, arrays of
+   objects as tables of records, and edits values and keys in place.
+   `yamllsp` reads the documents for it (`nimyaml/grid`) and edits them
+   with `yaml/edit` (`nimyaml/gridEdit`), so comments and layout stay
+ * `yaml/edit`: `rename` renames the members a JSONPath selects by
+   rewriting only their keys; `assign` and `rename` take a `document` index
+   to edit one document of a stream; a block scalar replaced by a
+   multi-line string stays a literal block scalar
+ * `yaml/edit`: a quoted string that would read as another type when plain
+   (`"1"`, `'true'`, `"~"`) is assigned quoted instead of failing the check
+   of the edited text
  * added JSONC loading: `loadJsonc` and `loadAsJsonc` load JSON with `//`
    and `/* */` comments and trailing commas; `stripJsonComments` blanks the
    comments out in place, so error positions refer to the input

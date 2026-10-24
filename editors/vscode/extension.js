@@ -18,13 +18,19 @@
 // The one part that is more than a shim is embedded languages (embedded/):
 // code in block scalars is served by the extensions of its language, which
 // only VS Code can reach. yamllsp still reports where the blocks are.
+//
+// The other is the grid (grid/), a custom editor that shows a file as
+// nested tables; yamllsp reads and edits the documents for it, and its
+// webview is the one piece of TypeScript, since it is all DOM code.
 
 const vscode = require("vscode");
 const { LanguageClient, TransportKind } = require("vscode-languageclient/node");
 const { activateEmbedded } = require("./embedded");
+const { registerGrid } = require("./grid");
 
 let client;
 let embedded;
+let grid;
 let traceOutputChannel;
 
 // Documents yamllsp is told about. `file` documents get their
@@ -95,6 +101,7 @@ async function start() {
   try {
     await client.start();
     embedded.restarted();
+    grid.restarted();
   } catch (e) {
     vscode.window.showErrorMessage(
       `Could not start yamllsp (${e.message}). Build it with ` +
@@ -130,6 +137,8 @@ async function activate(context) {
     }),
   );
   embedded = await activateEmbedded(context, documentSelector, () => client);
+  grid = registerGrid(context, () => client);
+  context.subscriptions.push(grid.disposable);
   await start();
 }
 

@@ -25,6 +25,12 @@ suite "edit":
     check assigned("a: [{k: a=b, v: 1}, {k: c, v: 2}]\n",
         "$.a[?@.k == 'a=b'].v", "0") == "a: [{k: a=b, v: 0}, {k: c, v: 2}]\n"
 
+  test "quoted strings that would read as other types stay quoted":
+    check assigned("a: x\n", "$.a", "\"1\"") == "a: \"1\"\n"
+    check assigned("a: x\n", "$.a", "'true'") == "a: \"true\"\n"
+    check assigned("a: [x]\n", "$.a[0]", "\"~\"") == "a: [\"~\"]\n"
+    check assigned("a: x\n", "$.a", "\"2001-01-01\"") == "a: \"2001-01-01\"\n"
+
   test "values in flow context are flow-safe":
     check assigned("a: [x]\n", "$.a[0]", "'p, q'") == "a: [\"p, q\"]\n"
     check assigned("a: [x]\n", "$.a[0]", "|\n  l1\n  l2\n") ==
@@ -49,6 +55,22 @@ suite "edit":
   test "the README example":
     check assign("a: 1  # why\nb:\n  - x\n", parseJsonPath("$.b"),
         "[p, {q: 1}]") == ("a: 1  # why\nb:\n  - p\n  - q: 1\n", 1)
+
+  test "multi-line strings in block scalars stay blocks":
+    let source = "a: |  # c\n    x\n\n    y\nb: 1\n"
+    check assigned(source, "$.a", "\"p\\nq\\n\"") ==
+        "a: |  # c\n    p\n    q\nb: 1\n"
+    check assigned(source, "$.a", "\"p\\n\\n  q\"") ==
+        "a: |-  # c\n    p\n\n      q\nb: 1\n"
+    check assigned("- >-\n  x\n- 1\n", "$[0]", "\"p\\nq\\n\"") ==
+        "- |\n  p\n  q\n- 1\n"
+    # one line, kept line breaks and leading spaces are written in a line
+    check assigned(source, "$.a", "\"p\"") == "a: p\nb: 1\n"
+    check assigned("a: |+\n  x\n\nb: 1\n", "$.a", "\"p\\nq\\n\"") ==
+        "a: \"p\\nq\\n\"\n\nb: 1\n"
+    check assigned(source, "$.a", "\"p\\nq\\n\\n\"") ==
+        "a: \"p\\nq\\n\\n\"\nb: 1\n"
+    check assigned(source, "$.a", "\" p\\nq\"") == "a: \" p\\nq\"\nb: 1\n"
 
   test "block scalars":
     check assigned("a: |\n  x\n\nb: 2\n", "$.a", "y") == "a: y\n\nb: 2\n"
@@ -94,3 +116,54 @@ suite "edit":
     # the anchor of a replaced node is gone, but an alias needs it
     expect YamlEditError:
       discard assigned("a: {k: &x 1}\nb: *x\n", "$.a", "2")
+
+  test "one document":
+    let source = "a: 1\n---\na: 2\n"
+    check assign(source, parseJsonPath("$.a"), "3", document = 1) ==
+        ("a: 1\n---\na: 3\n", 1)
+    check assign(source, parseJsonPath("$.a"), "3", document = 2) ==
+        (source, 0)
+
+proc renamed(source, path, name: string, json = false): string =
+  rename(source, parseJsonPath(path), name, json = json).text
+
+suite "rename":
+  test "only the key changes":
+    let source = "# head\na:   1  # why\nb:\n  c: [x]\n"
+    check renamed(source, "$.a", "z") == "# head\nz:   1  # why\nb:\n  c: [x]\n"
+    check renamed(source, "$.b.c", "d e") ==
+        "# head\na:   1  # why\nb:\n  d e: [x]\n"
+    # the presenter chooses the style of the new name
+    check renamed("{a: 1, 'b': 2}\n", "$.b", "c") == "{a: 1, c: 2}\n"
+    check rename(source, parseJsonPath("$.z"), "y") == (source, 0)
+    check renamed(source, "$.a", "a") == source
+
+  test "names that would not read as strings are quoted":
+    check renamed("a: 1\n", "$.a", "1") == "\"1\": 1\n"
+    check renamed("a: 1\n", "$.a", "x: y") == "\"x: y\": 1\n"
+    check renamed("a: 1\n", "$.a", "true") == "\"true\": 1\n"
+    check renamed("a: 1\n", "$.a", "") == "\"\": 1\n"
+
+  test "properties of the key stay":
+    check renamed("!!str a: 1\n", "$.a", "b") == "!!str b: 1\n"
+
+  test "through an alias, the anchored mapping is edited":
+    check renamed("a: &x {k: 1}\nb: *x\n", "$.b.k", "j") ==
+        "a: &x {j: 1}\nb: *x\n"
+
+  test "documents":
+    let source = "a: 1\n---\na: 2\n"
+    check renamed(source, "$.a", "b") == "b: 1\n---\nb: 2\n"
+    check rename(source, parseJsonPath("$.a"), "b", document = 0) ==
+        ("b: 1\n---\na: 2\n", 1)
+
+  test "json":
+    check renamed("{\"a\": 1}\n", "$.a", "b\"c", json = true) ==
+        "{\"b\\\"c\": 1}\n"
+
+  test "errors":
+    # not a member
+    expect YamlEditError: discard renamed("[1]\n", "$[0]", "b")
+    expect YamlEditError: discard renamed("a: 1\n", "$", "b")
+    # the mapping has a member of that name
+    expect YamlEditError: discard renamed("a: 1\nb: 2\n", "$.a", "b")

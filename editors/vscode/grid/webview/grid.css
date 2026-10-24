@@ -1,0 +1,366 @@
+/*
+ * The look of the grid, after the upstream viewer's app.css.
+ *
+ * Colours come from the active theme where it has them: the debug view's
+ * expression colours are the theme's own words for strings, numbers,
+ * literals and names, and the symbol icon colours for objects and arrays.
+ * Upstream's fixed light and dark palette (VS Code's default themes) is the
+ * fallback for themes that do not set them.
+ */
+
+.vscode-light {
+  --fallback-object: #267F99;
+  --fallback-array: #795E26;
+  --fallback-string: #A31515;
+  --fallback-number: #098658;
+  --fallback-literal: #0000FF;
+  --fallback-identifier: #001080;
+}
+
+.vscode-dark, .vscode-high-contrast {
+  --fallback-object: #4EC9B0;
+  --fallback-array: #DCDCAA;
+  --fallback-string: #CE9178;
+  --fallback-number: #B5CEA8;
+  --fallback-literal: #569CD6;
+  --fallback-identifier: #9CDCFE;
+}
+
+body {
+  --object-color: var(--vscode-symbolIcon-classForeground, var(--fallback-object));
+  --array-color: var(--vscode-symbolIcon-arrayForeground, var(--fallback-array));
+  --string-color: var(--vscode-debugTokenExpression-string, var(--fallback-string));
+  --number-color: var(--vscode-debugTokenExpression-number, var(--fallback-number));
+  --literal-color: var(--vscode-debugTokenExpression-boolean, var(--fallback-literal));
+  --identifier-color: var(--vscode-debugTokenExpression-name, var(--fallback-identifier));
+  --grid-line: var(--vscode-editor-foreground);
+
+  font-family: var(--vscode-editor-font-family);
+  font-weight: var(--vscode-editor-font-weight);
+  font-size: var(--vscode-editor-font-size);
+  color: var(--vscode-editor-foreground);
+}
+
+/* banners and documents */
+
+.error-banner {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  margin: 0 0 6px;
+  padding: 4px 8px;
+  color: var(--vscode-inputValidation-errorForeground, inherit);
+  background: var(--vscode-inputValidation-errorBackground, rgba(255, 0, 0, 0.1));
+  border: 1px solid var(--vscode-inputValidation-errorBorder, red);
+}
+.empty {
+  color: var(--vscode-descriptionForeground);
+}
+.document + .document {
+  margin-top: 1.5em;
+}
+.document-header {
+  margin: 0 0 4px;
+  font-size: 1em;
+  font-weight: normal;
+  color: var(--vscode-descriptionForeground);
+  border-bottom: 1px solid var(--vscode-panel-border, var(--grid-line));
+}
+
+/* tables */
+
+table {
+  margin: 2px 0;
+  border-collapse: collapse;
+  table-layout: fixed;
+  max-width: 100%;
+}
+td, th {
+  padding: 2px 4px;
+  vertical-align: baseline;
+}
+th {
+  position: relative;
+}
+td.member, th.key, td.element, td.value {
+  border: 1px solid var(--grid-line);
+  overflow-wrap: anywhere;
+}
+th.member {
+  border: 1px solid var(--grid-line);
+  border-top: 2px solid var(--grid-line);
+  border-bottom: 2px solid var(--grid-line);
+}
+th.key, th.member {
+  color: var(--identifier-color);
+  text-align: left;
+}
+table.object {
+  border: 2px solid;
+}
+th.index:first-child, th:last-child, td.index, td.member:last-child, td.value:last-child {
+  border-right: 2px solid var(--grid-line);
+}
+tr.array-el:last-child td.member, tr.array-el:last-child td.value {
+  border-bottom: 2px solid var(--grid-line);
+}
+th.object.key, td.object.element {
+  border-top: 0;
+}
+/* an object's header row only carries the column widths */
+tr.object-hdr th {
+  padding: 0;
+  border: 0;
+}
+.array-el:not(.object) .value {
+  width: 100%;
+}
+.list-mode td.value {
+  width: auto;
+}
+
+/* column resizing (resize.ts) */
+
+table.resize-hover, body.resizing, body.resizing * {
+  cursor: col-resize !important;
+}
+body.resizing {
+  user-select: none;
+}
+
+/* badges */
+
+.index, .collapsed {
+  white-space: nowrap;
+}
+.collapsed {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  vertical-align: middle;
+}
+.index::after {
+  margin-left: .2em;
+}
+td.index::after, .badge {
+  padding: 1px 3px;
+  display: inline-block;
+  border-radius: 0.5em;
+  color: var(--vscode-editor-background);
+  line-height: 1.2;
+  vertical-align: middle;
+}
+td.index.object::after { content: 'Obj'; }
+td.index.object::after, .object.badge { background-color: var(--object-color); }
+td.index.array::after { content: 'Arr'; }
+td.index.array::after, .array.badge { background-color: var(--array-color); }
+td.index.string::after { content: 'Str'; background-color: var(--string-color); }
+td.index.number::after { content: 'Num'; background-color: var(--number-color); }
+td.index.boolean::after { content: 'Bool'; background-color: var(--literal-color); }
+td.index.null::after { content: 'Null'; background-color: var(--literal-color); }
+td.index.cycle::after { content: 'Ref'; background-color: var(--vscode-descriptionForeground); }
+
+/* values */
+
+/* a multi-line string shows its lines, which upstream ran together */
+.value.string { color: var(--string-color); white-space: pre-wrap; }
+.value.number { color: var(--number-color); }
+.value.boolean, .value.null { color: var(--literal-color); }
+.value.cycle {
+  color: var(--vscode-descriptionForeground);
+  font-style: italic;
+}
+
+/* buttons */
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.2rem;
+  height: 1.2rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  vertical-align: middle;
+  flex: 0 0 auto;
+}
+.toggle-button {
+  border-radius: 50%;
+}
+.toggle-button:hover, .hover-edit-button:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(127, 127, 127, 0.15));
+}
+.icon-button:focus-visible, .cell-action:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+}
+.icon {
+  width: 0.95rem;
+  height: 0.95rem;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.cell-action {
+  margin-left: 4px;
+  border: 1px solid var(--vscode-editorWidget-border, var(--grid-line));
+  background: var(--vscode-button-secondaryBackground, transparent);
+  color: var(--vscode-button-secondaryForeground, var(--vscode-editor-foreground));
+  border-radius: 3px;
+  cursor: pointer;
+  font: inherit;
+}
+.cell-action:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.subtle-action {
+  opacity: 0.8;
+}
+
+/* the pencil shows on hover and focus only */
+
+.value-inline, .hover-edit-anchor, .key-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+.value-inline {
+  flex-wrap: wrap;
+}
+.hover-edit-anchor {
+  min-height: 1.2rem;
+}
+.key-inline {
+  min-height: 1.5rem;
+}
+.hover-edit-button {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  width: 0;
+  overflow: hidden;
+  transition: opacity 120ms ease, width 120ms ease;
+}
+.hover-edit-anchor:hover .hover-edit-button,
+.hover-edit-anchor:focus-within .hover-edit-button {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  width: 1.2rem;
+}
+
+/* editors */
+
+.inline-editor {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  width: 100%;
+}
+.inline-editor.multiline {
+  align-items: flex-start;
+  display: flex;
+  flex-direction: column;
+  width: min(42rem, calc(100vw - 3rem));
+  max-width: 100%;
+}
+.editor-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.editor-actions.multiline {
+  width: 100%;
+}
+.editor-hint {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+}
+.edit-error {
+  color: var(--vscode-errorForeground, red);
+}
+.yaml-input {
+  font: inherit;
+  color: inherit;
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, var(--grid-line));
+  min-width: 0;
+  width: min(20rem, 100%);
+}
+.key-input {
+  width: min(14rem, 100%);
+}
+.yaml-input:focus {
+  outline: 1px solid var(--vscode-focusBorder);
+}
+/*
+ * A multi-line string is edited in a transparent text area laid exactly
+ * over a copy of its text (the preview), which marks the line breaks; the
+ * preview sets the height, so both wrap alike and neither scrolls.
+ */
+.textarea-overlay {
+  position: relative;
+  display: block;
+  width: 100%;
+  min-width: 0;
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border, var(--grid-line)));
+  border-radius: 4px;
+}
+.textarea-overlay:focus-within {
+  border-color: var(--vscode-focusBorder, var(--vscode-input-border));
+  box-shadow: inset 0 0 0 1px var(--vscode-focusBorder, transparent);
+}
+.yaml-textarea-preview, .yaml-textarea-overlay {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 7px 1.5em 7px 9px;
+  font: inherit;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: hidden;
+  min-height: 5.5rem;
+  width: 100%;
+}
+.yaml-textarea-preview {
+  color: inherit;
+  pointer-events: none;
+}
+.preview-line {
+  display: block;
+  position: relative;
+  min-height: 1.5em;
+}
+.yaml-textarea-overlay {
+  position: absolute;
+  inset: 0;
+  height: 100%;
+  color: transparent;
+  caret-color: var(--vscode-editor-foreground);
+  background: transparent;
+  border: 0;
+  resize: none;
+  outline: 0;
+}
+.yaml-textarea-overlay::selection {
+  background: var(--vscode-editor-selectionBackground);
+}
+.hard-break-marker {
+  position: absolute;
+  right: -1.2em;
+  top: 0;
+  color: var(--vscode-descriptionForeground, var(--vscode-editorLineNumber-foreground));
+  font-size: 0.9em;
+  opacity: 0.5;
+  pointer-events: none;
+}

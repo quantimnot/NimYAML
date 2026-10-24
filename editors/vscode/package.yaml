@@ -3,8 +3,8 @@
 name: yaml-plus-lsp
 displayName: yaml+lsp
 description: >-
-  Lint diagnostics, JSON Schema validation, %GLOBAL/%SCHEMA directive support and
-  embedded languages in block scalars for YAML
+  Lint diagnostics, JSON Schema validation, %GLOBAL/%SCHEMA directive support,
+  embedded languages in block scalars and a grid view for YAML
 version: 0.7.0
 publisher: nimyaml
 license: MIT
@@ -28,13 +28,19 @@ activationEvents:
   - "workspaceContains:**/.nimyaml-lint.yaml"
   - "workspaceContains:**/.yaml"
   - "workspaceContains:**/.yaml.yaml"
+  - "onCustomEditor:yaml+lsp.grid"
 # bundled from extension.js and its dependencies by `bun run build`
 main: dist/extension.js
 scripts:
   test: "bun --test test/*.test.js"
+  # the extension, and the grid's webview script and stylesheet (dist/grid)
   build: >-
     esbuild extension.js --bundle --platform=node --format=cjs --target=node18
-    --external:vscode --minify --outfile=dist/extension.js
+    --external:vscode --minify --outfile=dist/extension.js &&
+    esbuild grid/webview/main.ts grid/webview/grid.css --bundle --format=iife
+    --target=es2022 --minify --outdir=dist/grid
+  # esbuild strips the webview's types without checking them
+  typecheck: tsc -p grid/webview
   # the placeholder grammar (the extension writes the real one on activation)
   # and the bundle
   "vscode:prepublish": bun embedded/grammar.js && bun run build
@@ -351,5 +357,28 @@ contributes:
       title: "YAML+: Open Projection of Embedded Language Region"
     - command: yaml+lsp.embedded.cleanProjections
       title: "YAML+: Delete Projections of Embedded Language Regions"
+    - command: yaml+lsp.grid.open
+      title: "YAML+: Open in Grid"
+      icon: $(table)
+  # the grid of greenflute/yaml-grid-viewer: offered, never the default
+  customEditors:
+    - viewType: yaml+lsp.grid
+      displayName: YAML+ Grid
+      priority: option
+      selector:
+        - filenamePattern: "*.{yaml,yml}"
+        - filenamePattern: "*.{json,jsonc}"
+  menus:
+    commandPalette:
+      - command: yaml+lsp.grid.open
+        when: editorLangId =~ /^(yaml|json|jsonc)$/
+    editor/title:
+      - command: yaml+lsp.grid.open
+        when: editorLangId =~ /^(yaml|json|jsonc)$/
+        group: navigation
+    explorer/context:
+      - command: yaml+lsp.grid.open
+        when: resourceLangId =~ /^(yaml|json|jsonc)$/
+        group: navigation
 # devDependencies only: the bundle carries what the extension needs
 devDependencies: {"vscode-languageclient": 10.1.2, esbuild: 0.28.2}

@@ -409,3 +409,69 @@ suite "LSP block scalars":
     var s: Server
     check s.handle(request(1, "nimyaml/blockScalars",
         %*{"textDocument": {"uri": "untitled:none"}}))[0]["result"] == %*[]
+
+suite "LSP grid":
+  proc grid(text: string, json = false): JsonNode =
+    var s: Server
+    s.handle(request(1, "nimyaml/grid",
+        %*{"text": text, "json": json}))[0]["result"]
+
+  proc gridEdit(params: JsonNode): JsonNode =
+    var s: Server
+    s.handle(request(1, "nimyaml/gridEdit", params))[0]
+
+  test "documents as typed trees, members in document order":
+    check grid("b: [1, x, true, ~, 1.5]\na: {c: \"2\"}\n---\n- 1e3\n") == %*{
+      "documents": [
+        {"kind": "object", "members": [
+          ["b", {"kind": "array", "items": [
+            {"kind": "number", "text": "1"}, {"kind": "string", "text": "x"},
+            {"kind": "boolean", "text": "true"},
+            {"kind": "null", "text": "~"},
+            {"kind": "number", "text": "1.5"}]}],
+          ["a", {"kind": "object", "members": [
+            ["c", {"kind": "string", "text": "2"}]]}]]},
+        {"kind": "array", "items": [{"kind": "number", "text": "1e3"}]}]}
+
+  test "aliases are followed, cycles are cut":
+    let one = %*{"kind": "array", "items": [{"kind": "number", "text": "1"}]}
+    check grid("a: &x [1]\nb: *x\n") == %*{"documents": [
+      {"kind": "object", "members": [["a", one], ["b", one]]}]}
+    check grid("&x [*x]\n") == %*{"documents": [
+      {"kind": "array", "items": [{"kind": "cycle"}]}]}
+
+  test "json with comments":
+    check grid("// c\n{\"a\": null}\n", json = true) == %*{"documents": [
+      {"kind": "object", "members": [
+        ["a", {"kind": "null", "text": "null"}]]}]}
+
+  test "errors have a position":
+    let r = grid("a: 1\nb: [\n")
+    check r["documents"] == %*[]
+    check r["error"]["line"].getInt() >= 1
+    check r["error"]["message"].getStr().len > 0
+
+  test "assign in one document":
+    check gridEdit(%*{"text": "a: 1  # c\n---\na: 1\n", "document": 1,
+        "path": ["a"], "value": "2"})["result"] ==
+        %*{"text": "a: 1  # c\n---\na: 2\n"}
+    check gridEdit(%*{"text": "- {k: [x]}\n", "document": 0,
+        "path": [0, "k", 0], "value": "\"1\""})["result"] ==
+        %*{"text": "- {k: [\"1\"]}\n"}
+
+  test "rename":
+    check gridEdit(%*{"text": "a: 1\n", "document": 0, "path": ["a"],
+        "name": "it's"})["result"] == %*{"text": "\"it's\": 1\n"}
+
+  test "json":
+    check gridEdit(%*{"text": "{\"a\": 1}", "json": true, "document": 0,
+        "path": ["a"], "value": "\"x\""})["result"] ==
+        %*{"text": "{\"a\": \"x\"}"}
+
+  test "failures are errors":
+    let r = gridEdit(%*{"text": "a: 1\nb: 2\n", "document": 0,
+        "path": ["a"], "name": "b"})
+    check r{"result"}.isNil
+    check "already has a member" in r["error"]["message"].getStr()
+    check gridEdit(%*{"text": "a: 1\n", "document": 0, "path": ["z"],
+        "value": "2"})["error"]["message"].getStr() == "no such node: $['z']"

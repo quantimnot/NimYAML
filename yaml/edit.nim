@@ -22,14 +22,21 @@
 ## value, and loses its tag, which the value brings itself if it has one. A
 ## path that leads through an alias edits the anchored node; a path that
 ## ends at an alias replaces the alias. A block collection replaced by a
-## collection is written in block style where it was; any other value is
-## written in a single line, in flow style.
+## collection is written in block style where it was, and a block scalar
+## replaced by a quoted string of several lines as a literal block scalar,
+## where it can be; any other value is written in a single line, in flow
+## style.
+##
+## `rename` changes the keys of the members that a JSONPath selects in the
+## same way: only the text of each key is rewritten, quoted where the new
+## name would not read as a string otherwise, and its properties stay.
 ##
 ## The edited text is parsed again and must have the documents that
-## assigning to the parsed source has; otherwise `YamlEditError` is raised.
+## assigning to (or renaming in) the parsed source gives; otherwise
+## `YamlEditError` is raised.
 
 import std/[algorithm, strutils, tables, sets, options]
-import data, dom, jsonpath, loading, native, parser, presenter, stream
+import data, dom, hints, jsonpath, loading, native, parser, presenter, stream
 import private/jsonmodel
 
 type
@@ -55,6 +62,7 @@ type
 
   Document = object
     targets: Table[string, Target]
+    keys: Table[string, Target] # path of a member -> its key
     aliases: Table[string, string] # path of an alias -> path of its anchor
     root: YamlNode
 
@@ -75,12 +83,17 @@ type
     edits: seq[Edit]
     first, last: int # the source range of all edits
 
-proc fail(path, reason: string) {.noreturn.} =
-  raise newException(YamlEditError,
-      "cannot assign to " & path & " in place: " & reason)
+  Operation = enum
+    ## What is being done, for messages.
+    opAssign = "assign to", opRename = "rename"
 
-proc fail(reason: string) {.noreturn.} =
-  raise newException(YamlEditError, "cannot assign in place: " & reason)
+proc fail(path, reason: string, op = opAssign) {.noreturn.} =
+  raise newException(YamlEditError,
+      "cannot " & $op & " " & path & " in place: " & reason)
+
+proc fail(reason: string, op = opAssign) {.noreturn.} =
+  let verb = if op == opAssign: "assign" else: $op
+  raise newException(YamlEditError, "cannot " & verb & " in place: " & reason)
 
 proc offset(w: Walker, m: Mark): int =
   if m.line < 1: return 0
@@ -141,6 +154,15 @@ proc anchorOf(e: Event): Anchor =
   of yamlStartSeq: e.seqProperties.anchor
   else: yAnchorNone
 
+proc scalarTarget(w: Walker, e: Event): Target =
+  ## The scalar ``e`` as it is in the source: its properties, then its
+  ## content.
+  result = Target(kind: tkScalar, start: w.offset(e.startPos))
+  let stop = w.offset(e.endPos)
+  result.content = contentAfterProps(w.src, result.start, stop)
+  result.props = tokens(w.src, result.start, result.content)
+  result.stop = trimEnd(w.src, result.content, stop)
+
 proc walk(w: var Walker, path, parentPath: string, index: int, name: string,
     inFlow: bool, parentMapColumn, indicatorEnd: int): int =
   ## Indexes the node at ``w.i`` and its children under ``path`` (empty for
@@ -157,19 +179,20 @@ proc walk(w: var Walker, path, parentPath: string, index: int, name: string,
     w.anchorNames.incl($anchor)
   case e.kind
   of yamlScalar:
-    t.start = w.offset(e.startPos)
-    let stop = w.offset(e.endPos)
-    if stop == t.start and anchor == yAnchorNone and
+    if w.offset(e.endPos) == w.offset(e.startPos) and
+        anchor == yAnchorNone and
         e.scalarProperties.tag in [yTagQuestionMark, yTagExclamationMark]:
       t.kind = tkEmpty
       t.start = indicatorEnd
       t.content = indicatorEnd
       t.stop = indicatorEnd
     else:
+      let s = w.scalarTarget(e)
       t.kind = tkScalar
-      t.content = contentAfterProps(w.src, t.start, stop)
-      t.props = tokens(w.src, t.start, t.content)
-      t.stop = trimEnd(w.src, t.content, stop)
+      t.start = s.start
+      t.content = s.content
+      t.props = s.props
+      t.stop = s.stop
   of yamlAlias:
     t.kind = tkAlias
     t.start = w.offset(e.startPos)
@@ -206,6 +229,7 @@ proc walk(w: var Walker, path, parentPath: string, index: int, name: string,
         if named:
           childPath = path
           childPath.addNameSegment(keyName)
+          w.doc.keys[childPath] = w.scalarTarget(key)
         last = w.walk(childPath, path, -1, keyName, childFlow, mapColumn,
             after(w.src, keyEnd, ':'))
     else:
@@ -258,7 +282,8 @@ proc index(source: string, events: seq[Event]): tuple[docs: seq[Document],
     result.docs.add(w.doc)
   result.anchorNames = w.anchorNames
 
-proc resolve(doc: Document, path: string): tuple[path: string, target: Target] =
+proc resolve(doc: Document, path: string, op = opAssign):
+    tuple[path: string, target: Target] =
   ## The node of the source that ``path`` names; a path through an alias
   ## names the node of its anchor.
   var current = path
@@ -269,12 +294,13 @@ proc resolve(doc: Document, path: string): tuple[path: string, target: Target] =
       if alias.len > prefix.len and current.len > alias.len and
           current.startsWith(alias) and current[alias.len] == '[':
         prefix = alias
-    if prefix.len == 0: fail(path, "it is not in the source")
+    if prefix.len == 0: fail(path, "it is not in the source", op)
     let anchored = doc.aliases[prefix]
     if anchored.len == 0:
-      fail(path, "it leads through an alias of a node that no path names")
+      fail(path, "it leads through an alias of a node that no path names",
+          op)
     current = anchored & current[prefix.len .. ^1]
-  fail(path, "its aliases do not end")
+  fail(path, "its aliases do not end", op)
 
 # rendering values
 
@@ -315,6 +341,12 @@ proc render(value: seq[Event], options: PresentationOptions, json, wrap: bool,
   try:
     for e in value:
       var e = e.normalized(json)
+      # The presenter writes a scalar tagged ``!`` plain wherever it can, but
+      # a quoted ``"1"`` written plain would be an integer
+      if e.kind == yamlScalar and not json and
+          e.scalarProperties.tag == yTagExclamationMark and
+          guessType(e.scalarContent) notin {yTypeUnknown, yTypeTimestamp}:
+        e.scalarStyle = ssDoubleQuoted
       template rename(a: var Anchor) =
         if a != yAnchorNone and $a in taken:
           if not renamed.hasKey($a):
@@ -365,6 +397,51 @@ proc blockLines(value: seq[Event], options: PresentationOptions,
   if text.startsWith("---") or '\l' notin text: return
   text.split('\l')
 
+proc literalBlock(src: string, t: Target, value: YamlNode,
+    newline: string): string =
+  ## The string ``value`` as a literal block scalar in place of the block
+  ## scalar ``t``, with its indentation and header comment, or nothing if
+  ## the value needs what this does not write: an indentation indicator (a
+  ## first line that starts with a space), keeping trailing line breaks, or
+  ## characters a block scalar cannot hold. A multi-line text edited in
+  ## place should not turn into one long quoted line.
+  if value.kind != yScalar or value.tag != yTagExclamationMark or
+      '\l' notin value.content: return
+  var body = value.content
+  var chomping = "-"
+  if body.endsWith('\l'):
+    body.setLen(body.len - 1)
+    chomping = ""
+  if body.len == 0 or body.endsWith('\l') or body[0] in {' ', '\t', '\l'}:
+    return
+  for c in body:
+    if c < ' ' and c notin {'\t', '\l'} or c == '\x7F': return
+  # the header: the indicator, its own indicators, then the rest of the line
+  var i = t.content + 1
+  while i < t.stop and src[i] in {'0'..'9', '+', '-'}:
+    if src[i] == '+': return # the source keeps its trailing line breaks
+    inc(i)
+  var headerEnd = i
+  while headerEnd < src.len and src[headerEnd] notin {'\l', '\c'}:
+    inc(headerEnd)
+  if headerEnd >= t.stop: return
+  # the indentation of the first line of content
+  var lineStart = headerEnd
+  var indentation = -1
+  while lineStart < t.stop:
+    while lineStart < t.stop and src[lineStart] in {'\l', '\c'}: inc(lineStart)
+    var j = lineStart
+    while j < t.stop and src[j] == ' ': inc(j)
+    if j < t.stop and src[j] notin {'\l', '\c'}:
+      indentation = j - lineStart
+      break
+    lineStart = j
+  if indentation <= 0: return
+  result = "|" & chomping & src[i ..< headerEnd]
+  for line in body.split('\l'):
+    result.add(newline)
+    if line.len > 0: result.add(repeat(' ', indentation) & line)
+
 # editing
 
 proc edits(src: string, t: Target, value: YamlNode, valueEvents: seq[Event],
@@ -377,6 +454,12 @@ proc edits(src: string, t: Target, value: YamlNode, valueEvents: seq[Event],
     if last >= src.len or src[last] in {'\l', '\c'}:
       while first > 0 and src[first - 1] in {' ', '\t'}: dec(first)
     result.add((first, last, ""))
+  if t.kind == tkScalar and not json and t.content < t.stop and
+      src[t.content] in {'|', '>'}:
+    let text = literalBlock(src, t, value, newline)
+    if text.len > 0:
+      result.add((t.content, t.stop, text))
+      return
   if t.kind == tkBlock and not json and
       options.quoting != sqJson and options.containers != cFlow and
       value.kind != yScalar:
@@ -448,8 +531,64 @@ proc setSlot(root: YamlNode, c: Chosen, value: YamlNode) =
       return
   fail(c.path, "its key is not in the document")
 
+proc chosen(path: string, target: Target, edits: seq[Edit]): Chosen =
+  result = Chosen(path: path, target: target, edits: edits,
+      first: edits[0].first, last: edits[0].last)
+  for e in edits:
+    result.first = min(result.first, e.first)
+    result.last = max(result.last, e.last)
+
+proc outermost(chosen: seq[tuple[doc: int, c: Chosen]]):
+    seq[tuple[doc: int, c: Chosen]] =
+  ## ``chosen`` without the nodes that are within another one that is
+  ## replaced, which need no edit of their own, and without repetitions, as
+  ## paths through aliases give.
+  for i, a in chosen:
+    var inside = false
+    for j, b in chosen:
+      if i == j: continue
+      let
+        same = a.c.first == b.c.first and a.c.last == b.c.last
+        within = b.c.first <= a.c.first and a.c.last <= b.c.last and
+            b.c.last > b.c.first
+      if (same and j < i) or (within and not same):
+        inside = true
+        break
+    if not inside: result.add(a)
+
+proc applied(source: string, kept: seq[tuple[doc: int, c: Chosen]],
+    op: Operation): string =
+  var all: seq[Edit]
+  for k in kept: all.add(k.c.edits)
+  all.sort(proc(a, b: Edit): int = cmp(b.first, a.first))
+  result = source
+  var bound = source.len + 1
+  for e in all:
+    if e.last > bound:
+      fail("the selected nodes overlap", op)
+    result = result[0 ..< e.first] & e.text & result[e.last .. ^1]
+    bound = e.first
+
+proc verify(text: string, json: bool, docs: seq[Document], op: Operation) =
+  ## Checks that ``text`` has the documents ``docs``, whose roots have been
+  ## edited the way the text is supposed to have been.
+  var edited: seq[YamlNode]
+  try: edited = roots(readEvents(text, json))
+  except YamlParserError, YamlConstructionError:
+    fail("the edited text is invalid: " & getCurrentExceptionMsg(), op)
+  if edited.len != docs.len:
+    fail("the edited text has other documents", op)
+  for i, doc in docs:
+    var visited: HashSet[pointer]
+    if edited[i].hasNil(visited):
+      fail("the edited text has an alias of an anchor it does not define",
+          op)
+    if not jsonEquals(edited[i], doc.root):
+      fail("the edited text does not have the " &
+          (if op == opAssign: "assigned values" else: "renamed keys"), op)
+
 proc doAssign(source: string, path: JsonPath, value: string,
-    options: PresentationOptions, json: bool):
+    options: PresentationOptions, json: bool, document: int):
     tuple[text: string, count: int] =
   let newValue = loadValue(value)
   if newValue.kind == yMapping and json:
@@ -463,44 +602,14 @@ proc doAssign(source: string, path: JsonPath, value: string,
     newline = if "\c\l" in source: "\c\l" else: "\l"
   var chosen: seq[tuple[doc: int, c: Chosen]]
   for d, doc in docs:
+    if document >= 0 and d != document: continue
     for found in doc.root.queryLocated(path):
       let (resolved, target) = doc.resolve(found.path)
-      var c = Chosen(path: resolved, target: target)
-      c.edits = edits(source, target, newValue, valueEvents, options, json,
-          taken, newline)
-      c.first = c.edits[0].first
-      c.last = c.edits[0].last
-      for e in c.edits:
-        c.first = min(c.first, e.first)
-        c.last = max(c.last, e.last)
-      chosen.add((d, c))
-  # a node within another one that is replaced needs no edit of its own
-  var kept: seq[tuple[doc: int, c: Chosen]]
-  for i, a in chosen:
-    var inside = false
-    for j, b in chosen:
-      if i == j: continue
-      let
-        same = a.c.first == b.c.first and a.c.last == b.c.last
-        within = b.c.first <= a.c.first and a.c.last <= b.c.last and
-            b.c.last > b.c.first
-      if (same and j < i) or (within and not same):
-        inside = true
-        break
-    if not inside: kept.add(a)
+      chosen.add((d, chosen(resolved, target, edits(source, target, newValue,
+          valueEvents, options, json, taken, newline))))
+  let kept = outermost(chosen)
   if kept.len == 0: return (source, 0)
-  var all: seq[Edit]
-  for k in kept: all.add(k.c.edits)
-  all.sort(proc(a, b: Edit): int = cmp(b.first, a.first))
-  result.text = source
-  var bound = source.len + 1
-  for e in all:
-    if e.last > bound:
-      fail("the selected nodes overlap")
-    result.text = result.text[0 ..< e.first] & e.text &
-        result.text[e.last .. ^1]
-    bound = e.first
-  result.count = kept.len
+  result = (applied(source, kept, opAssign), kept.len)
   # what the edited text must be: the source with the values assigned
   for k in kept:
     let root = docs[k.doc].root
@@ -508,33 +617,23 @@ proc doAssign(source: string, path: JsonPath, value: string,
     else:
       for found in root.queryLocated(parseJsonPath(k.c.path)):
         found.node[] = loadValue(value)[]
-  var edited: seq[YamlNode]
-  try: edited = roots(readEvents(result.text, json))
-  except YamlParserError, YamlConstructionError:
-    fail("the edited text is invalid: " & getCurrentExceptionMsg())
-  if edited.len != docs.len:
-    fail("the edited text has other documents")
-  for i, doc in docs:
-    var visited: HashSet[pointer]
-    if edited[i].hasNil(visited):
-      fail("the edited text has an alias of an anchor it does not define")
-    if not jsonEquals(edited[i], doc.root):
-      fail("the edited text does not have the assigned values")
+  verify(result.text, json, docs, opAssign)
 
 proc assign*(source: string, path: JsonPath, value: string,
-    options = PresentationOptions(), json = false):
+    options = PresentationOptions(), json = false, document = -1):
     tuple[text: string, count: int] {.raises: [YamlEditError,
     YamlParserError, YamlConstructionError, YamlStreamError].} =
   ## Assigns ``value``, a YAML document, to each node of ``source`` that
   ## ``path`` selects and returns the edited text with the number of nodes
   ## assigned to. A block collection replaced by a collection is written
   ## with ``options``. With ``json``, ``source`` is JSON or JSONC and values
-  ## are written as JSON.
+  ## are written as JSON. With a ``document`` index, only that document of
+  ## ``source`` is edited.
   ##
   ## Raises ``YamlEditError`` for an invalid ``value`` and for assignments
   ## that cannot be written into the text, ``YamlParserError`` for an invalid
   ## ``source``.
-  try: result = doAssign(source, path, value, options, json)
+  try: result = doAssign(source, path, value, options, json, document)
   except YamlEditError as e: raise e
   except YamlParserError as e: raise e
   except YamlConstructionError as e: raise e
@@ -542,5 +641,88 @@ proc assign*(source: string, path: JsonPath, value: string,
   except CatchableError:
     # Normalized Paths are valid queries, and the paths looked up are those
     # the index has
+    raise newException(YamlEditError,
+        "internal error: " & getCurrentExceptionMsg())
+
+# renaming
+#
+# A key is a scalar, so renaming one replaces its content in the source with
+# the new name, written like a value in a flow sequence: it is then valid in
+# flow and block context alike, and quoted wherever a plain scalar would not
+# be a string (``1``, ``true``, ``a: b``). The new name is given the
+# non-specific tag ``!`` of quoted scalars for this; the key keeps its own
+# properties, since a ``!!str`` on it says nothing the new name contradicts.
+
+proc stringKey(parent: YamlNode, name: string): YamlNode =
+  ## The key of ``parent`` that names the member ``name``, or nil.
+  for key in parent.fields.keys:
+    if key.isStringKey and key.content == name: return key
+
+proc doRename(source: string, path: JsonPath, name: string,
+    options: PresentationOptions, json: bool, document: int):
+    tuple[text: string, count: int] =
+  let
+    events = readEvents(source, json)
+    (docs, taken) = index(source, events)
+    nameText = render(@[scalarEvent(name, yTagExclamationMark,
+        style = ssDoubleQuoted)], inlineOptions(options, json), json, true,
+        taken)
+  var chosen: seq[tuple[doc: int, c: Chosen]]
+  for d, doc in docs:
+    if document >= 0 and d != document: continue
+    for found in doc.root.queryLocated(path):
+      let (resolved, target) = doc.resolve(found.path, opRename)
+      if target.index >= 0 or target.parentPath.len == 0:
+        fail(found.path, "it is not a member of a mapping", opRename)
+      if target.name == name: continue
+      if not doc.keys.hasKey(resolved):
+        fail(found.path, "its key is not in the source", opRename)
+      let key = doc.keys[resolved]
+      chosen.add((d, chosen(resolved, target,
+          @[(key.content, key.stop, nameText)])))
+  let kept = outermost(chosen)
+  if kept.len == 0: return (source, 0)
+  result = (applied(source, kept, opRename), kept.len)
+  # what the edited text must be: the source with the keys renamed. The
+  # mappings are looked up before any is changed, since renaming one
+  # changes the paths of the others below it.
+  var renames: seq[tuple[parent, key: YamlNode]]
+  for k in kept:
+    let parents = docs[k.doc].root.queryLocated(
+        parseJsonPath(k.c.target.parentPath))
+    if parents.len != 1: fail(k.c.path, "its mapping is not in the document",
+        opRename)
+    let key = parents[0].node.stringKey(k.c.target.name)
+    if key.isNil: fail(k.c.path, "its key is not in the document", opRename)
+    renames.add((parents[0].node, key))
+  for (parent, key) in renames:
+    if not parent.stringKey(name).isNil:
+      fail("the mapping of " & $path & " already has a member " & name,
+          opRename)
+    let value = parent.fields[key]
+    parent.fields.del(key)
+    parent.fields[YamlNode(kind: yScalar, tag: yTagExclamationMark,
+        content: name)] = value
+  verify(result.text, json, docs, opRename)
+
+proc rename*(source: string, path: JsonPath, name: string,
+    options = PresentationOptions(), json = false, document = -1):
+    tuple[text: string, count: int] {.raises: [YamlEditError,
+    YamlParserError, YamlConstructionError, YamlStreamError].} =
+  ## Renames each member of ``source`` that ``path`` selects to ``name``
+  ## and returns the edited text with the number of keys rewritten; members
+  ## that have that name already are left alone. ``options`` are those of
+  ## the value of `assign`, whose quoting they set; ``json`` and
+  ## ``document`` are as for `assign`.
+  ##
+  ## Raises ``YamlEditError`` if ``path`` selects a node that is not a
+  ## member of a mapping or the mapping has a member ``name`` already, and
+  ## ``YamlParserError`` for an invalid ``source``.
+  try: result = doRename(source, path, name, options, json, document)
+  except YamlEditError as e: raise e
+  except YamlParserError as e: raise e
+  except YamlConstructionError as e: raise e
+  except YamlStreamError as e: raise e
+  except CatchableError:
     raise newException(YamlEditError,
         "internal error: " & getCurrentExceptionMsg())

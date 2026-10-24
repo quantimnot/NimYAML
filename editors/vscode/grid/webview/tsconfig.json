@@ -1,0 +1,16 @@
+{
+  // Type checking only (`bun run typecheck`); esbuild bundles the webview
+  // and strips the types without checking them.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true
+  },
+  "include": ["*.ts"]
+}

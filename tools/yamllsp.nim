@@ -37,19 +37,20 @@
 ##
 ## The custom request ``nimyaml/blockScalars`` reports where the block
 ## scalars of a document are, for clients that provide the languages
-## embedded in them.
+## embedded in them. ``nimyaml/grid`` and ``nimyaml/gridEdit`` read and edit
+## documents for a client's grid view of them.
 ##
 ## The directive features work on what the parser reports per document (the ``directives`` of
 ## each ``yamlStartDoc`` event) rather than on the text, so they agree with
 ## how the document is actually read. Documents with syntax errors are
 ## dropped by error recovery and have no such information.
 
-import std/[json, os, streams, strutils, tables, uri]
+import std/[json, os, sets, streams, strutils, tables, uri]
 when defined(nimPreviewSlimSystem):
   import std/syncio
 import ../yaml/[data, parser, stream, lint, jsonschema, documentschema,
-    schemavalidation, toolconfig]
-import ../yaml/private/lex
+    schemavalidation, toolconfig, dom, edit, jsonpath, loading, native]
+import ../yaml/private/[lex, jsonmodel]
 from ../yaml/hints import guessType, TypeHint
 
 type
@@ -713,6 +714,126 @@ proc blockScalarsOf(s: Server, uri: string): JsonNode =
       if b.key.len > 0: entry["key"] = %b.key
       result.add(entry)
 
+# Grid
+#
+# The grid view of editors/vscode shows the documents of a file as nested
+# tables and edits their values and keys. It asks the server for both, so
+# that the grid reads the text the way NimYAML does and its edits keep
+# comments and layout (`yaml/edit <../yaml/edit.html>`_), rather than
+# bundling a second YAML implementation into the client. The text comes
+# with each request instead of from the open documents: the grid also shows
+# JSON, which this server is not given, and an edit has to apply to exactly
+# the text the client holds.
+#
+# ``nimyaml/grid`` returns each document as a tree in the JSON data model
+# (`yaml/private/jsonmodel`): a mapping keeps only its string keys, as pairs
+# in document order, which a JavaScript object would not keep for a key like
+# ``"1"``. A scalar has its JSON kind and its content as written, so that
+# ``0x1F`` and ``~`` are shown as they are. An alias reads as its anchored
+# node once more, except within that node itself, where the tree is cut
+# (``cycle``). Since aliases can multiply a small text into a huge tree,
+# the number of nodes is limited. A text that does not load gives no
+# documents and an ``error`` with its position; that is the normal state of
+# a document being typed, so it is not a JSON-RPC error.
+#
+# ``nimyaml/gridEdit`` assigns a value, which is YAML, to the node at a path
+# of keys and indices in one document, or renames the member there, and
+# returns the edited text. What cannot be done is a JSON-RPC error whose
+# message the client shows.
+
+const
+  gridNodeLimit = 200_000
+  requestFailed = -32803
+
+type GridTooLarge = object of CatchableError
+
+proc gridTree(node: YamlNode, ancestors: var HashSet[pointer],
+    budget: var int): JsonNode =
+  dec(budget)
+  if budget < 0:
+    raise newException(GridTooLarge, "the documents have more than " &
+        $gridNodeLimit & " nodes, counting each alias as a copy")
+  let id = cast[pointer](node)
+  if id in ancestors: return %*{"kind": "cycle"}
+  case node.kind
+  of yScalar:
+    let kind = case node.jsonKind
+      of jkNull: "null"
+      of jkBool: "boolean"
+      of jkNumber: "number"
+      else: "string"
+    result = %*{"kind": kind, "text": node.content}
+  of ySequence:
+    ancestors.incl(id)
+    var items = newJArray()
+    for item in node.elems: items.add(gridTree(item, ancestors, budget))
+    ancestors.excl(id)
+    result = %*{"kind": "array", "items": items}
+  of yMapping:
+    ancestors.incl(id)
+    var members = newJArray()
+    for (name, value) in node.orderedMembers:
+      members.add(%*[name, gridTree(value, ancestors, budget)])
+    ancestors.excl(id)
+    result = %*{"kind": "object", "members": members}
+
+proc errorPosition(text: string, mark: Mark): JsonNode =
+  ## The LSP position of ``mark`` in ``text``.
+  let line = max(int(mark.line) - 1, 0)
+  var lineText = ""
+  for i, l in text.sourceLines:
+    if i == line:
+      lineText = l
+      break
+  %*{"line": line, "character": utf16Column(lineText, max(int(mark.column), 1))}
+
+proc gridOf(text: string, json: bool): JsonNode =
+  var documents = newJArray()
+  try:
+    var roots: seq[YamlNode]
+    loadMultiDoc(if json: stripJsonComments(text) else: text, roots)
+    var budget = gridNodeLimit
+    for root in roots:
+      var ancestors: HashSet[pointer]
+      documents.add(gridTree(root, ancestors, budget))
+  except YamlLoadingError as e:
+    let error = errorPosition(text, e.mark)
+    error["message"] = %e.msg
+    return %*{"documents": [], "error": error}
+  except GridTooLarge as e:
+    return %*{"documents": [], "error": {"line": 0, "character": 0,
+                                         "message": e.msg}}
+  %*{"documents": documents}
+
+proc gridEdit(params: JsonNode): tuple[text, error: string] =
+  ## The text of ``params`` edited as they say, or why it cannot be.
+  let
+    text = params["text"].getStr()
+    json = params{"json"}.getBool()
+    document = params["document"].getInt()
+  var path = "$"
+  for segment in params["path"]:
+    if segment.kind == JInt: path.add("[" & $segment.getInt() & "]")
+    else: path.addNameSegment(segment.getStr())
+  try:
+    let (edited, count) =
+      if params.hasKey("name"):
+        rename(text, parseJsonPath(path), params["name"].getStr(),
+            json = json, document = document)
+      else:
+        assign(text, parseJsonPath(path), params["value"].getStr(),
+            json = json, document = document)
+    # renaming a member to its own name changes nothing and is fine
+    if count == 0 and edited == text and not (params.hasKey("name") and
+        params["path"].len > 0 and params["path"][^1].kind == JString and
+        params["path"][^1].getStr() == params["name"].getStr()):
+      return ("", "no such node: " & path)
+    result.text = edited
+  except YamlLoadingError as e:
+    result.error = "line " & $e.mark.line & ": " & e.msg
+  except YamlEditError, YamlStreamError, YamlJsonPathError:
+    result.error = getCurrentExceptionMsg()
+
 proc publish(s: var Server, uri: string): JsonNode =
   var diagnostics = newJArray()
   if uri in s.docs:
@@ -802,6 +923,13 @@ proc handle*(s: var Server, msg: JsonNode): seq[JsonNode] =
     result.add(respond(id, s.semanticTokens(params["textDocument"]["uri"].getStr())))
   of "nimyaml/blockScalars":
     result.add(respond(id, s.blockScalarsOf(params["textDocument"]["uri"].getStr())))
+  of "nimyaml/grid":
+    result.add(respond(id, gridOf(params["text"].getStr(),
+        params{"json"}.getBool())))
+  of "nimyaml/gridEdit":
+    let (text, error) = gridEdit(params)
+    result.add(if error.len > 0: respondError(id, requestFailed, error)
+               else: respond(id, %*{"text": text}))
   of "shutdown":
     s.shutdownRequested = true
     result.add(respond(id, newJNull()))
