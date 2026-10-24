@@ -1,0 +1,115 @@
+{
+  "//": "JSON with comments (`//`, `/* */`) and trailing commas.",
+  "name": "JSON with Comments",
+  "scopeName": "source.json.comments",
+  "fileTypes": ["jsonc"],
+  "patterns": [
+    { "include": "#value" }
+  ],
+  "repository": {
+    "value": {
+      "patterns": [
+        { "include": "#comments" },
+        { "include": "#constant" },
+        { "include": "#number" },
+        { "include": "#string" },
+        { "include": "#array" },
+        { "include": "#object" }
+      ]
+    },
+    "constant": {
+      "match": "\\b(?:true|false|null)\\b",
+      "name": "constant.language.json.comments"
+    },
+    "number": {
+      "match": "-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?",
+      "name": "constant.numeric.json.comments"
+    },
+    "string": {
+      "begin": "\"",
+      "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.json.comments" } },
+      "end": "\"|$",
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.json.comments" } },
+      "name": "string.quoted.double.json.comments",
+      "patterns": [{ "include": "#stringcontent" }]
+    },
+    "objectkey": {
+      "begin": "\"",
+      "beginCaptures": { "0": { "name": "punctuation.support.type.property-name.begin.json.comments" } },
+      "end": "\"|$",
+      "endCaptures": { "0": { "name": "punctuation.support.type.property-name.end.json.comments" } },
+      "name": "string.json.comments support.type.property-name.json.comments",
+      "patterns": [{ "include": "#stringcontent" }]
+    },
+    "stringcontent": {
+      "patterns": [
+        {
+          "match": "\\\\(?:[\"\\\\/bfnrt]|u[0-9a-fA-F]{4})",
+          "name": "constant.character.escape.json.comments"
+        },
+        {
+          "match": "\\\\.",
+          "name": "invalid.illegal.unrecognized-string-escape.json.comments"
+        }
+      ]
+    },
+    "array": {
+      "begin": "\\[",
+      "beginCaptures": { "0": { "name": "punctuation.definition.array.begin.json.comments" } },
+      "end": "\\]",
+      "endCaptures": { "0": { "name": "punctuation.definition.array.end.json.comments" } },
+      "name": "meta.structure.array.json.comments",
+      "patterns": [
+        { "include": "#value" },
+        { "match": ",", "name": "punctuation.separator.array.json.comments" },
+        { "match": "[^\\s\\]]", "name": "invalid.illegal.expected-array-separator.json.comments" }
+      ]
+    },
+    "object": {
+      "begin": "\\{",
+      "beginCaptures": { "0": { "name": "punctuation.definition.dictionary.begin.json.comments" } },
+      "end": "\\}",
+      "endCaptures": { "0": { "name": "punctuation.definition.dictionary.end.json.comments" } },
+      "name": "meta.structure.dictionary.json.comments",
+      "patterns": [
+        { "include": "#comments" },
+        { "include": "#objectkey" },
+        {
+          "begin": ":",
+          "beginCaptures": { "0": { "name": "punctuation.separator.dictionary.key-value.json.comments" } },
+          "end": "(,)|(?=\\})",
+          "endCaptures": { "1": { "name": "punctuation.separator.dictionary.pair.json.comments" } },
+          "name": "meta.structure.dictionary.value.json.comments",
+          "patterns": [
+            { "include": "#value" },
+            { "match": "[^\\s,]", "name": "invalid.illegal.expected-dictionary-separator.json.comments" }
+          ]
+        },
+        { "match": "[^\\s\\}]", "name": "invalid.illegal.expected-dictionary-separator.json.comments" }
+      ]
+    },
+    "comments": {
+      "patterns": [
+        {
+          "begin": "/\\*\\*(?!/)",
+          "beginCaptures": { "0": { "name": "punctuation.definition.comment.json.comments" } },
+          "end": "\\*/",
+          "endCaptures": { "0": { "name": "punctuation.definition.comment.json.comments" } },
+          "name": "comment.block.documentation.json.comments"
+        },
+        {
+          "begin": "/\\*",
+          "beginCaptures": { "0": { "name": "punctuation.definition.comment.json.comments" } },
+          "end": "\\*/",
+          "endCaptures": { "0": { "name": "punctuation.definition.comment.json.comments" } },
+          "name": "comment.block.json.comments"
+        },
+        {
+          "match": "(//).*$\\n?",
+          "captures": { "1": { "name": "punctuation.definition.comment.json.comments" } },
+          "name": "comment.line.double-slash.json.comments"
+        }
+      ]
+    }
+  }
+}
