@@ -32,6 +32,23 @@ suite "DOM":
   test "Collection keys are found by structure":
     let root = loadAs[YamlNode]("{? [k]: v}")
     check root[loadAs[YamlNode]("[k]")].content == "v"
+  test "Equal mappings hash equally, whatever their insertion order":
+    let
+      a = newYamlNode([(newYamlNode("x"), newYamlNode("1")),
+          (newYamlNode("y"), newYamlNode("2")),
+          (newYamlNode("z"), newYamlNode("3"))])
+      b = newYamlNode([(newYamlNode("z"), newYamlNode("3")),
+          (newYamlNode("y"), newYamlNode("2")),
+          (newYamlNode("x"), newYamlNode("1"))])
+    check a == b
+    check hash(a) == hash(b)
+  test "Mappings are represented in document order":
+    var root = loadAs[YamlNode]("z: 1\na: 2\nm: 3\n")
+    root[newYamlNode("b")] = newYamlNode("4")
+    var keys: seq[string]
+    for (key, value) in root.orderedFields: keys.add(key.content)
+    check keys == @["z", "a", "m", "b"]
+    check blockOnlyDumper().dump(root) == "z: 1\na: 2\nm: 3\nb: 4\n"
   test "Composing simple Scalar":
     let
       input  = newStringStream("scalar")

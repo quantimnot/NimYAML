@@ -20,7 +20,7 @@
 ## The ``YamlNode`` objects in the DOM are structured similarly to the ``JsonNode``
 ## objects of Nim's `json module <http://nim-lang.org/docs/json.html>`_.
 
-import std / [tables, streams, hashes, sets, strutils]
+import std / [algorithm, tables, streams, hashes, sets, strutils]
 import data, stream, taglib, private/internal, parser, loading
 
 when defined(gcArc) and not defined(gcOrc):
@@ -58,15 +58,23 @@ proc hash*(o: YamlNode): Hash =
   case o.kind
   of yScalar: result = result !& o.content.hash
   of yMapping:
+    # combined commutatively, since equal mappings need not iterate their
+    # entries in the same order
+    var entries: Hash = 0
     for key, value in o.fields.pairs:
-      result = result !& key.hash !& value.hash
+      entries = entries xor !$(key.hash !& value.hash)
+    result = result !& entries
   of ySequence:
     for item in o.elems:
       result = result !& item.hash
   result = !$result
 
+proc `==`*(x, y: YamlNode): bool {.raises: [], gcsafe.}
+  ## Structural equality, see ``eqImpl``. Declared ahead, so that table
+  ## lookups of keys within ``eqImpl`` compare structurally too.
+
 proc eqImpl(x, y: YamlNode, assumedEqual: var HashSet[(pointer, pointer)]):
-    bool =
+    bool {.raises: [], gcsafe.} =
   ## Structural equality: same kind, tag and content, recursively. On cyclic
   ## graphs, a pair of nodes already being compared further up is assumed
   ## equal; the comparison then fails only if something else differs.
@@ -84,21 +92,25 @@ proc eqImpl(x, y: YamlNode, assumedEqual: var HashSet[(pointer, pointer)]):
   of yMapping:
     if x.fields.len != y.fields.len: return false
     for xKey, xValue in x.fields.pairs:
-      # Keys are matched by scanning rather than by hashing, because hash()
-      # does not terminate on cyclic keys. A failed match must not leave
-      # its assumptions behind, so it works on a copy of them.
       var matchingValue: YamlNode = nil
-      for yKey, yValue in y.fields.pairs:
-        var trial = assumedEqual
-        if eqImpl(xKey, yKey, trial):
-          assumedEqual = trial
-          matchingValue = yValue
-          break
+      if xKey.kind == yScalar:
+        matchingValue = y.fields.getOrDefault(xKey)
+      else:
+        # Collection keys are matched by scanning rather than by hashing,
+        # because hash() does not terminate on cyclic keys. A failed match
+        # must not leave its assumptions behind, so it works on a copy.
+        for yKey, yValue in y.fields.pairs:
+          if yKey.kind == yScalar: continue
+          var trial = assumedEqual
+          if eqImpl(xKey, yKey, trial):
+            assumedEqual = trial
+            matchingValue = yValue
+            break
       if isNil(matchingValue) or
           not eqImpl(xValue, matchingValue, assumedEqual): return false
   result = true
 
-proc `==`*(x, y: YamlNode): bool =
+proc `==`*(x, y: YamlNode): bool {.raises: [], gcsafe.} =
   var assumedEqual = initHashSet[(pointer, pointer)]()
   result = eqImpl(x, y, assumedEqual)
 
@@ -152,6 +164,30 @@ proc newYamlNode*(
 ): YamlNode =
   YamlNode(kind: yMapping, fields: newTable(fields), tag: tag,
       startPos: startPos, endPos: endPos)
+
+proc orderedFields*(fields: TableRef[YamlNode, YamlNode]):
+    seq[tuple[key, value: YamlNode]] =
+  ## The entries of a mapping in document order, as far as the positions of
+  ## the keys tell it, since the table itself keeps no order. Keys without
+  ## a position (both marks at their default, as in constructed nodes) come
+  ## last, scalars sorted by content, so that keys added to a loaded mapping
+  ## are appended to it.
+  for key, value in fields.pairs: result.add((key, value))
+  result.sort(proc(a, b: tuple[key, value: YamlNode]): int =
+    let
+      aPositioned = a.key.startPos != Mark() or a.key.endPos != Mark()
+      bPositioned = b.key.startPos != Mark() or b.key.endPos != Mark()
+    result = cmp(bPositioned, aPositioned)
+    if result == 0: result = cmp(a.key.startPos.line, b.key.startPos.line)
+    if result == 0: result = cmp(a.key.startPos.column, b.key.startPos.column)
+    if result == 0: result = cmp(a.key.kind, b.key.kind)
+    if result == 0 and a.key.kind == yScalar:
+      result = cmp(a.key.content, b.key.content))
+
+proc orderedFields*(node: YamlNode): seq[tuple[key, value: YamlNode]] =
+  ## The entries of the mapping ``node`` in document order; see above.
+  assert node.kind == yMapping
+  node.fields.orderedFields
 
 proc constructChild*(
   ctx   : var ConstructionContext,
@@ -237,7 +273,7 @@ proc representChild*(
   of yMapping:
     ctx.put(startMapEvent(tag = value.tag, style = value.mapStyle,
         startPos = value.startPos, endPos = value.endPos))
-    for key, value in value.fields.pairs:
+    for (key, value) in value.fields.orderedFields:
       ctx.representChild(key)
       ctx.representChild(value)
     ctx.put(endMapEvent())
