@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2A2F3A"/>
+      <stop offset="1" stop-color="#1A1D24"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="120" height="120" rx="26" fill="url(#bg)"/>
+  <rect x="4.5" y="4.5" width="119" height="119" rx="25.5" fill="none" stroke="#FFFFFF" stroke-opacity=".16"/>
+  <!-- YAML: indented key / nested key: value rows -->
+  <g stroke="#F28B82" stroke-width="11" stroke-linecap="round">
+    <path d="M26 32h52"/>
+    <path d="M40 58h6"/><path d="M60 58h24"/>
+    <path d="M40 84h6"/><path d="M60 84h14"/>
+  </g>
+  <!-- plus: one arm per sibling format (json, jsonl, cbor, jsonc) -->
+  <g stroke-width="11" stroke-linecap="round">
+    <path d="M98 96v-16" stroke="#F5C451"/>
+    <path d="M114 96h-16" stroke="#F5A35C"/>
+    <path d="M98 112v-16" stroke="#7DB8F2"/>
+    <path d="M82 96h16" stroke="#8FD98A"/>
+  </g>
+</svg>

@@ -9,9 +9,16 @@ version: 0.7.0
 publisher: nimyaml
 license: MIT
 private: true
-repository: https://localhost/
 engines: {vscode: ^1.82.0}
+homepage: https://localhost/yaml
+repository:
+  type: git
+  url: https://localhost/yaml.git
 categories: [Programming Languages, Linters, Snippets, Formatters, Visualization]
+icon: icons/yaml-plus-256.png
+galleryBanner:
+  color: "#C0262D" # ...red font in icon
+  theme: dark
 keywords:
   - yaml
   - json
@@ -47,8 +54,8 @@ scripts:
   typecheck: tsc -p grid/webview
   # the placeholder grammar (the extension writes the real one on activation)
   # and the bundle
-  "vscode:prepublish": bun embedded/grammar.js && bun run build
-  vscode:package: vsce package --allow-missing-repository --skip-license --baseContentUrl .
+  vscode:prepublish: bun embedded/grammar.js && bun run build
+  vscode:package: vsce package --baseContentUrl . --baseImagesUrl .
   vscode:install: code-server --force --install-extension yaml-plus-lsp-*.vsix
 contributes:
   languages:
