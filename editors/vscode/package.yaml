@@ -1,4 +1,3 @@
-#!/usr/bin/env yq -ojson
 #!/usr/bin/env yaml as json
 # https://code.visualstudio.com/api/references/extension-manifest
 name: yaml-plus-lsp
