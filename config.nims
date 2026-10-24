@@ -98,6 +98,26 @@ task fragmentTests, "Run fragment identifier and multi-document tests":
   --verbosity:0
   setCommand "c", "test/tfragment"
 
+task jsonPatchTests, "Run JSON Patch tests":
+  --r
+  --verbosity:0
+  setCommand "c", "test/tjsonpatch"
+
+task mergePatchTests, "Run JSON Merge Patch tests":
+  --r
+  --verbosity:0
+  setCommand "c", "test/tmergepatch"
+
+task mergeTests, "Run YAML merge key tests":
+  --r
+  --verbosity:0
+  setCommand "c", "test/tmerge"
+
+task jcsTests, "Run JSON Canonicalization Scheme tests":
+  --r
+  --verbosity:0
+  setCommand "c", "test/tjcs"
+
 task jsonpathTests, "Run JSONPath and I-Regexp tests":
   --r
   --verbosity:0
@@ -180,7 +200,7 @@ task bench, "Benchmarking":
   setCommand "c", "bench/bench"
 
 task clean, "Remove all generated files":
-  exec "rm -rf libyaml.* test/tests test/tjsonpath test/tedit test/tjsonschema test/thyperschema test/tschemainternals test/turitemplate test/tdirectives test/tdocumentschema test/tportable test/parsing test/lexing bench/json docout"
+  exec "rm -rf libyaml.* test/tests test/tjsonpath test/tjsonpatch test/tmergepatch test/tmerge test/tjcs test/tedit test/tjsonschema test/thyperschema test/tschemainternals test/turitemplate test/tdirectives test/tdocumentschema test/tportable test/parsing test/lexing bench/json docout"
   setCommand "nop"
 
 task testSuiteEvents, "Compile the testSuiteEvents tool":

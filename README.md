@@ -780,6 +780,81 @@ echo expand("/users/{id}{?fields*}", vars)   # /users/jo?fields=name&fields=age
 `templateValue` converts `YamlNode` values, and `expandPartially` expands
 only some variables, leaving the others as template expressions.
 
+## Patches, Merge Keys and Canonical JSON
+
+Four modules change or serialize `YamlNode` graphs by JSON's rules. Like
+`yaml/jsonpath`, they read a graph as JSON (scalars typed by tag and the
+core schema, only string keys name members) and are not imported by
+`import yaml`.
+
+`yaml/jsonpatch` applies [JSON Patches][16] (RFC 6902) and passes the
+[JSON Patch test suite][17]. `yaml/mergepatch` applies and creates
+[JSON Merge Patches][18] (RFC 7396):
+
+```nim
+import yaml, yaml/[dom, jsonpatch, mergepatch]
+
+let doc = loadAs[YamlNode]("{name: app, tags: [a, b], debug: true}")
+let patched = doc.applyJsonPatch(loadAs[YamlNode]("""
+- {op: test, path: /name, value: app}
+- {op: add, path: /tags/-, value: c}
+"""))                                   # {name: app, tags: [a, b, c], debug: true}
+let merged = doc.applyMergePatch(loadAs[YamlNode]("{debug: null}"))
+                                        # {name: app, tags: [a, b]}
+```
+
+Neither changes its input: they copy the collections on the paths they
+change and share everything else, which also makes a failing JSON Patch
+atomic, as RFC 6902 requires. `YamlJsonPatchError.kind` tells a malformed
+patch from one that does not apply to the document or whose `test` fails.
+
+`yaml/merge` applies [merge keys][19] (`<<`), which YAML 1.2 dropped but
+configuration files still use. `applyMergeKeys` changes a graph in place;
+`loadMerged` (or the `mergeKeysApplied` stream filter) applies them before
+constructing native values:
+
+```nim
+import yaml, yaml/merge
+
+type Database = object
+  adapter, host: string
+
+var config: Table[string, Database]
+loadMerged("""
+defaults: &defaults {adapter: postgres, host: localhost}
+production: {<<: *defaults, host: db.example}
+""", config)
+```
+
+`yaml/jcs` writes the [JSON Canonicalization Scheme][20] (RFC 8785) form
+of a graph, the input for hashes and signatures, and passes the test
+vectors of the [JCS reference implementations][21]:
+
+```nim
+import yaml, yaml/[dom, jcs]
+
+echo canonicalJson(loadAs[YamlNode]("{b: 1.0e+3, a: [true, ~]}"))
+# {"a":[true,null],"b":1000}
+```
+
+### Caveats
+
+ * **Aliases are separate values to patches.** A node reachable as `/a` and
+   `/b` is two values; patching `/a/x` copies the node at `/a` and leaves
+   `/b` as it was. Results share unchanged nodes with the input and the
+   patch, so copy a result before changing it in place.
+ * **Member names with several keys.** Where a mapping spells a name with
+   several keys (`a` and `"a"`), replacing it keeps the key a JSON Pointer
+   resolves to and drops the others; removing it removes all of them.
+ * **Merge keys compare keys as YAML nodes**, by tag and content, so a
+   merged `"a"` does not override a plain `a`. `loadMerged` keeps an alias
+   only where the input shared a node; merged values are written out.
+ * **JCS refuses instead of dropping data.** Non-string keys, names spelled
+   by several keys, cycles, `.inf`/`.nan` and invalid UTF-8 raise
+   `YamlJcsError`, because a canonical form that leaves something out would
+   give different documents the same signature. Integers are written as the
+   doubles they round to, as ECMAScript does.
+
 ## `%SCHEMA` and `%GLOBAL` Directives
 
 NimYAML gives meaning to two directive names that YAML 1.2 reserves:
@@ -1045,6 +1120,10 @@ nim yamllintTests config.nims # yamllint command line tool
 nim yamlcliTests config.nims # yaml command line tool; .yaml config
 nim lspTests config.nims # yamllsp language server
 nim fragmentTests config.nims # fragment identifiers; multi-document dumping
+nim jsonPatchTests config.nims # JSON Patch
+nim mergePatchTests config.nims # JSON Merge Patch
+nim mergeTests config.nims # YAML merge keys
+nim jcsTests config.nims # JSON Canonicalization Scheme
 nim nativeTests config.nims # runs native value tests
 nim quickstartTests config.nims # run tests for quickstart snippets from documentation
 nim clean config.nims # guess
@@ -1096,3 +1175,9 @@ If you want to support this project financially, there's a GitHub Sponsor button
 [13]: https://json-schema.org/draft/2019-09/json-schema-hypermedia
 [14]: https://www.rfc-editor.org/rfc/rfc6570
 [15]: https://github.com/uri-templates/uritemplate-test
+[16]: https://www.rfc-editor.org/rfc/rfc6902
+[17]: https://github.com/json-patch/json-patch-tests
+[18]: https://www.rfc-editor.org/rfc/rfc7396
+[19]: https://yaml.org/type/merge.html
+[20]: https://www.rfc-editor.org/rfc/rfc8785
+[21]: https://github.com/cyberphone/json-canonicalization

@@ -19,6 +19,10 @@
 ##   JSON Lines and CBOR
 ## * ``query`` (or just a JSONPath starting with ``$``): selects nodes with
 ##   an RFC 9535 JSONPath, or with ``PATH = VALUE`` replaces them
+## * ``patch``: applies a JSON Patch (RFC 6902) or JSON Merge Patch
+##   (RFC 7396)
+## * ``merge``: applies merge keys (``<<``)
+## * ``canonical`` (or ``jcs``): writes the RFC 8785 canonical JSON form
 ## * ``expand``: makes ``%GLOBAL`` directives portable
 ## * ``lsp``: the language server, over stdio
 ## * ``help``: this overview, or the usage of a command
@@ -36,7 +40,7 @@ import std/[os, parseopt, streams, strutils]
 when defined(nimPreviewSlimSystem):
   import std/syncio
 import ../yaml/[data, dom, dumping, loading, parser, presenter, stream, cbor,
-    jsonpath, toolconfig, edit]
+    jsonpath, toolconfig, edit, jsonpatch, mergepatch, merge, jcs]
 import ../yaml/private/lex
 from ../yaml/hints import guessType, TypeHint
 import yamllint, yamlexpand, yamllsp
@@ -61,6 +65,10 @@ commands:
   convert   convert between yaml, json, jsonc, jsonl and cbor (also: as, to)
   query     select nodes with a JSONPath (also: yaml '$...' [FILE...]),
             or replace them: yaml '$... = VALUE' [-i] [FILE...]
+  patch     apply a JSON Patch or JSON Merge Patch to the documents
+  merge     apply merge keys (<<)
+  canonical write the canonical JSON form (RFC 8785) of each document
+            (also: jcs)
   expand    expand %GLOBAL directives into the documents
   lsp       the language server, over stdio
   help      this overview, or the usage of COMMAND
@@ -136,6 +144,35 @@ and layout stay. Several inputs and --to are written as by yaml convert.
 With -i (or --in-place), each file in which a node is selected is edited
 in place instead. CBOR has no text to edit and is encoded again."""
 
+  patchUsage = """usage: yaml patch [--merge] [--from:FORMAT] [--to:FORMAT | -i] PATCH [FILE...]
+
+Applies the patch in the file PATCH to each document. A patch that is a
+sequence is a JSON Patch (RFC 6902): a list of operations like
+{op: replace, path: /a/b, value: 1}. Any other patch is a JSON Merge Patch
+(RFC 7396), which looks like the document: its members replace those of
+the document, mappings are merged, and null removes a member. --merge
+reads a sequence as a merge patch too, which then replaces the document.
+
+The patched documents are written as by yaml convert, in the format of the
+first input unless --to; with -i (or --in-place), each file is rewritten
+in place instead. A patch that does not apply (a missing location, a
+failed test) leaves all files as they were. Exit code 1 then."""
+
+  mergeUsage = """usage: yaml merge [--from:FORMAT] [--to:FORMAT | -i] [FILE...]
+
+Applies the merge keys (<<) of each document: a mapping with <<: *base,
+or <<: [*a, *b], gets the entries of those mappings that it does not have
+itself, earlier ones first. The documents are written as by yaml patch."""
+
+  canonicalUsage = """usage: yaml canonical [--from:FORMAT] [FILE...]
+       yaml jcs [--from:FORMAT] [FILE...]
+
+Writes each document in the JSON Canonicalization Scheme (RFC 8785), one
+line per document: no whitespace, members sorted, numbers and strings
+written as ECMAScript writes them. Documents that JSON cannot represent
+faithfully (non-string or duplicate keys, cycles, .inf, .nan) are refused
+with exit code 1."""
+
   expandUsage = """usage: yaml expand [--modeline] [FILE]
 
 Writes FILE (or standard input) with every %GLOBAL directive expanded into
@@ -176,6 +213,9 @@ proc usageOf(command: string): string =
   of "format": formatUsage
   of "convert", "as", "to": convertUsage
   of "query": queryUsage
+  of "patch": patchUsage
+  of "merge": mergeUsage
+  of "canonical", "jcs": canonicalUsage
   of "expand": expandUsage
   of "lsp": lspUsage
   of "help": helpUsage
@@ -276,7 +316,12 @@ proc normalize(events: BufferYamlStream, resolveTags: bool) =
           [yTagQuestionMark, yTagExclamationMark]:
         e.seqProperties.tag = yTagSequence
     of yamlScalar:
-      e.scalarStyle = ssAny
+      # A quoted scalar that would read as another type when plain keeps
+      # quotes, or "80" would come out as the number 80.
+      e.scalarStyle =
+        if e.scalarProperties.tag == yTagExclamationMark and
+            guessType(e.scalarContent) != yTypeUnknown: ssDoubleQuoted
+        else: ssAny
       if resolveTags:
         if e.scalarProperties.tag == yTagQuestionMark:
           e.scalarProperties.tag = case guessType(e.scalarContent)
@@ -608,6 +653,187 @@ proc queryCommand(args: seq[string]): int =
       stderr.writeLine(describe("<output>", getCurrentException()))
       return 1
 
+proc documents(input: Input, format: DataFormat): seq[YamlNode] =
+  ## The documents of ``input`` as graphs.
+  var s = events(input, format)
+  discard s.next() # yamlStartStream
+  while s.peek().kind == yamlStartDoc:
+    var root: YamlNode
+    construct(s, root)
+    result.add(root)
+
+proc transformCommand(command: string, args: seq[string], operands: int,
+    prepare: proc(operands: seq[string]): int,
+    transform: proc(root: YamlNode): YamlNode): int =
+  ## Shared by the commands that change each document of their inputs as a
+  ## whole. The first ``operands`` arguments go to ``prepare``, which runs
+  ## before any input is read and returns an exit code (0 to go on),
+  ## instead of being read as files. The results are written like ``yaml convert``
+  ## writes, in the format of the first input unless --to; with -i, each
+  ## file is rewritten in its own format, but only once all of them have
+  ## been transformed, so that an error leaves every file as it was.
+  var
+    positional: seq[string]
+    source, target = none(DataFormat)
+    inPlace = false
+  for kind, key, val in options(args):
+    case kind
+    of cmdArgument: positional.add(key)
+    of cmdLongOption, cmdShortOption:
+      case key
+      of "from": source = some(parseFormat(command, val))
+      of "to": target = some(parseFormat(command, val))
+      of "in-place", "i": inPlace = true
+      else: fail(command)
+    of cmdEnd: discard
+  if positional.len < operands: fail(command)
+  let files = positional[operands .. ^1]
+  if inPlace and (files.len == 0 or target.isSome): fail(command)
+  result = prepare(positional[0 ..< operands])
+  if result != 0: return
+  let yamlStyle = toolConfigFor(
+      if files.len > 0: files[0] else: getCurrentDir() / "-").format
+  var
+    output = newStream()
+    outputFormat = target
+    rewritten: seq[tuple[file, text: string]]
+  for input in readInputs(files):
+    let format = source.get(
+        if files.len == 0: dfYaml else: formatOf(input.name))
+    if outputFormat.isNone: outputFormat = some(format)
+    let transformed = if inPlace: newStream() else: output
+    try:
+      for root in documents(input, format):
+        # tsAll keeps every node's own tag, so "1" stays a string
+        transformed.collect(represent(transform(root),
+            SerializationOptions(tagStyle: tsAll)))
+      if inPlace:
+        rewritten.add((input.name, render(transformed, format,
+            toolConfigFor(input.name).format)))
+    except YamlStreamError, YamlParserError, YamlConstructionError,
+        YamlPresenterJsonError, YamlPresenterCborError:
+      stderr.writeLine(describe(input.name, getCurrentException()))
+      return 1
+    except YamlJsonPatchError:
+      stderr.writeLine(input.name & ": " & getCurrentExceptionMsg())
+      return 1
+  if inPlace:
+    for (file, text) in rewritten: writeFile(file, text)
+    return 0
+  try:
+    stdout.write(output, outputFormat.get(dfYaml), yamlStyle)
+  except YamlPresenterJsonError, YamlPresenterCborError, YamlStreamError:
+    stderr.writeLine(describe("<output>", getCurrentException()))
+    return 1
+
+proc patchCommand(args: seq[string]): int =
+  var mergePatch = false
+  var rest: seq[string]
+  for arg in args:
+    if arg == "--merge": mergePatch = true
+    else: rest.add(arg)
+  var
+    patch: YamlNode
+    jsonPatch: JsonPatch
+  proc readPatch(operands: seq[string]): int =
+    let file = operands[0]
+    try:
+      let docs = documents((file, readFile(file)), formatOf(file))
+      if docs.len != 1:
+        stderr.writeLine(file & ": a patch must be a single document")
+        return 1
+      patch = docs[0]
+      if patch.kind == ySequence and not mergePatch:
+        jsonPatch = parseJsonPatch(patch)
+    except YamlStreamError, YamlParserError, YamlConstructionError:
+      stderr.writeLine(describe(file, getCurrentException()))
+      return 1
+    except YamlJsonPatchError as e:
+      stderr.writeLine(file & ": " & e.msg)
+      return 1
+  proc applyPatch(root: YamlNode): YamlNode =
+    if patch.kind == ySequence and not mergePatch:
+      root.applyJsonPatch(jsonPatch)
+    else: root.applyMergePatch(patch)
+  transformCommand("patch", rest, 1, readPatch, applyPatch)
+
+proc mergeCommand(args: seq[string]): int =
+  var
+    files: seq[string]
+    source, target = none(DataFormat)
+    inPlace = false
+  for kind, key, val in options(args):
+    case kind
+    of cmdArgument: files.add(key)
+    of cmdLongOption, cmdShortOption:
+      case key
+      of "from": source = some(parseFormat("merge", val))
+      of "to": target = some(parseFormat("merge", val))
+      of "in-place", "i": inPlace = true
+      else: fail("merge")
+    of cmdEnd: discard
+  if inPlace and (files.len == 0 or target.isSome): fail("merge")
+  # The stream filter, unlike representing the merged graph, writes merged
+  # values out instead of giving them anchors, and keeps scalar styles.
+  let yamlStyle = toolConfigFor(
+      if files.len > 0: files[0] else: getCurrentDir() / "-").format
+  var
+    output = newStream()
+    outputFormat = target
+    rewritten: seq[tuple[file, text: string]]
+  for input in readInputs(files):
+    let format = source.get(
+        if files.len == 0: dfYaml else: formatOf(input.name))
+    if outputFormat.isNone: outputFormat = some(format)
+    try:
+      if inPlace:
+        let merged = newStream()
+        merged.collect(mergeKeysApplied(events(input, format)))
+        rewritten.add((input.name, render(merged, format,
+            toolConfigFor(input.name).format)))
+      else: output.collect(mergeKeysApplied(events(input, format)))
+    except YamlStreamError, YamlParserError, YamlPresenterJsonError,
+        YamlPresenterCborError:
+      let cause = rootCause(getCurrentException())
+      if cause of YamlMergeError:
+        let m = (ref YamlMergeError)(cause).mark
+        stderr.writeLine(input.name & ":" & $m.line & ":" & $m.column & ": " &
+            cause.msg)
+      else: stderr.writeLine(describe(input.name, getCurrentException()))
+      return 1
+  if inPlace:
+    for (file, text) in rewritten: writeFile(file, text)
+    return 0
+  try:
+    stdout.write(output, outputFormat.get(dfYaml), yamlStyle)
+  except YamlPresenterJsonError, YamlPresenterCborError, YamlStreamError:
+    stderr.writeLine(describe("<output>", getCurrentException()))
+    return 1
+
+proc canonicalCommand(args: seq[string]): int =
+  var
+    files: seq[string]
+    source = none(DataFormat)
+  for kind, key, val in options(args):
+    case kind
+    of cmdArgument: files.add(key)
+    of cmdLongOption, cmdShortOption:
+      if key == "from": source = some(parseFormat("canonical", val))
+      else: fail("canonical")
+    of cmdEnd: discard
+  for input in readInputs(files):
+    let format = source.get(
+        if files.len == 0: dfYaml else: formatOf(input.name))
+    try:
+      for root in documents(input, format):
+        stdout.writeLine(canonicalJson(root))
+    except YamlStreamError, YamlParserError, YamlConstructionError:
+      stderr.writeLine(describe(input.name, getCurrentException()))
+      return 1
+    except YamlJcsError as e:
+      stderr.writeLine(input.name & ": " & e.msg)
+      return 1
+
 proc lspCommand(args: seq[string]): int =
   for arg in args:
     if arg != "--stdio" and not arg.startsWith("--clientProcessId"):
@@ -641,6 +867,9 @@ proc run*(args: seq[string]): int =
     of "format": formatCommand(rest)
     of "convert", "as", "to": convertCommand(command, rest)
     of "query": queryCommand(rest)
+    of "patch": patchCommand(rest)
+    of "merge": mergeCommand(rest)
+    of "canonical", "jcs": canonicalCommand(rest)
     of "expand": yamlexpand.run(rest, stdin, stdout)
     of "lsp": lspCommand(rest)
     of "help": helpCommand(rest)

@@ -319,6 +319,58 @@ suite "yaml":
     check cli(@["expand"], input = "%GLOBAL YAML 1.2\n--- a\n--- b\n") ==
         ("%YAML 1.2\n--- a\n...\n%YAML 1.2\n--- b\n", 0)
 
+  test "patch with a JSON Patch":
+    writeFile(dir / "doc.yaml", "name: app\nport: \"80\"\ntags: [a, b]\n")
+    writeFile(dir / "ops.yaml",
+        "- {op: add, path: /tags/-, value: c}\n" &
+        "- {op: replace, path: /name, value: svc}\n")
+    check cli("patch", "ops.yaml", "doc.yaml", "--to:json").output ==
+        "{\n  \"name\": \"svc\",\n  \"port\": \"80\",\n  \"tags\": [\n" &
+        "    \"a\",\n    \"b\",\n    \"c\"\n  ]\n}\n"
+    # quoted scalars that look like numbers stay strings in YAML too
+    check "port: \"80\"" in cli("patch", "ops.yaml", "doc.yaml").output
+
+  test "patch with a JSON Merge Patch (keeping member order)":
+    writeFile(dir / "merge.json", "{\"port\": null, \"debug\": true}")
+    check cli(@["patch", "merge.json", "--to:jsonl"],
+        input = "{name: app, port: 80}") ==
+        ("{\"name\": \"app\", \"debug\": true}\n", 0)
+    # --merge reads a sequence as a merge patch, which replaces the document
+    check cli(@["patch", "--merge", "ops.yaml", "--to:jsonl"], input = "a: 1"
+        ).output.startsWith("[{")
+
+  test "patch errors name the patch file":
+    writeFile(dir / "bad.yaml", "[{op: frob, path: /a}]\n")
+    let bad = cli(@["patch", "bad.yaml"], input = "")
+    check bad.exitCode == 1
+    check bad.output.startsWith("bad.yaml: operation 0: ")
+    check cli(@["patch", "missing.yaml"], input = "").exitCode == 2
+
+  test "patch -i is all or nothing":
+    writeFile(dir / "p1.yaml", "a: 1\n")
+    writeFile(dir / "p2.yaml", "b: 1\n")
+    writeFile(dir / "test.yaml", "[{op: test, path: /a, value: 1}, " &
+        "{op: add, path: /c, value: 2}]")
+    let failed = cli("patch", "-i", "test.yaml", "p1.yaml", "p2.yaml")
+    check failed.exitCode == 1
+    check failed.output.startsWith("p2.yaml: operation 0: ")
+    check readFile(dir / "p1.yaml") == "a: 1\n"
+    check cli("patch", "-i", "test.yaml", "p1.yaml") == ("", 0)
+    check readFile(dir / "p1.yaml") == "a: 1\nc: 2\n"
+    check cli("patch", "-i", "test.yaml").exitCode == 2
+
+  test "merge":
+    check cli(@["merge"], input = "base: &b {x: 1, y: 2}\n" &
+        "d: {<<: *b, y: 3}\n").output == "base:\n  x: 1\n  y: 2\nd:\n  x: 1\n  y: 3\n"
+    let invalid = cli(@["merge"], input = "{<<: 1}")
+    check invalid.exitCode == 1
+    check invalid.output.startsWith("<stdin>:1:2: ")
+
+  test "canonical":
+    check cli(@["canonical"], input = "{b: 1.0e+3, a: [true, ~, \"x\"]}\n" &
+        "--- 1e21\n") == ("{\"a\":[true,null,\"x\"],\"b\":1000}\n1e+21\n", 0)
+    check cli(@["jcs"], input = "{1: x}").exitCode == 1
+
   test "lsp":
     let body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"," &
         "\"params\":{}}"

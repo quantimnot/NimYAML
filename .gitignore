@@ -45,3 +45,7 @@ test/tdocumentschema
 test/tportable
 test/tcomments
 .claude/
+test/tjsonpatch
+test/tmergepatch
+test/tmerge
+test/tjcs

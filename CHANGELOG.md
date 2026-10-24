@@ -2,6 +2,17 @@
 
 Features:
 
+ * new module `yaml/jsonpatch` applies RFC 6902 JSON Patches to `YamlNode`
+   graphs without changing them, atomically; passes json-patch-tests.
+ * new module `yaml/mergepatch` applies and creates RFC 7396 JSON Merge
+   Patches.
+ * new module `yaml/merge` applies YAML merge keys (`<<`) to `YamlNode`
+   graphs, and with `loadMerged` and `mergeKeysApplied` before constructing
+   native values.
+ * new module `yaml/jcs` serializes `YamlNode` graphs with the RFC 8785 JSON
+   Canonicalization Scheme; passes the JCS reference test vectors.
+ * the `yaml` command has new commands `patch` (JSON Patch or JSON Merge
+   Patch), `merge` (merge keys) and `canonical` (JCS).
  * added `YamlFeedParser`, a push-style parser for input that arrives in
    chunks (`newYamlFeedParser`, `feed`, `finish`, `tryNext`, `events`).
    `tryNext` returns `false` when more input is needed and resumes once more
@@ -149,6 +160,9 @@ Features:
 
 Changes:
 
+ * dumping a `YamlNode` writes mapping entries in document order (by the
+   positions of their keys; keys without a position last) instead of hash
+   order. `orderedFields` returns them in that order.
  * parameters of reserved directives are lexed one token per parameter
    (`ns-directive-parameter`), not as one token for the rest of the line
  * `YamlDocumentStart` has new fields `index` and `globals`; the checkpoint
@@ -161,6 +175,12 @@ Changes:
 
 Bugfixes:
 
+ * `==` on `YamlNode` compared nested nodes by identity, so equal graphs
+   loaded twice were unequal and collection keys could not be looked up;
+   `hash` of a mapping depended on the order of its table, so equal mappings
+   could hash differently.
+ * `yaml convert` and `yaml query` wrote quoted scalars that look like
+   other types (`"80"`, `"true"`) plain in YAML output, changing their type.
  * JSON output (`jsonDumper`, `quoting: sqJson`) no longer quotes numbers,
    booleans and nulls that are sequence items or block mapping values.
 
