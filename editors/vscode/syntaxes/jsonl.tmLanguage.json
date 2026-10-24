@@ -1,0 +1,14 @@
+{
+  "//": "JSON Lines: one JSON value per line. Values are coloured by the JSON grammar.",
+  "name": "JSON Lines",
+  "scopeName": "source.json.lines",
+  "fileTypes": ["jsonl", "ndjson"],
+  "patterns": [
+    {
+      "begin": "^(?=\\s*\\S)",
+      "end": "$",
+      "name": "meta.line.json.lines",
+      "patterns": [{ "include": "source.json#value" }]
+    }
+  ]
+}
