@@ -11,3 +11,9 @@
 [submodule "test/uritemplate-test"]
 	path = test/uritemplate-test
 	url = https://github.com/uri-templates/uritemplate-test.git
+[submodule "test/json-patch-tests"]
+	path = test/json-patch-tests
+	url = https://github.com/json-patch/json-patch-tests.git
+[submodule "test/json-canonicalization"]
+	path = test/json-canonicalization
+	url = https://github.com/cyberphone/json-canonicalization.git

@@ -146,6 +146,15 @@ template forEachToken(jsonPointer: string, token, body: untyped) =
       let token = unescapeToken(rawToken)
       body
 
+proc pointerTokens*(jsonPointer: string): seq[string]
+    {.raises: [YamlFragmentError].} =
+  ## Splits a JSON Pointer (RFC 6901) into its unescaped reference tokens:
+  ## ``/a~1b/0`` yields ``@["a/b", "0"]`` and the empty pointer none. For
+  ## code that walks a graph itself, like ``yaml/jsonpatch``, which needs the
+  ## parent of the referenced location rather than the location.
+  forEachToken(jsonPointer, token):
+    result.add(token)
+
 proc resolvePointer*(root: YamlNode, jsonPointer: string): YamlNode
     {.raises: [YamlFragmentError].} =
   ## Evaluates the given JSON Pointer (RFC 6901) on the representation graph

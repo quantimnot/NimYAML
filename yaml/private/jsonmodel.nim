@@ -200,3 +200,58 @@ proc jsonEquals*(a, b: YamlNode): bool {.raises: [].} =
 
 proc jsonEquals*(a: YamlNode, b: JsonScalar): bool {.raises: [].} =
   a.kind == yScalar and a.jsonScalar == b
+
+# ============================================================================
+# Changing members
+#
+# JSON Patch and JSON Merge Patch change objects by member name, but a
+# ``YamlNode`` mapping is keyed by nodes, and up to three of them (``a``,
+# ``"a"`` and ``!!str a``) can spell the same name. Setting a member keeps
+# the key node that ``member`` finds, so its tag, style and position
+# survive, and drops the other spellings, so that afterwards the name means
+# exactly one value. Removing a member removes every spelling, otherwise a
+# removed member would reappear under its next spelling.
+# ============================================================================
+
+proc keysNaming(node: YamlNode, name: string): seq[YamlNode] {.raises: [].} =
+  ## The key nodes of the mapping ``node`` that name the member ``name``,
+  ## in the order of precedence ``member`` uses.
+  for tag in [yTagExclamationMark, yTagString, yTagQuestionMark]:
+    let key = YamlNode(kind: yScalar, tag: tag, content: name)
+    if key.isStringKey and node.fields.hasKey(key): result.add(key)
+
+proc memberKey*(node: YamlNode, name: string): YamlNode {.raises: [].} =
+  ## A key equal to the one under which ``member`` finds ``name``, or ``nil``.
+  ## Assigning to ``node.fields[memberKey(node, name)]`` replaces the value
+  ## and keeps the stored key node.
+  let keys = node.keysNaming(name)
+  if keys.len > 0: keys[0] else: nil
+
+proc newMemberKey*(name: string): YamlNode {.raises: [].} =
+  ## A key node that names ``name``: a plain scalar if the core schema reads
+  ## it as a string, otherwise a double-quoted one, so that ``1`` or ``true``
+  ## stay strings.
+  let plain = YamlNode(kind: yScalar, tag: yTagQuestionMark, content: name)
+  if name.len > 0 and plain.isStringKey: plain
+  else: YamlNode(kind: yScalar, tag: yTagExclamationMark, content: name,
+      scalarStyle: ssDoubleQuoted)
+
+proc setMember*(node: YamlNode, name: string, value: YamlNode) {.raises: [].} =
+  ## Makes ``value`` the value of the member ``name`` of the mapping ``node``.
+  assert node.kind == yMapping
+  let keys = node.keysNaming(name)
+  if keys.len == 0:
+    node.fields[newMemberKey(name)] = value
+    return
+  # Assigning through the lookup key would replace the stored key node's
+  # value but keep the stored node, which is what preserves its style.
+  node.fields[keys[0]] = value
+  for i in 1 ..< keys.len: node.fields.del(keys[i])
+
+proc removeMember*(node: YamlNode, name: string): bool {.raises: [].} =
+  ## Removes the member ``name`` from the mapping ``node``; returns whether
+  ## it was there.
+  assert node.kind == yMapping
+  for key in node.keysNaming(name):
+    node.fields.del(key)
+    result = true
