@@ -98,7 +98,179 @@ contributes:
         increaseIndentPattern: ^\s*.*(:|-) ?(&[^\s,\[\]{}]+)?(\{[^}"']*|\([^)"']*)?$
         decreaseIndentPattern: ^\s+\}$
       wordPattern: '[^\s\[\]{}:,"'']+(?:[:''][^\s\[\]{}:,"'']+)*'
+    - id: json
+      aliases:
+        - JSON
+        - json
+      extensions:
+        - .json
+        - .geojson
+        - .har
+        - .jsonld
+        - .webmanifest
+      filenames: []
+      brackets:
+        - - '{'
+          - '}'
+        - - '['
+          - ']'
+      autoClosingPairs:
+        - - '{'
+          - '}'
+        - - '['
+          - ']'
+        - - '"'
+          - '"'
+      surroundingPairs:
+        - - '{'
+          - '}'
+        - - '['
+          - ']'
+        - - '"'
+          - '"'
+      icon:
+        dark: icons/json-dark.svg
+        light: icons/json-light.svg
+      mimetypes:
+        - application/json
+        - application/manifest+json
+        - application/ld+json
+        - application/geo+json
+    - id: jsonc
+      aliases:
+        - JSON with Comments
+        - jsonc
+      extensions:
+        - .jsonc
+        - .code-workspace
+        - .code-profile
+      filenames: []
+      comments:
+        lineComment: //
+        blockComment:
+          - /*
+          - '*/'
+      brackets:
+        - - '{'
+          - '}'
+        - - '['
+          - ']'
+      autoClosingPairs:
+        - - '{'
+          - '}'
+        - - '['
+          - ']'
+        - - '"'
+          - '"'
+      surroundingPairs:
+        - - '{'
+          - '}'
+        - - '['
+          - ']'
+        - - '"'
+          - '"'
+      icon:
+        dark: icons/jsonc-dark.svg
+        light: icons/jsonc-light.svg
+      mimetypes:
+        - application/jsonc
+    - id: jsonl
+      aliases:
+        - JSON Lines
+        - jsonl
+        - ndjson
+      extensions:
+        - .jsonl
+        - .ndjson
+      filenames: []
+      brackets:
+        - - '{'
+          - '}'
+        - - '['
+          - ']'
+      autoClosingPairs:
+        - - '{'
+          - '}'
+        - - '['
+          - ']'
+        - - '"'
+          - '"'
+      surroundingPairs:
+        - - '{'
+          - '}'
+        - - '['
+          - ']'
+        - - '"'
+          - '"'
+      icon:
+        dark: icons/jsonl-dark.svg
+        light: icons/jsonl-light.svg
+      mimetypes:
+        - application/jsonl
+        - application/x-ndjson
+    - id: cbor
+      aliases:
+        - CBOR
+        - cbor
+      extensions:
+        - .cbor
+        - .cbordiag
+      filenames: []
+      comments:
+        lineComment: '#'
+        blockComment:
+          - /
+          - /
+      brackets:
+        - - '{'
+          - '}'
+        - - '['
+          - ']'
+        - - (
+          - )
+        - - <<
+          - '>>'
+      autoClosingPairs:
+        - - '{'
+          - '}'
+        - - '['
+          - ']'
+        - - (
+          - )
+        - - '"'
+          - '"'
+        - - ''''
+          - ''''
+      surroundingPairs:
+        - - '{'
+          - '}'
+        - - '['
+          - ']'
+        - - (
+          - )
+        - - '"'
+          - '"'
+        - - ''''
+          - ''''
+      icon:
+        dark: icons/cbor-dark.svg
+        light: icons/cbor-light.svg
+      mimetypes:
+        - application/cbor
+        - application/cbor-diagnostic
   grammars:
+    - language: json
+      scopeName: source.json
+      path: ./syntaxes/json.tmLanguage.json
+    - language: jsonc
+      scopeName: source.json.comments
+      path: ./syntaxes/jsonc.tmLanguage.json
+    - language: jsonl
+      scopeName: source.json.lines
+      path: ./syntaxes/jsonl.tmLanguage.json
+    - language: cbor
+      scopeName: source.cbor
+      path: ./syntaxes/cbor.tmLanguage.json
     - scopeName: nimyaml.embedded.injection
       path: ./syntaxes/yaml-embedded.tmLanguage.json
       injectTo:
