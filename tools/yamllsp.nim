@@ -38,14 +38,16 @@
 ## The custom request ``nimyaml/blockScalars`` reports where the block
 ## scalars of a document are, for clients that provide the languages
 ## embedded in them. ``nimyaml/grid`` and ``nimyaml/gridEdit`` read and edit
-## documents for a client's grid view of them.
+## documents for a client's grid view of them. ``nimyaml/pathAt`` names the
+## node at a position as a JSON Pointer and a JSON Path, and
+## ``nimyaml/paths`` lists every node by its paths, for navigating by them.
 ##
 ## The directive features work on what the parser reports per document (the ``directives`` of
 ## each ``yamlStartDoc`` event) rather than on the text, so they agree with
 ## how the document is actually read. Documents with syntax errors are
 ## dropped by error recovery and have no such information.
 
-import std/[json, os, sets, streams, strutils, tables, uri]
+import std/[algorithm, json, os, sets, streams, strutils, tables, uri]
 when defined(nimPreviewSlimSystem):
   import std/syncio
 import ../yaml/[data, parser, stream, lint, jsonschema, documentschema,
@@ -834,6 +836,190 @@ proc gridEdit(params: JsonNode): tuple[text, error: string] =
   except YamlEditError, YamlStreamError, YamlJsonPathError:
     result.error = getCurrentExceptionMsg()
 
+# ============================================================================
+# Path at a position
+# ============================================================================
+#
+# ``nimyaml/pathAt`` names the node at a position of a text, for a client
+# that shows where the cursor is: the number of its document, the keys and
+# indices from the document's root, and those as a JSON Pointer (RFC 6901)
+# and a JSON Path (RFC 9535). Like the grid, it is given the text, so that
+# it serves JSON too. On a key, the node is the member's value: the key is
+# where its member is named. Between nodes, it is the innermost collection
+# around the position. The text is read from its events, as far as they go,
+# so that a document being typed still has the path of what comes before
+# its error. A member whose key is not a scalar has no name, and its nodes
+# have the path of the mapping.
+#
+# ``nimyaml/paths`` lists every node that has a path, in document order, for
+# a client that navigates by path: its paths, its range (a member's from its
+# key) and, for a scalar, the start of its content.
+
+type
+  PathNode = tuple[first, last: Mark, segments: seq[JsonNode], value: string]
+
+  PathWalker = object
+    events: seq[Event]
+    i: int
+    position: Mark
+    best: seq[JsonNode] # segments of the innermost node so far
+    bestDepth: int
+    found: bool
+    collect: bool
+    nodes: seq[PathNode] # with ``collect``, in the order they end
+
+const
+  endOfText = Mark(line: high(int), column: high(int))
+  previewLength = 80
+
+proc `<=`(a, b: Mark): bool =
+  a.line < b.line or a.line == b.line and a.column <= b.column
+
+proc consider(w: var PathWalker, first, last: Mark, segments: seq[JsonNode]) =
+  if first <= w.position and w.position <= last and
+      (not w.found or segments.len >= w.bestDepth):
+    w.best = segments
+    w.bestDepth = segments.len
+    w.found = true
+
+proc walkPath(w: var PathWalker, segments: seq[JsonNode], named: bool):
+    tuple[first, last: Mark] =
+  ## Walks the node at ``w.i``, which ``segments`` name if ``named``, and
+  ## returns its range. A node the events end in lasts to the end of the text.
+  let e = w.events[w.i]
+  inc(w.i)
+  result = (e.startPos, e.endPos)
+  if e.kind in {yamlStartMap, yamlStartSeq}:
+    result.last = endOfText
+    var index = 0
+    while w.i < w.events.len:
+      let next = w.events[w.i]
+      if next.kind in {yamlEndMap, yamlEndSeq}:
+        inc(w.i)
+        result.last = next.endPos
+        break
+      if e.kind == yamlStartSeq:
+        discard w.walkPath(segments & %index, named)
+      else:
+        let key = next
+        let keyNamed = named and key.kind == yamlScalar
+        let child = if keyNamed: segments & %key.scalarContent else: segments
+        let keyRange = w.walkPath(child, false)
+        if w.i >= w.events.len or w.events[w.i].kind == yamlEndMap:
+          w.consider(keyRange.first, endOfText, child)
+          if w.collect and keyNamed:
+            w.nodes.add((keyRange.first, endOfText, child, ""))
+          continue
+        let valueRange = w.walkPath(child, keyNamed)
+        if keyNamed:
+          w.consider(keyRange.first, valueRange.last, child)
+          # the value was the last node to end; a member starts at its key
+          if w.collect: w.nodes[^1].first = keyRange.first
+      inc(index)
+  if named:
+    w.consider(result.first, result.last, segments)
+    if w.collect:
+      var value = if e.kind == yamlScalar: e.scalarContent else: ""
+      if value.len > previewLength:
+        var cut = previewLength
+        while cut > 0 and (ord(value[cut]) and 0xC0) == 0x80: dec(cut)
+        value = value[0 ..< cut] & "…"
+      w.nodes.add((result.first, result.last, segments, value))
+
+proc jsonPointer(segments: JsonNode): string =
+  for segment in segments:
+    result.add('/')
+    let token = if segment.kind == JInt: $segment.getInt() else: segment.getStr()
+    result.add(token.multiReplace(("~", "~0"), ("/", "~1")))
+
+proc jsonPathOf(segments: JsonNode): string =
+  ## The JSON Path of ``segments``, in dot notation where a name allows it.
+  result = "$"
+  for segment in segments:
+    if segment.kind == JInt:
+      result.add("[" & $segment.getInt() & "]")
+      continue
+    let name = segment.getStr()
+    if name.len > 0 and name[0] in {'A'..'Z', 'a'..'z', '_'} and
+        name.allCharsInSet({'A'..'Z', 'a'..'z', '0'..'9', '_'}):
+      result.add("." & name)
+    else:
+      result.addNameSegment(name)
+
+proc pathEvents(text: string, json: bool): seq[Event] =
+  ## The events of ``text`` up to its first error.
+  try:
+    var parser = initYamlParser()
+    var s = parser.parse(if json: stripJsonComments(text) else: text)
+    for e in s: result.add(e)
+  except YamlLoadingError, YamlStreamError:
+    discard
+
+iterator walkDocuments(w: var PathWalker): tuple[document: int,
+    first, last: Mark] =
+  ## Walks the documents of ``w.events``, yielding the range of each after
+  ## walking it.
+  w.i = 1 # after yamlStartStream
+  var count = 0
+  while w.i < w.events.len and w.events[w.i].kind == yamlStartDoc:
+    let start = w.events[w.i]
+    inc(w.i)
+    if w.i >= w.events.len: break
+    w.found = false
+    let root = w.walkPath(@[], true)
+    let last =
+      if w.i < w.events.len and w.events[w.i].kind == yamlEndDoc:
+        w.events[w.i].endPos
+      else: endOfText
+    inc(w.i)
+    yield (count, min(start.startPos, root.first), max(last, root.last))
+    inc(count)
+
+proc pathAt(text: string, json: bool, line, character: int): JsonNode =
+  ## The path of the node at the LSP position, or null outside every document.
+  var lineText = ""
+  for i, l in text.sourceLines:
+    if i == line:
+      lineText = l
+      break
+  let position = Mark(line: line + 1,
+      column: max(byteColumn(lineText, character), 1))
+  var
+    w = PathWalker(events: pathEvents(text, json), position: position)
+    documents = 0
+  result = newJNull()
+  for (document, first, last) in w.walkDocuments:
+    if first <= position and position <= last and w.found:
+      result = %*{"document": document, "segments": w.best}
+    documents = document + 1
+  if result.kind == JNull: return
+  result["documents"] = %documents
+  result["pointer"] = %jsonPointer(result["segments"])
+  result["path"] = %jsonPathOf(result["segments"])
+
+proc pathsOf(text: string, json: bool): JsonNode =
+  var lines: seq[string]
+  for _, line in text.sourceLines: lines.add(line)
+  let lastLine = Mark(line: max(lines.len, 1),
+      column: (if lines.len > 0: lines[^1].len else: 0) + 1)
+  var w = PathWalker(events: pathEvents(text, json), collect: true)
+  var nodes = newJArray()
+  for (document, _, _) in w.walkDocuments:
+    # parents before their children, which start where they do or later
+    w.nodes.sort(proc (a, b: PathNode): int =
+      if a.first == b.first: cmp(a.segments.len, b.segments.len)
+      elif a.first <= b.first: -1
+      else: 1)
+    for node in w.nodes:
+      let segments = %node.segments
+      var entry = %*{"document": document, "pointer": jsonPointer(segments),
+          "path": jsonPathOf(segments),
+          "range": lspRange(lines, node.first, min(node.last, lastLine))}
+      if node.value.len > 0: entry["value"] = %node.value
+      nodes.add(entry)
+    w.nodes.setLen(0)
+  %*{"nodes": nodes}
+
 proc publish(s: var Server, uri: string): JsonNode =
   var diagnostics = newJArray()
   if uri in s.docs:
@@ -930,6 +1116,14 @@ proc handle*(s: var Server, msg: JsonNode): seq[JsonNode] =
     let (text, error) = gridEdit(params)
     result.add(if error.len > 0: respondError(id, requestFailed, error)
                else: respond(id, %*{"text": text}))
+  of "nimyaml/pathAt":
+    let position = params["position"]
+    result.add(respond(id, pathAt(params["text"].getStr(),
+        params{"json"}.getBool(), position["line"].getInt(),
+        position["character"].getInt())))
+  of "nimyaml/paths":
+    result.add(respond(id, pathsOf(params["text"].getStr(),
+        params{"json"}.getBool())))
   of "shutdown":
     s.shutdownRequested = true
     result.add(respond(id, newJNull()))

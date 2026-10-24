@@ -25,6 +25,9 @@ keywords:
   - overview
 activationEvents:
   - "onLanguage:yaml"
+  # the path at the cursor is shown for JSON too
+  - "onLanguage:json"
+  - "onLanguage:jsonc"
   - "workspaceContains:**/.nimyaml-lint.yaml"
   - "workspaceContains:**/.yaml"
   - "workspaceContains:**/.yaml.yaml"
@@ -346,6 +349,22 @@ contributes:
           Choose the language by key instead of a comment, e.g. `{"keyPattern":
           "^run$", "language": "shellscript", "filePattern":
           "**/.github/workflows/*.yml"}`. Comments take precedence.
+      yaml+lsp.paths.statusBar:
+        type: boolean
+        default: true
+        description: >-
+          Show the path of the node at the cursor in the status bar of YAML,
+          JSON and JSONC files. Clicking it copies the path.
+      yaml+lsp.paths.format:
+        type: string
+        enum: [pointer, path]
+        enumDescriptions:
+          - "A JSON Pointer (RFC 6901): /a/0/b"
+          - "A JSON Path (RFC 9535): $.a[0].b"
+        default: pointer
+        description: >-
+          How paths are shown in the status bar and in "Go to Path…", and which
+          one clicking the status bar copies.
   commands:
     - command: yaml+lsp.restart
       title: "YAML+: Restart yamllsp"
@@ -360,6 +379,12 @@ contributes:
     - command: yaml+lsp.grid.open
       title: "YAML+: Open in Grid"
       icon: $(table)
+    - command: yaml+lsp.paths.copyPointer
+      title: "YAML+: Copy JSON Pointer"
+    - command: yaml+lsp.paths.copyPath
+      title: "YAML+: Copy JSON Path"
+    - command: yaml+lsp.paths.goTo
+      title: "YAML+: Go to Path…"
   # the grid of greenflute/yaml-grid-viewer: offered, never the default
   customEditors:
     - viewType: yaml+lsp.grid
@@ -372,6 +397,22 @@ contributes:
     commandPalette:
       - command: yaml+lsp.grid.open
         when: editorLangId =~ /^(yaml|json|jsonc)$/
+      - command: yaml+lsp.paths.copyPointer
+        when: editorLangId =~ /^(yaml|json|jsonc)$/
+      - command: yaml+lsp.paths.copyPath
+        when: editorLangId =~ /^(yaml|json|jsonc)$/
+      - command: yaml+lsp.paths.goTo
+        when: editorLangId =~ /^(yaml|json|jsonc)$/
+    editor/context:
+      - command: yaml+lsp.paths.copyPointer
+        when: editorLangId =~ /^(yaml|json|jsonc)$/
+        group: 9_cutcopypaste@10
+      - command: yaml+lsp.paths.copyPath
+        when: editorLangId =~ /^(yaml|json|jsonc)$/
+        group: 9_cutcopypaste@11
+      - command: yaml+lsp.paths.goTo
+        when: editorLangId =~ /^(yaml|json|jsonc)$/
+        group: navigation@90
     editor/title:
       - command: yaml+lsp.grid.open
         when: editorLangId =~ /^(yaml|json|jsonc)$/

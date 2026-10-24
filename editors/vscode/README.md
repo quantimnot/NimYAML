@@ -94,12 +94,28 @@ TODO
 
 ## Editor Features
 
-### [Selection Path](docs/.md)
+### Paths
 
-TODO
+Where the cursor is, as a [JSON Pointer](https://www.rfc-editor.org/rfc/rfc6901)
+(`/a/0/b`) or a [JSON Path](https://www.rfc-editor.org/rfc/rfc9535)
+(`$.a[0].b`), in YAML, JSON and JSONC files, and navigation by it, after
+[vscode-yamlnav](https://github.com/skorth/vscode-yamlnav):
 
-Show currently selected path in status bar.
-Context menu option to copy currently selected path.
+- The status bar shows the path of the node at the cursor; on a key, that
+  of its member. In a stream of several documents it is prefixed with the
+  document's number (`#2 /a`). Clicking it copies the path.
+- *YAML+: Copy JSON Pointer* and *YAML+: Copy JSON Path*, also in the
+  editor's context menu, copy either.
+- *YAML+: Go to Path…*, also in the context menu, lists every node by its
+  path, with the value of each scalar, and moves the cursor to the one
+  picked. The list filters on paths and values as you type, and the editor
+  follows the selected entry; Escape goes back to where the cursor was.
+
+`yaml+lsp.paths.format` chooses which of the two is shown and what clicking
+the status bar copies; `yaml+lsp.paths.statusBar` turns the status bar item
+off. yamllsp names the nodes (`nimyaml/pathAt` and `nimyaml/paths`), from
+the text as far as it parses, so a document being typed keeps the paths
+before its first error.
 
 ### [Definition](docs/.md)
 

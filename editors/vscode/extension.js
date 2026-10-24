@@ -22,15 +22,20 @@
 // The other is the grid (grid/), a custom editor that shows a file as
 // nested tables; yamllsp reads and edits the documents for it, and its
 // webview is the one piece of TypeScript, since it is all DOM code.
+//
+// And paths (paths/): the JSON Pointer or JSON Path of the node at the
+// cursor in the status bar, commands that copy it, and "Go to Path…".
 
 const vscode = require("vscode");
 const { LanguageClient, TransportKind } = require("vscode-languageclient/node");
 const { activateEmbedded } = require("./embedded");
 const { registerGrid } = require("./grid");
+const { registerPaths } = require("./paths");
 
 let client;
 let embedded;
 let grid;
+let paths;
 let traceOutputChannel;
 
 // Documents yamllsp is told about. `file` documents get their
@@ -102,6 +107,7 @@ async function start() {
     await client.start();
     embedded.restarted();
     grid.restarted();
+    paths.restarted();
   } catch (e) {
     vscode.window.showErrorMessage(
       `Could not start yamllsp (${e.message}). Build it with ` +
@@ -131,14 +137,18 @@ async function activate(context) {
   context.subscriptions.push(
     traceOutputChannel,
     vscode.commands.registerCommand("yaml+lsp.restart", restart),
-    // A different server command only takes effect in a new process.
+    // A different server command only takes effect in a new process; the
+    // settings of paths/ are the client's alone.
     vscode.workspace.onDidChangeConfiguration((event) => {
-      if (event.affectsConfiguration("yaml+lsp")) restart();
+      if (event.affectsConfiguration("yaml+lsp") &&
+          !event.affectsConfiguration("yaml+lsp.paths")) restart();
     }),
   );
   embedded = await activateEmbedded(context, documentSelector, () => client);
   grid = registerGrid(context, () => client);
   context.subscriptions.push(grid.disposable);
+  paths = registerPaths(() => client);
+  context.subscriptions.push(paths.disposable);
   await start();
 }
 

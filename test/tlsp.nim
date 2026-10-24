@@ -475,3 +475,86 @@ suite "LSP grid":
     check "already has a member" in r["error"]["message"].getStr()
     check gridEdit(%*{"text": "a: 1\n", "document": 0, "path": ["z"],
         "value": "2"})["error"]["message"].getStr() == "no such node: $['z']"
+
+suite "LSP path at a position":
+  proc pathAt(text: string, line, character: int, json = false): JsonNode =
+    var s: Server
+    s.handle(request(1, "nimyaml/pathAt", %*{"text": text, "json": json,
+        "position": {"line": line, "character": character}}))[0]["result"]
+
+  proc pointerAt(text: string, line, character: int, json = false): string =
+    let r = pathAt(text, line, character, json)
+    if r.kind == JNull: "null" else: r["pointer"].getStr()
+
+  test "values, keys and items of block and flow collections":
+    let doc = "a:\n  b: [1, {c/d: x}]\n  e f: y\nz: [t]\n"
+    check pointerAt(doc, 0, 0) == "/a"
+    check pointerAt(doc, 1, 2) == "/a/b"
+    check pointerAt(doc, 1, 7) == "/a/b/0"
+    check pointerAt(doc, 1, 12) == "/a/b/1/c~1d"
+    check pointerAt(doc, 1, 15) == "/a/b/1/c~1d"
+    # just after a node is still on it
+    check pointerAt(doc, 1, 17) == "/a/b/1"
+    check pointerAt(doc, 1, 18) == "/a/b"
+    check pointerAt(doc, 2, 7) == "/a/e f"
+    check pointerAt(doc, 3, 4) == "/z/0"
+
+  test "pointer, path, segments and document":
+    check pathAt("a:\n  - {c/d: x, e f: y, g_1: z}\n", 1, 18) == %*{
+        "document": 0, "segments": ["a", 0, "e f"], "documents": 1,
+        "pointer": "/a/0/e f", "path": "$.a[0]['e f']"}
+    check pathAt("a: 1\n", 0, 3)["path"].getStr() == "$.a"
+    check pathAt("~/: 1\n", 0, 3)["pointer"].getStr() == "/~0~1"
+
+  test "the root and other documents":
+    check pathAt("x\n", 0, 0)["pointer"].getStr() == ""
+    check pathAt("x\n", 0, 0)["path"].getStr() == "$"
+    let r = pathAt("a: 1\n---\nb: [2]\n", 2, 4)
+    check r["document"].getInt() == 1
+    check r["documents"].getInt() == 2
+    check r["pointer"].getStr() == "/b/0"
+
+  test "multi-line scalars":
+    check pointerAt("a: |\n  x\n  y\nb: 1\n", 2, 2) == "/a"
+    check pointerAt("a: >\n  x\n\nb: 1\n", 1, 1) == "/a"
+
+  test "json, with comments":
+    let doc = "{\n  // c\n  \"a\": [1, {\"b\": true}]\n}\n"
+    check pointerAt(doc, 2, 15, json = true) == "/a/1/b"
+    check pointerAt(doc, 2, 3, json = true) == "/a"
+
+  test "a text with an error still has paths before it":
+    check pointerAt("a:\n  b: 1\nc: [\n", 1, 5) == "/a/b"
+    check pointerAt("a:\n  b: 1\nc: [\n", 2, 3) == "/c"
+    # the parser reports no events of a flow collection that is not closed
+    check pointerAt("a: [1, 2\n", 0, 7) == "/a"
+
+  test "nothing outside the documents":
+    check pathAt("", 0, 0).kind == JNull
+    check pointerAt("# c\n", 0, 1) == "null"
+
+  proc paths(text: string, json = false): JsonNode =
+    var s: Server
+    s.handle(request(1, "nimyaml/paths",
+        %*{"text": text, "json": json}))[0]["result"]["nodes"]
+
+  test "every node in document order, members from their keys":
+    let r = paths("a:\n  b: [x, y]\nc: é\n---\n- 1\n")
+    var pointers: seq[string]
+    for node in r: pointers.add($node["document"] & node["pointer"].getStr())
+    check pointers == @["0", "0/a", "0/a/b", "0/a/b/0", "0/a/b/1", "0/c",
+        "1", "1/0"]
+    check r[2] == %*{"document": 0, "pointer": "/a/b", "path": "$.a.b",
+        "range": {"start": {"line": 1, "character": 2},
+                  "end": {"line": 1, "character": 11}}}
+    check r[3]["value"].getStr() == "x"
+    check r[5]["range"]["start"] == %*{"line": 2, "character": 0}
+    check r[5]["value"].getStr() == "é"
+
+  test "long values are cut, whole characters":
+    let r = paths("a: " & "é".repeat(50) & "\n")
+    check r[1]["value"].getStr() == "é".repeat(40) & "…"
+
+  test "json, and a text with an error":
+    check paths("{\"a\": [true]}", json = true).len == 3
+    check paths("a: 1\nb: [\n").len == 3
