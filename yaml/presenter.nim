@@ -1427,9 +1427,11 @@ proc doTransform(
     if keepComments:
       var buffered: seq[Event]
       for e in events: buffered.add(e)
-      let comments =
-        try: events.comments
-        except ValueError: internalError("transform parses its own input")
+      var comments: seq[Comment]
+      # internalError is empty in release builds, so it cannot end a
+      # try expression
+      try: comments = events.comments
+      except ValueError: internalError("transform parses its own input")
       if comments.len > 0:
         ctx.attached = attachComments(buffered, comments, source)
         ctx.commenting = true
