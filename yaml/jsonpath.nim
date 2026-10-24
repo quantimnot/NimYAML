@@ -689,7 +689,9 @@ proc parseJsonPath*(query: string): JsonPath {.raises: [YamlJsonPathError].} =
 # that two locations are equal exactly if their paths are.
 # ============================================================================
 
-proc addNameSegment(path: var string, name: string) =
+proc addNameSegment*(path: var string, name: string) =
+  ## Appends the Normalized Path segment that names the member ``name``.
+  ## Used by `yaml/edit <edit.html>`_ to name the nodes of a source.
   path.add("['")
   for c in name:
     case c

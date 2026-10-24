@@ -613,6 +613,36 @@ Both accept a `JsonPath` or a query string.
    end of the string; write `\^` or `[$]` for the literal characters. An
    invalid pattern makes the function return false, as RFC 9535 specifies.
 
+### Assignments to the source
+
+`yaml/edit` assigns a value to the nodes a JSONPath selects by editing the
+source text, so only those nodes change; comments, blank lines, styles and
+the layout of everything else stay:
+
+```nim
+import yaml/[edit, jsonpath]
+
+let (text, count) = assign("a: 1  # why\nb:\n  - x\n",
+    parseJsonPath("$.b"), "[p, {q: 1}]")
+# text == "a: 1  # why\nb:\n  - p\n  - q: 1\n", count == 1
+```
+
+A block collection replaced by a collection is written in block style where
+it was (with the given `PresentationOptions`); any other value is written in
+a single line, in flow style. With `json = true`, the source is JSON or
+JSONC and values are written as JSON. The edited text is parsed again and
+must have the documents that assigning to the graph gives; otherwise, as for
+an invalid value, `YamlEditError` is raised.
+
+ * **Anchors stay, tags go.** A replaced node keeps its anchor, so that its
+   aliases see the new value, and drops its tag; the value brings its own.
+ * **Aliases.** A path that ends at an alias replaces the alias; a path that
+   leads through one edits the anchored node, which all its aliases share.
+ * **What follows a node stays.** A comment after the replaced content,
+   such as one at the end of the last line of a block collection, is kept.
+ * **Anchors that aliases elsewhere need** cannot be replaced away; such an
+   assignment fails the check.
+
 ## JSON Schema
 
 `yaml/jsonschema` validates `YamlNode` graphs against [JSON Schema][11],
@@ -940,7 +970,9 @@ the style rules. `convert` reads the format of each file from its extension
 (`.json`, `.jsonc`, `.jsonl`/`.ndjson`, `.cbor`, YAML otherwise) and writes
 the documents of all files as one stream; JSON output has one value per
 document, with scalars typed by the YAML core schema. `query` applies a
-JSONPath to each document and writes the selected nodes as documents.
+JSONPath to each document and writes the selected nodes as documents;
+with `PATH = VALUE`, it assigns VALUE to them with `yaml/edit` and writes
+the edited input instead, or with `-i` edits the files in place.
 
 One config file, `.yaml` or `.yaml.yaml` (not both in one directory), found
 by walking up from each file's directory, configures `lint`, `validate`,

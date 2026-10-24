@@ -36,7 +36,7 @@ import std/[os, parseopt, streams, strutils]
 when defined(nimPreviewSlimSystem):
   import std/syncio
 import ../yaml/[data, dom, dumping, loading, parser, presenter, stream, cbor,
-    jsonpath, toolconfig]
+    jsonpath, toolconfig, edit]
 import ../yaml/private/lex
 from ../yaml/hints import guessType, TypeHint
 import yamllint, yamlexpand, yamllsp
@@ -130,10 +130,11 @@ yaml help convert). With --paths, their Normalized Paths are printed
 instead, one per line.
 
 With = VALUE (the first = outside of brackets and quotes), each selected
-node is replaced by VALUE, read as YAML, and all documents are written
-instead. With -i (or --in-place), each file in which a node is selected is
-rewritten in its own format (or --from) instead; the documents are
-rewritten from their content, so comments and styles are not kept."""
+node is replaced by VALUE, read as YAML, and the edited input is written
+instead: only the text of the selected nodes changes, so comments, styles
+and layout stay. Several inputs and --to are written as by yaml convert.
+With -i (or --in-place), each file in which a node is selected is edited
+in place instead. CBOR has no text to edit and is encoded again."""
 
   expandUsage = """usage: yaml expand [--modeline] [FILE]
 
@@ -484,11 +485,56 @@ proc splitAssignment(expr: string):
     inc i
   (expr, "", false)
 
+proc assignedCbor(input: Input, path: JsonPath, value: string):
+    tuple[text: string, count: int] =
+  ## Like `assigned`, for CBOR: the documents are encoded again.
+  let documents = newStream()
+  var s = events(input, dfCbor)
+  discard s.next() # yamlStartStream
+  while s.peek().kind == yamlStartDoc:
+    var root: YamlNode
+    construct(s, root)
+    for found in root.queryLocated(path):
+      # a value of its own for each node, so that none is an alias
+      var node: YamlNode
+      load(value, node)
+      found.node[] = node[]
+      inc(result.count)
+    documents.collect(represent(root))
+  result.text =
+    if result.count > 0: render(documents, dfCbor, FormatConfig())
+    else: input.content
+
+proc assigned(input: Input, format: DataFormat, path: JsonPath,
+    value: string, style: FormatConfig): tuple[text: string, count: int] =
+  ## ``input`` with ``value`` assigned to the nodes that ``path`` selects,
+  ## and their number; see `yaml/edit <../yaml/edit.html>`_.
+  case format
+  of dfCbor: result = assignedCbor(input, path, value)
+  of dfJsonLines:
+    var lineNumber = 0
+    for line in input.content.splitLines(keepEol = true):
+      inc(lineNumber)
+      let content = line.strip(leading = false, chars = {'\l', '\c'})
+      if content.strip().len == 0:
+        result.text.add(line)
+        continue
+      try:
+        let (text, count) = edit.assign(content, path, value, json = true)
+        result.text.add(text & line[content.len .. ^1])
+        result.count += count
+      except YamlParserError as e:
+        e.mark.line = lineNumber
+        raise e
+  else:
+    result = edit.assign(input.content, path, value,
+        style.dumper.presentation,
+        json = format in {dfJson, dfJsonc})
+
 proc queryCommand(args: seq[string]): int =
   var
     positional: seq[string]
-    source = none(DataFormat)
-    target = dfYaml
+    source, target = none(DataFormat)
     paths, inPlace = false
   for kind, key, val in options(args):
     case kind
@@ -496,7 +542,7 @@ proc queryCommand(args: seq[string]): int =
     of cmdLongOption, cmdShortOption:
       case key
       of "from": source = some(parseFormat("query", val))
-      of "to": target = parseFormat("query", val)
+      of "to": target = some(parseFormat("query", val))
       of "paths": paths = true
       of "in-place", "i": inPlace = true
       else: fail("query")
@@ -524,13 +570,22 @@ proc queryCommand(args: seq[string]): int =
     yamlStyle = toolConfigFor(
         if files.len > 0: files[0] else: getCurrentDir() / "-").format
     selected = newStream()
+  var asText = false # the edited text of a single input is written as is
   for input in readInputs(files):
-    let
-      format = source.get(
-          if files.len == 0: dfYaml else: formatOf(input.name))
-      documents = if inPlace: newStream() else: selected
-    var changed = false
+    let format = source.get(
+        if files.len == 0: dfYaml else: formatOf(input.name))
     try:
+      if assigns:
+        let edited = assigned(input, format, path, valueText,
+            if files.len == 0: yamlStyle
+            else: toolConfigFor(input.name).format)
+        if inPlace:
+          if edited.count > 0: writeFile(input.name, edited.text)
+        elif files.len <= 1 and target.isNone and format != dfCbor:
+          asText = true
+          stdout.write(edited.text)
+        else: selected.collect(events((input.name, edited.text), format))
+        continue
       var s = events(input, format)
       discard s.next() # yamlStartStream
       while s.peek().kind == yamlStartDoc:
@@ -538,27 +593,17 @@ proc queryCommand(args: seq[string]): int =
         construct(s, root)
         for found in root.queryLocated(path):
           if paths: stdout.writeLine(found.path)
-          elif assigns:
-            # a value of its own for each node, so that none is an alias
-            var value: YamlNode
-            load(valueText, value)
-            found.node[] = value[]
-            changed = true
           else: selected.collect(represent(found.node))
-        if assigns: documents.collect(represent(root))
-    except YamlStreamError, YamlParserError, YamlConstructionError:
+    except YamlEditError as e:
+      stderr.writeLine(input.name & ": " & e.msg)
+      return 1
+    except YamlStreamError, YamlParserError, YamlConstructionError,
+        YamlPresenterCborError:
       stderr.writeLine(describe(input.name, getCurrentException()))
       return 1
-    if inPlace and changed:
-      try:
-        writeFile(input.name,
-            render(documents, format, toolConfigFor(input.name).format))
-      except YamlPresenterJsonError, YamlPresenterCborError, YamlStreamError:
-        stderr.writeLine(describe(input.name, getCurrentException()))
-        return 1
-  if not (paths or inPlace):
+  if not (paths or inPlace or asText):
     try:
-      stdout.write(selected, target, yamlStyle)
+      stdout.write(selected, target.get(dfYaml), yamlStyle)
     except YamlPresenterJsonError, YamlPresenterCborError, YamlStreamError:
       stderr.writeLine(describe("<output>", getCurrentException()))
       return 1

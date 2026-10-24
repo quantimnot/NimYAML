@@ -1246,7 +1246,7 @@ proc present*(
   doPresent(c, s)
   return ss.data
 
-proc normalized(event: Event, resolveToCoreYamlTags: bool): Event =
+proc normalized*(event: Event, resolveToCoreYamlTags: bool): Event =
   ## ``event`` with its presentation style left to the presenter and, with
   ## ``resolveToCoreYamlTags``, its non-specific tag resolved.
   result = event
