@@ -207,6 +207,11 @@ TODO
 
 API for other VSCode extensions to attribute schemas to documents.
 
+### [Extension Point: Hover Transformer](docs/extension-api.md#hover-transformer)
+
+API for other VSCode extensions to change hovers before they are shown,
+e.g. to render math or diagrams in schema descriptions.
+
 ## Development
 
 ```bash

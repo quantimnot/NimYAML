@@ -25,17 +25,23 @@
 //
 // And paths (paths/): the JSON Pointer or JSON Path of the node at the
 // cursor in the status bar, commands that copy it, and "Go to Path…".
+//
+// `activate` returns an API for other extensions: `registerHoverTransformer`
+// (hovers/) lets them change yamllsp's hovers before they are shown.
 
 const vscode = require("vscode");
 const { LanguageClient, TransportKind } = require("vscode-languageclient/node");
 const { activateEmbedded } = require("./embedded");
 const { registerGrid } = require("./grid");
 const { registerPaths } = require("./paths");
+const { HoverTransformers } = require("./hovers");
 
 let client;
 let embedded;
 let grid;
 let paths;
+// outlives the clients, so transformers stay registered across restarts
+const hovers = new HoverTransformers();
 let traceOutputChannel;
 
 // Documents yamllsp is told about. `file` documents get their
@@ -101,7 +107,11 @@ async function start() {
     "yaml+lsp",
     "yaml+lsp",
     serverOptions(),
-    { documentSelector, traceOutputChannel, middleware: embedded.middleware },
+    {
+      documentSelector,
+      traceOutputChannel,
+      middleware: { ...embedded.middleware, provideHover: hovers.provideHover },
+    },
   );
   try {
     await client.start();
@@ -150,6 +160,10 @@ async function activate(context) {
   paths = registerPaths(() => client);
   context.subscriptions.push(paths.disposable);
   await start();
+  return {
+    /** See hovers/index.js and docs/extension-api.md. */
+    registerHoverTransformer: (transformer) => hovers.register(transformer),
+  };
 }
 
 async function deactivate() {
