@@ -1270,7 +1270,7 @@ proc constructObjectDefault*[O: object|tuple](
       )
     let startPos = e.startPos
     when hasIgnore(O):
-      const ignoredKeyList = O.getCustomPragmaVal(ignore)
+      const ignoredKeyList: seq[string] = @(O.getCustomPragmaVal(ignore))
       const failOnUnknown = len(ignoredKeyList) > 0
     else:
       const failOnUnknown = true
