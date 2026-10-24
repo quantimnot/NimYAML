@@ -43,3 +43,4 @@ tools/yamlexpand
 test/tdirectives
 test/tdocumentschema
 test/tportable
+.claude/

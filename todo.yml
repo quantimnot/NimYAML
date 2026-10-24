@@ -1,5 +1,24 @@
 %YAML 1.2
 ---
+- id: consolidated commands
+  features:
+  - consolidated config file named `.yaml`, or `.yaml.yaml` for configuring
+    all features. Including spec validation+diags, schema validation+diags,
+    lint validation+diags, formatting, parser and renderer tuning.
+  - yaml as|to|convert [OPTS] cbor|json[cl] PATH+|<<stdin # conversion
+  - yaml validate [OPTS] PATH+|<<stdin # TODO: should it include spec, schema and lint?
+  - yaml lint [OPTS] PATH+|<<stdin
+  - yaml lsp [OPTS] # v1 is stdio
+  - yaml format [OPTS] PATH+|<<stdin
+  - yaml [query] EXPR PATH+|<<stdin
+  - yaml help [CMD]
+
+
+# - id: stream-framer
+#   info:
+#   - 
+
+
 - id: schema
   with:
     - id: tag
@@ -33,10 +52,6 @@
     info:
     - https://www.rfc-editor.org/info/rfc8746/
 
-- id: rfc6902-json-patch
-  info:
-  - https://datatracker.ietf.org/doc/rfc6902/
-
 - id: rfc6901-json-pointer
   info:
   - https://datatracker.ietf.org/doc/rfc6901/
@@ -46,15 +61,17 @@
     info:
     - https://www.ietf.org/archive/id/draft-hha-relative-json-pointer-00.html
 
-- id: rfc6902-json-merge-patch
+- id: rfc6902-json-patch
+  info:
+  - https://datatracker.ietf.org/doc/rfc6902/
+
+- id: rfc7396-json-merge-patch
   info:
   - https://datatracker.ietf.org/doc/rfc7396/
 
 - id: jsonl
 
 - id: jsonc
-
-- id: json-ld
 
 - id: json-schema
   status: done
