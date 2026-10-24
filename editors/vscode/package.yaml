@@ -46,9 +46,27 @@ contributes:
       extensions:
         - .yaml
         - .yml
+      mimetypes:
+        - application/yaml
+        - application/x-yaml
+        - text/yaml
+        - text/x-yaml
       filenames: []
+      filenamePatterns: []
       comments:
         lineComment: '#'
+      icon:
+        dark: icons/yaml-dark.svg
+        light: icons/yaml-light.svg
+      folding:
+        offSide: true
+        markers:
+          start: ^\s*#\s*region\b
+          end: ^\s*#\s*endregion\b
+      indentationRules:
+        increaseIndentPattern: ^\s*.*(:|-) ?(&[^\s,\[\]{}]+)?(\{[^}"']*|\([^)"']*)?$
+        decreaseIndentPattern: ^\s+\}$
+      wordPattern: '[^\s\[\]{}:,"'']+(?:[:''][^\s\[\]{}:,"'']+)*'
       brackets:
         - - '{'
           - '}'
@@ -82,24 +100,6 @@ contributes:
           - ''''
         - - '`'
           - '`'
-      icon:
-        dark: icons/yaml-dark.svg
-        light: icons/yaml-light.svg
-      filenamePatterns: []
-      mimetypes:
-        - application/yaml
-        - application/x-yaml
-        - text/yaml
-        - text/x-yaml
-      folding:
-        offSide: true
-        markers:
-          start: ^\s*#\s*region\b
-          end: ^\s*#\s*endregion\b
-      indentationRules:
-        increaseIndentPattern: ^\s*.*(:|-) ?(&[^\s,\[\]{}]+)?(\{[^}"']*|\([^)"']*)?$
-        decreaseIndentPattern: ^\s+\}$
-      wordPattern: '[^\s\[\]{}:,"'']+(?:[:''][^\s\[\]{}:,"'']+)*'
     - id: json
       aliases:
         - JSON
@@ -110,7 +110,15 @@ contributes:
         - .har
         - .jsonld
         - .webmanifest
+      mimetypes:
+        - application/json
+        - application/manifest+json
+        - application/ld+json
+        - application/geo+json
       filenames: []
+      icon:
+        dark: icons/json-dark.svg
+        light: icons/json-light.svg
       brackets:
         - - '{'
           - '}'
@@ -130,14 +138,6 @@ contributes:
           - ']'
         - - '"'
           - '"'
-      icon:
-        dark: icons/json-dark.svg
-        light: icons/json-light.svg
-      mimetypes:
-        - application/json
-        - application/manifest+json
-        - application/ld+json
-        - application/geo+json
     - id: jsonc
       aliases:
         - JSON with Comments
@@ -146,7 +146,12 @@ contributes:
         - .jsonc
         - .code-workspace
         - .code-profile
+      mimetypes:
+        - application/jsonc
       filenames: []
+      icon:
+        dark: icons/jsonc-dark.svg
+        light: icons/jsonc-light.svg
       comments:
         lineComment: //
         blockComment:
@@ -171,11 +176,6 @@ contributes:
           - ']'
         - - '"'
           - '"'
-      icon:
-        dark: icons/jsonc-dark.svg
-        light: icons/jsonc-light.svg
-      mimetypes:
-        - application/jsonc
     - id: jsonl
       aliases:
         - JSON Lines
@@ -184,7 +184,13 @@ contributes:
       extensions:
         - .jsonl
         - .ndjson
+      mimetypes:
+        - application/jsonl
+        - application/x-ndjson
       filenames: []
+      icon:
+        dark: icons/jsonl-dark.svg
+        light: icons/jsonl-light.svg
       brackets:
         - - '{'
           - '}'
@@ -204,12 +210,6 @@ contributes:
           - ']'
         - - '"'
           - '"'
-      icon:
-        dark: icons/jsonl-dark.svg
-        light: icons/jsonl-light.svg
-      mimetypes:
-        - application/jsonl
-        - application/x-ndjson
     - id: cbor
       aliases:
         - CBOR
@@ -218,6 +218,12 @@ contributes:
         - .cbor
         - .cbordiag
       filenames: []
+      mimetypes:
+        - application/cbor
+        - application/cbor-diagnostic
+      icon:
+        dark: icons/cbor-dark.svg
+        light: icons/cbor-light.svg
       comments:
         lineComment: '#'
         blockComment:
@@ -254,12 +260,6 @@ contributes:
           - '"'
         - - ''''
           - ''''
-      icon:
-        dark: icons/cbor-dark.svg
-        light: icons/cbor-light.svg
-      mimetypes:
-        - application/cbor
-        - application/cbor-diagnostic
   grammars:
     - language: json
       scopeName: source.json
