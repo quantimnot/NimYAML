@@ -8,8 +8,8 @@
 //
 // The server is not bundled. It is a native binary built from this
 // repository, and where it lives depends on the machine, so the command
-// comes from the `nimyaml.yamllsp.path` setting and defaults to looking up
-// `yamllsp` on PATH.
+// comes from the `nimyaml.yamllsp.path` and `nimyaml.yamllsp.args` settings
+// and defaults to `yaml lsp`, with `yaml` looked up on PATH.
 //
 // yamllsp coexists with other YAML extensions (e.g. Red Hat's
 // yaml-language-server): VS Code merges diagnostics, hovers and completions
@@ -38,8 +38,8 @@ const documentSelector = [
 function serverOptions() {
   const config = vscode.workspace.getConfiguration("nimyaml.yamllsp");
   return {
-    command: config.get("path", "yamllsp"),
-    args: config.get("args", []),
+    command: config.get("path", "yaml"),
+    args: config.get("args", ["lsp"]),
     transport: TransportKind.stdio,
   };
 }

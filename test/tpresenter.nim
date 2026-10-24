@@ -177,3 +177,18 @@ suite "Presenter":
     assertOutput(input, "false\n", jsonOptions)
     input = inputSingle(scalarEvent("~", yTagNull))
     assertOutput(input, "null\n", jsonOptions)
+
+  test "JSON output with keyword and number array items":
+    var input = inputSingle(startSeqEvent(), scalarEvent("1"),
+      scalarEvent("true"), scalarEvent("~", yTagNull),
+      scalarEvent("1.5", yTagFloat), scalarEvent("2", yTagString),
+      endSeqEvent())
+    assertOutput(input, "[\n  1,\n  true,\n  null,\n  1.5,\n  \"2\"\n]\n",
+      jsonOptions)
+
+  test "JSON output keeps keys strings":
+    var input = inputSingle(startMapEvent(), scalarEvent("1"),
+      scalarEvent("true"), scalarEvent("null"), startSeqEvent(),
+      scalarEvent("2"), endSeqEvent(), endMapEvent())
+    assertOutput(input, "{\n  \"1\": true,\n  \"null\": [\n    2\n  ]\n}\n",
+      jsonOptions)

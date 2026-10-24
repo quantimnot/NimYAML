@@ -860,19 +860,25 @@ presenter writes each document's directives with
 plus the directive rules listed under
 [`%SCHEMA` and `%GLOBAL` Directives](#schema-and-global-directives).
 
-Rules are configured in `.nimyaml-lint.yaml`, found by walking up from the
-linted file's directory:
+Rules are configured in the `lint` section of the `.yaml` (or `.yaml.yaml`)
+config, found by walking up from the linted file's directory (see
+[The `yaml` Command](#the-yaml-command)):
 
 ```yaml
-rules:
-  line-length: {level: warning, max: 100}
-  truthy: {level: off}
+lint:
+  rules:
+    line-length: {level: warning, max: 100}
+    truthy: {level: off}
 ```
 
-Two tools use it: `tools/yamllint.nim`
-(`yamllint [--config:FILE] [--no-schema] FILE...`, exit code 1 if there are
-errors, 2 for usage, I/O or config errors) and `tools/yamllsp.nim`, a
-language server (JSON-RPC over stdio, full document sync). Both also validate
+A `.nimyaml-lint.yaml` holding just the `rules` is still read in place of a
+`.yaml` config.
+
+Two tools use it, `yaml lint` and the language server `yaml lsp` (JSON-RPC
+over stdio, full document sync), both commands of the `yaml` tool; the
+standalone `tools/yamllint.nim`
+(`yamllint [--config:FILE] [--no-schema] FILE...`) and `tools/yamllsp.nim`
+still work the same way. Both also validate
 documents against the JSON Schema they declare (`file:` schemas only). The
 language server publishes the diagnostics of open documents and offers
 completion of directive names, hover on directives (effective value, global
@@ -881,13 +887,11 @@ schema in effect), go-to-definition and document links on schema
 references, and syntax highlighting (semantic tokens) as NimYAML's lexer
 reads the text: keys, scalars by resolved type (numbers, booleans, null),
 tags, anchors, aliases, `%GLOBAL`/`%SCHEMA` and other directives, and
-comments. Build them with
-`nim yamllint config.nims` and `nim yamllsp config.nims`, or
-`nim c -d:release tools/yamllint`.
+comments.
 
 Editor bindings for the language server live in `editors/`. Both start
-`yamllsp` from `PATH` by default, so put the built binary there or point
-them at it:
+`yaml lsp` with `yaml` from `PATH` by default, so put the built binary there
+or point them at it:
 
 * **VS Code**: `editors/vscode` is a small extension. Package and install it
   with
@@ -896,7 +900,8 @@ them at it:
   npx @vscode/vsce package --allow-missing-repository --skip-license
   code --install-extension nimyaml-yamllsp-0.2.0.vsix
   ```
-  Set `nimyaml.yamllsp.path` to use a binary that is not on `PATH`, and run
+  Set `nimyaml.yamllsp.path` to use a binary that is not on `PATH` (and
+  `nimyaml.yamllsp.args` to `[]` for the standalone `yamllsp`), and run
   *NimYAML: Restart yamllsp* after rebuilding it. It runs alongside other
   YAML extensions. It also provides embedded languages: code in a literal
   block scalar whose language is named (`query: | # sql`) gets that
@@ -904,7 +909,62 @@ them at it:
   [editors/vscode/README.md](editors/vscode/README.md).
 * **Helix**: merge `editors/helix/languages.toml` into
   `~/.config/helix/languages.toml`, or copy it to `.helix/languages.toml` in a
-  project. `hx --health yaml` shows whether `yamllsp` was found.
+  project. `hx --health yaml` shows whether `yaml` was found.
+
+## The `yaml` Command
+
+`tools/yamlcli.nim` is a single command line tool for everything above.
+Build it as `yaml` with `nim yaml config.nims` or
+`nim c -d:release -o:yaml tools/yamlcli.nim`, and see `yaml help COMMAND`:
+
+```bash
+yaml lint [--config:FILE] [--no-schema] [FILE...]      # all lint rules + schemas
+yaml validate [--config:FILE] [--no-schema] [FILE...]  # YAML spec + schemas only
+yaml format [--write | --check] [--drop-comments] [FILE...]
+yaml convert [--from:FORMAT] yaml|json|jsonc|jsonl|cbor [FILE...]  # also: as, to
+yaml query [--to:FORMAT] [--paths] '$.servers[*].port' [FILE...]
+yaml '$.servers[*].port' [FILE...]                     # the same
+yaml expand [--modeline] [FILE]                        # portable %GLOBAL
+yaml lsp                                               # language server, stdio
+yaml help [COMMAND]
+```
+
+Commands read standard input when no file is given. Exit codes: 0 on
+success, 1 if an input is invalid, has error diagnostics or (with
+`format --check`) is not formatted, 2 for usage, I/O and config errors.
+
+`validate` reports only what makes a file invalid (syntax errors, duplicate
+keys, undefined aliases, directive errors, schema violations); `lint` adds
+the style rules. `convert` reads the format of each file from its extension
+(`.json`, `.jsonc`, `.jsonl`/`.ndjson`, `.cbor`, YAML otherwise) and writes
+the documents of all files as one stream; JSON output has one value per
+document, with scalars typed by the YAML core schema. `query` applies a
+JSONPath to each document and writes the selected nodes as documents.
+
+One config file, `.yaml` or `.yaml.yaml` (not both in one directory), found
+by walking up from each file's directory, configures `lint`, `validate`,
+`format` and the language server. Every key is optional:
+
+```yaml
+lint:
+  rules:
+    line-length: {max: 100}
+validate:
+  schema: true          # validate against the declared JSON Schemas
+format:
+  style: default        # minimal, explanatory, json, json-lines, block-only
+  indentation: 2
+  max-line-length: 80   # 0 for no limit
+```
+
+### Caveats
+
+ * `format` cannot keep comments, so it refuses files that have them unless
+   given `--drop-comments`. It also drops the original scalar and
+   collection styles; the `format` section decides them.
+ * The language server only speaks stdio (`--stdio` is accepted and
+   ignored).
+ * There are no parser options in the config yet.
 
 ## Developers
 
@@ -919,6 +979,7 @@ nim checkpointTests config.nims # resume from checkpoints after every event of y
 nim documentTests config.nims # parse from document starts; error recovery
 nim lintTests config.nims # diagnostics, lint rules and lint config
 nim yamllintTests config.nims # yamllint command line tool
+nim yamlcliTests config.nims # yaml command line tool; .yaml config
 nim lspTests config.nims # yamllsp language server
 nim fragmentTests config.nims # fragment identifiers; multi-document dumping
 nim nativeTests config.nims # runs native value tests

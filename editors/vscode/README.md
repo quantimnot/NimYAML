@@ -1,6 +1,6 @@
 # NimYAML yamllsp for VS Code
 
-Starts [`yamllsp`](../../tools/yamllsp.nim), NimYAML's language server, for
+Starts `yaml lsp` ([`tools/yamlcli.nim`](../../tools/yamlcli.nim)), NimYAML's language server, for
 YAML documents: lint diagnostics, JSON Schema validation, `%GLOBAL` and
 `%SCHEMA` support and semantic highlighting. See the main README for
 building and installing.

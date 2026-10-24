@@ -287,6 +287,17 @@ proc isBlank(content: string): bool =
     if text.len > 0 and text[0] != '#': return false
   true
 
+proc checkLintConfig*(config: LintConfig) =
+  ## Raises `LintConfigError` if ``config`` names an unknown rule or has a
+  ## negative ``max``.
+  let ids = builtinRuleIds()
+  for id, rule in config.rules:
+    if id notin ids:
+      raise newException(LintConfigError, "unknown rule: " & id)
+    if rule.max.isSome and rule.max.get() < 0:
+      raise newException(LintConfigError,
+          id & ": max must not be negative")
+
 proc parseLintConfig*(content: string): LintConfig =
   ## Parses the content of a lint config file. Blank or comment-only content
   ## yields `defaultConfig`. Raises `LintConfigError` if the content is
@@ -297,13 +308,7 @@ proc parseLintConfig*(content: string): LintConfig =
   except YamlLoadingError as e:
     raise newException(LintConfigError,
         $e.mark.line & ":" & $e.mark.column & ": " & e.msg)
-  let ids = builtinRuleIds()
-  for id, rule in result.rules:
-    if id notin ids:
-      raise newException(LintConfigError, "unknown rule: " & id)
-    if rule.max.isSome and rule.max.get() < 0:
-      raise newException(LintConfigError,
-          id & ": max must not be negative")
+  checkLintConfig(result)
 
 proc loadLintConfig*(path: string): LintConfig =
   ## Loads the lint config file at ``path``. Raises `LintConfigError`, with
