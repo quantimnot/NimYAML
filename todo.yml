@@ -1,6 +1,49 @@
 %YAML 1.2
 ---
+- id: editor-multiline-support
+  status: todo
+  info: [https://yaml-multiline.info/]
+  feature:
+  - tutorial
+  - visual aids
+  - format
+  - auto convert text over max-line-length into multiline
+  - fixit
+
+- id: multidoc-stream-framer
+  status: todo
+  info:
+  - ~/ws/rei/corpus/rei/_2proto/math/frame.nim
+  - ~/ws/rei/corpus/rei/_2proto/math/frame.nim
+  - ~/ws/rei/corpus/rei/_2proto/math/frame.nim
+
+- id: json-schema-database
+  status: todo
+  feature:
+  - abstract schema database interface
+  - user-owned cross-project database
+  - project-local database
+  - configurable in `.yaml`
+  - add this schema db: https://www.schemastore.org/
+
+- id: json-schema-database-filesystem
+  status: todo
+  feature:
+  - configurable in `.yaml`
+
+- id: json-schema-database-sqlite
+  status: todo
+  feature:
+  - configurable in `.yaml`
+
+- id: media-type-rfc8949-cbor-rfc8746-typed-arrays
+  status: todo
+  info:
+  - https://www.rfc-editor.org/info/rfc8746/
+
+
 - id: consolidated commands
+  status: done
   features:
   - consolidated config file named `.yaml`, or `.yaml.yaml` for configuring
     all features. Including spec validation+diags, schema validation+diags,
@@ -13,46 +56,27 @@
   - yaml [query] EXPR PATH+|<<stdin
   - yaml help [CMD]
 
+- id: json-schema-yaml-directive
+  status: done
+  feature:
+  - "read %SCHEMA directive"
 
-# - id: stream-framer
-#   info:
-#   - 
+- id: json-schema-comment-directive
+  status: done
+  feature:
+  - "read $schema: directives"
 
-
-- id: schema
-  with:
-    - id: tag
-      status: done
-      feature:
-      - read schema tag
-      - write (configurable/optional) schema tag
-      info:
-      - "%SCHEMA and %GLOBAL directives, see README"
-    - id: database
-      feature:
-      - abstract schema database interface
-      - add this schema db: https://www.schemastore.org/
-      - add local sqlite schema database
-      - cache schemas in the local db
-
-# - id: json
-#   info:
-#   - https://www.rfc-editor.org/subjects/json/
-
-- id: cbor
+- id: media-type-rfc8949-cbor
+  status: done
   why:
   - CBOR <-> YAML
   - CBOR <-> JSON
   - Use CBOR for index
-  with:
-  - id: rfc8949-cbor
-    info:
-    - https://www.rfc-editor.org/rfc/inline-errata/rfc8949.html
-  - id: rfc8746-cbor-typed-arrays
-    info:
-    - https://www.rfc-editor.org/info/rfc8746/
+  info:
+  - https://www.rfc-editor.org/rfc/inline-errata/rfc8949.html
 
 - id: rfc6901-json-pointer
+  status: done
   info:
   - https://datatracker.ietf.org/doc/rfc6901/
   - https://errata.rfc-editor.org/eid8314/
@@ -69,9 +93,11 @@
   info:
   - https://datatracker.ietf.org/doc/rfc7396/
 
-- id: jsonl
+- id: media-type-jsonl
+  status: done
 
-- id: jsonc
+- id: media-type-jsonc
+  status: done
 
 - id: json-schema
   status: done
@@ -100,6 +126,7 @@
     info:
     - https://datatracker.ietf.org/doc/rfc9535/
   - id: rfc9535-jsonpath-community-tests
+    status: todo
     info:
     - https://github.com/cburgmer/json-path-comparison
     feature:
@@ -107,8 +134,10 @@
     - cross-implementation consensus analysis
 
 - id: yaml-merge
+  status: todo
 
 - id: streaming-resumability
+  status: done
   with:
     - id: incremental-feed
       status: done
@@ -136,14 +165,13 @@
 - id: editor
   with:
     - id: syntax-highlighting
+      status: done
 
-    - id: multiline
-      info: [https://yaml-multiline.info/]
-      feature:
-      - tutorial
-      - visual aids
+    - id: semantic-highlighting
+      status: done
 
     - id: embedded-lang
+      status: done
       info: [https://github.com/harrydowning/vscode-yaml-embedded-languages]
       feature:
       - embedded-lang-region IDE integration
