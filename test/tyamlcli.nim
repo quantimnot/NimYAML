@@ -209,20 +209,30 @@ suite "yaml":
     check cli("format", "-i", "--check", "i.yaml").exitCode == 2
 
   test "assignment":
-    writeFile(dir / "s.yaml", "a: 1\nb: [x, {c: 2}]\n---\nb: []\n")
+    writeFile(dir / "s.yaml",
+        "# s\na: 1  # one\nb: [x, {c: 2}]\n---\nb: []\n")
+    # only the selected nodes change
     check cli("$.a = 3", "s.yaml") ==
-        ("a: 3\nb:\n  - x\n  - c: 2\n...\nb: []\n", 0)
+        ("# s\na: 3  # one\nb: [x, {c: 2}]\n---\nb: []\n", 0)
     check cli(@["$.b[1].c={d: [1, 2]}"], input = "b: [x, {c: 2}]\n") ==
-        ("b:\n  - x\n  - c:\n      d: [1, 2]\n", 0)
-    # each selected node gets a value of its own, not an alias of one
+        ("b: [x, {c: {d: [1, 2]}}]\n", 0)
+    # what follows the content of a node stays, like a comment at its end
+    check cli(@["$.b = [p, {q: 1}]"], input = "b:\n  - x  # x\nc: 1\n") ==
+        ("b:\n  - p\n  - q: 1  # x\nc: 1\n", 0)
     check cli(@["$..c = [1]"], input = "- c: 1\n- c: 2\n") ==
         ("- c: [1]\n- c: [1]\n", 0)
     # = in filters and strings does not assign
     check cli(@["$[?@.k == 'a=b'].v = 0"],
         input = "- {k: a=b, v: 1}\n- {k: c, v: 2}\n") ==
-        ("- k: a=b\n  v: 0\n- k: c\n  v: 2\n", 0)
+        ("- {k: a=b, v: 0}\n- {k: c, v: 2}\n", 0)
+    # with --to or several inputs, as by convert
     check cli(@["query", "--to:json", "$ = {a: 1}"], input = "x\n") ==
         ("{\n  \"a\": 1\n}\n", 0)
+    check cli("$.b = 1", "s.yaml", "a.yaml").output.startsWith("a: 1\nb: 1\n")
+    # an edit that the text cannot take
+    let broken = cli(@["$.a = 2"], input = "a: {k: &x 1}\nb: *x\n")
+    check broken.exitCode == 1
+    check broken.output.startsWith("<stdin>: cannot assign in place: ")
     check cli("$.a = [", "s.yaml").exitCode == 2
     check cli("query", "--paths", "$.a = 3", "s.yaml").exitCode == 2
 
@@ -232,11 +242,22 @@ suite "yaml":
     writeFile(dir / "u.yaml", "b:   2\n")
     check cli("$.a = 5", "-i", "t.yaml", "t.json", "u.yaml") == ("", 0)
     check readFile(dir / "t.yaml") == "a: 5\nb: 2\n"
-    check readFile(dir / "t.json") == "{\n  \"a\": 5\n}\n"
+    check readFile(dir / "t.json") == "{\"a\": 5}\n"
     # a file without a selected node is left alone
     check readFile(dir / "u.yaml") == "b:   2\n"
     check cli("query", "--in-place", "$.b = x", "t.yaml") == ("", 0)
     check readFile(dir / "t.yaml") == "a: 5\nb: x\n"
+    writeFile(dir / "t.jsonc", "{\n  // c\n  \"a\": [1],\n}\n")
+    writeFile(dir / "t.jsonl", "{\"a\": 1}\n\n{\"b\": 2}\n{\"a\": 3}\n")
+    check cli("$.a = {x: y}", "-i", "t.jsonc", "t.jsonl") == ("", 0)
+    check readFile(dir / "t.jsonc") ==
+        "{\n  // c\n  \"a\": {\"x\": \"y\"},\n}\n"
+    check readFile(dir / "t.jsonl") ==
+        "{\"a\": {\"x\": \"y\"}}\n\n{\"b\": 2}\n{\"a\": {\"x\": \"y\"}}\n"
+    check execCmd(quoteShell(bin) & " as cbor " & quoteShell(dir / "t.yaml") &
+        " > " & quoteShell(dir / "t.cbor")) == 0
+    check cli("$.a = 6", "-i", "t.cbor") == ("", 0)
+    check cli("as", "yaml", "t.cbor") == ("a: 6\nb: x\n", 0)
     check cli(@["$.a = 1", "-i"], input = "a: 2\n").exitCode == 2
     check cli("$.a", "-i", "t.yaml").exitCode == 2
 
