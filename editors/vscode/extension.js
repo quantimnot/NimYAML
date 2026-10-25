@@ -28,6 +28,8 @@
 //
 // And diff (diff/): a semantic diff of two YAML or JSON texts, which
 // yamllsp computes and a quick pick lists.
+//
+// And comments (comments/): Enter in a comment continues it.
 
 const vscode = require("vscode");
 const { LanguageClient, TransportKind } = require("vscode-languageclient/node");
@@ -35,6 +37,7 @@ const { activateEmbedded } = require("./embedded");
 const { registerGrid } = require("./grid");
 const { registerPaths } = require("./paths");
 const { registerDiff } = require("./diff");
+const { registerComments } = require("./comments");
 
 let client;
 let embedded;
@@ -154,6 +157,7 @@ async function activate(context) {
   paths = registerPaths(() => client);
   context.subscriptions.push(paths.disposable);
   context.subscriptions.push(registerDiff(() => client));
+  context.subscriptions.push(registerComments());
   await start();
 }
 
