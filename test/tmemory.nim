@@ -5,7 +5,7 @@
 #    distribution, for details about the copyright.
 
 import ../yaml/memory
-import unittest, strutils
+import unittest, strutils, osproc
 
 suite "memory sizes":
   test "parseSize":
@@ -77,3 +77,97 @@ suite "host memory":
       check autoLimit() == hostMemory() div 2
     else:
       check hostMemory() == -1
+
+# parsing within a budget
+
+import ../yaml/[source, parser, stream, data]
+import std/[os, streams]
+when defined(nimPreviewSlimSystem):
+  import std/syncio
+
+let parseTmp = getTempDir() / ("yaml-memory-test-" & $getCurrentProcessId())
+createDir(parseTmp)
+
+proc manyDocuments(path: string, bytes: int) =
+  let f = open(path, fmWrite)
+  var written, i = 0
+  while written < bytes:
+    let doc = "---\nid: " & $i & "\nname: item " & $i &
+        "\ntags: [a, b, c]\nnested: {x: 1, y: [2, 3]}\n"
+    f.write(doc)
+    written += doc.len
+    inc i
+  f.close()
+
+proc eventsOf(s: YamlStream): seq[string] =
+  for e in s: result.add($e)
+
+suite "parsing within a budget":
+  let docs = parseTmp / "docs.yaml"
+  manyDocuments(docs, 5_000_000)
+
+  test "events equal the in-memory parse, peak within the limit":
+    let expected = eventsOf(initYamlParser().parse(readFile(docs)))
+    for choice in [tcMmap, tcSeek, tcStream]:
+      let b = newMemoryBudget(256 * 1024)
+      let src = openSource(docs, b, SourcePolicy(choice: choice))
+      var p = initYamlParser(budget = b)
+      check eventsOf(p.parse(src)) == expected
+      check b.peak < 256 * 1024
+      src.close()
+
+  test "a line longer than the limit":
+    let long = parseTmp / "long.yaml"
+    writeFile(long, "key: " & repeat('v', 300 * 1024) & "\n")
+    let b = newMemoryBudget(128 * 1024)
+    let src = openSource(long, b, SourcePolicy(choice: tcSeek))
+    var p = initYamlParser(budget = b)
+    try:
+      discard eventsOf(p.parse(src))
+      check false
+    except YamlStreamError as e:
+      let limit = memoryLimitError(e)
+      check not limit.isNil
+      check limit.limit == 128 * 1024
+      check (ref YamlParserError)(e.parent).mark.line == 1
+    src.close()
+
+  test "a tiny limit fails cleanly":
+    let b = newMemoryBudget(1024)
+    let src = openSource(docs, b, SourcePolicy(choice: tcStream))
+    var p = initYamlParser(budget = b)
+    expect YamlStreamError: discard eventsOf(p.parse(src))
+    src.close()
+
+  test "the feed parser charges fed input":
+    let b = newMemoryBudget(64 * 1024)
+    let fp = newYamlFeedParser(initYamlParser(budget = b))
+    expect YamlMemoryLimitError:
+      fp.feed(repeat("a: 1\n", 20_000))
+
+  test "string input is not charged again":
+    let b = newMemoryBudget(16)
+    var p = initYamlParser(budget = b)
+    check eventsOf(p.parse("a: [1, 2]")).len > 0
+    check b.peak == 0
+
+suite "microcontroller build":
+  test "parser compiles with --os:any":
+    let dir = currentSourcePath.parentDir
+    let (output, code) = execCmdEx("nim c --os:any -d:useMalloc --mm:arc " &
+        "--hints:off --compileOnly --nimcache:" &
+        quoteShell(parseTmp / "osany-cache") & " " &
+        quoteShell(dir / "osany" / "parse.nim"))
+    check code == 0
+    if code != 0: echo output
+
+  test "the same program runs on the host":
+    let dir = currentSourcePath.parentDir
+    let (output, code) = execCmdEx("nim r --hints:off --nimcache:" &
+        quoteShell(parseTmp / "host-cache") & " " &
+        quoteShell(dir / "osany" / "parse.nim"))
+    check code == 0
+    check "+MAP" in output
+    check "=VAL :2" in output
+
+removeDir(parseTmp)

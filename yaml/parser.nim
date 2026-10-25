@@ -12,7 +12,8 @@
 ## non-nil string or Stream object as YAML character stream.
 
 import tables, strutils, macros, streams, std/importutils
-import stream, private/lex, private/internal, private/escaping, private/uri, data
+import stream, private/lex, private/internal, private/escaping, private/uri, data,
+    memory, source
 
 when defined(nimNoNil):
     {.experimental: "notnil".}
@@ -28,6 +29,7 @@ type
     directiveExtensions: bool
     sourceUri: string
     keepComments: bool
+    budget: MemoryBudget
 
   YamlParserError* = object of YamlLoadingError
     ## A parser error is raised if the character stream that is parsed is
@@ -91,6 +93,7 @@ type
     sourceUri: string
     globals: seq[Directive]
     documentsBegun: int
+    budget: MemoryBudget
     lex: Lexer
     levels: seq[Level]
     keyCache: seq[Event]
@@ -213,6 +216,7 @@ proc initCommon(ctx: Context, p: YamlParser) =
   ctx.issueWarnings = p.issueWarnings
   ctx.directiveExtensions = p.directiveExtensions
   ctx.sourceUri = p.sourceUri
+  ctx.budget = p.budget
   ctx.lex.directiveExtensions = p.directiveExtensions
   ctx.lex.keepComments = p.keepComments
   ctx.keyCachePos = 0
@@ -224,22 +228,29 @@ proc continueAt(ctx: Context, start: YamlDocumentStart) =
   ctx.globals = start.globals
   ctx.documentsBegun = start.index
 
-proc init[T](ctx: Context, p: YamlParser, source: T) {.inline.} =
+proc init(ctx: Context, p: YamlParser, source: Stream) {.inline.} =
+  ctx.initCommon(p)
+  ctx.lex.init(source, budget = p.budget)
+
+proc init(ctx: Context, p: YamlParser, source: string) {.inline.} =
   ctx.initCommon(p)
   ctx.lex.init(source)
 
 # interface
 
 proc init*(p: var YamlParser, issueWarnings: bool = false,
-    directiveExtensions = true, sourceUri = "", keepComments = false) =
+    directiveExtensions = true, sourceUri = "", keepComments = false,
+    budget: MemoryBudget = nil) =
   ## Initializes a YAML parser. See `initYamlParser`.
   p.issueWarnings = issueWarnings
   p.directiveExtensions = directiveExtensions
   p.sourceUri = sourceUri
   p.keepComments = keepComments
+  p.budget = budget
 
 proc initYamlParser*(issueWarnings: bool = false, directiveExtensions = true,
-    sourceUri = "", keepComments = false): YamlParser =
+    sourceUri = "", keepComments = false,
+    budget: MemoryBudget = nil): YamlParser =
   ## Creates an initializes YAML parser and returns it.
   ##
   ## With ``directiveExtensions``, the parser implements NimYAML's
@@ -248,8 +259,16 @@ proc initYamlParser*(issueWarnings: bool = false, directiveExtensions = true,
   ## ``sourceUri`` is the URI the input was retrieved from; relative
   ## ``%SCHEMA`` references resolve against it. With ``keepComments``, the
   ## streams of the parser collect the comments of the input, see
-  ## `comments <#comments,YamlStream>`_.
-  result.init(issueWarnings, directiveExtensions, sourceUri, keepComments)
+  ## `comments <#comments,YamlStream>`_. ``budget`` is charged for the
+  ## input the parser buffers when it reads a `Stream` or `YamlSource`: a
+  ## line or token that does not fit raises a `YamlParserError` whose
+  ## ``parent`` is a `YamlMemoryLimitError`. String input is not charged.
+  result.init(issueWarnings, directiveExtensions, sourceUri, keepComments,
+      budget)
+
+proc budget*(p: YamlParser): MemoryBudget =
+  ## The memory budget of ``p``, nil if it has none.
+  p.budget
 
 proc parse*(p: YamlParser, s: Stream): YamlStream =
   let ctx = new(Context)
@@ -280,8 +299,20 @@ proc parse*(p: YamlParser, s: Stream, start: YamlDocumentStart): YamlStream =
   let ctx = new(Context)
   ctx.initCommon(p)
   ctx.continueAt(start)
-  ctx.lex.init(s, start.offset, start.line)
+  ctx.lex.init(s, start.offset, start.line, p.budget)
   return ctx
+
+proc parse*(p: YamlParser, src: YamlSource): YamlStream
+    {.raises: [IOError, OSError].} =
+  ## Parses the input of ``src``, reading it as a stream; the lexer keeps a
+  ## sliding window of it, charged to the budget of ``p``.
+  p.parse(newSourceStream(src))
+
+proc parse*(p: YamlParser, src: YamlSource, start: YamlDocumentStart):
+    YamlStream {.raises: [IOError, OSError].} =
+  ## Parses the input of ``src`` from the document start ``start`` on; see
+  ## the `string` variant.
+  p.parse(newSourceStream(src, start.offset), start)
 
 proc documentStart*(s: YamlStream): YamlDocumentStart {.raises: [ValueError].} =
   ## The start of the document whose ``yamlStartDoc`` event was most recently
@@ -344,7 +375,7 @@ proc newYamlFeedParser*(p: YamlParser): YamlFeedParser =
   ## Creates a feed parser using the settings of ``p``.
   let ctx = new(Context)
   ctx.initCommon(p)
-  ctx.lex.initFeed()
+  ctx.lex.initFeed(budget = p.budget)
   result = YamlFeedParser(ctx: ctx, starvedAt: -1)
 
 proc newYamlFeedParser*(p: YamlParser, start: YamlDocumentStart): YamlFeedParser =
@@ -354,7 +385,7 @@ proc newYamlFeedParser*(p: YamlParser, start: YamlDocumentStart): YamlFeedParser
   let ctx = new(Context)
   ctx.initCommon(p)
   ctx.continueAt(start)
-  ctx.lex.initFeed(start.offset, start.line)
+  ctx.lex.initFeed(start.offset, start.line, p.budget)
   result = YamlFeedParser(ctx: ctx, starvedAt: -1)
 
 proc documentStart*(fp: YamlFeedParser): YamlDocumentStart =
@@ -892,7 +923,7 @@ proc resume*(p: YamlParser, cp: YamlCheckpoint, s: Stream): YamlStream
     raise newException(ValueError, "checkpoint of an unstarted feed parser; " &
         "use newYamlFeedParser to resume it")
   let ctx = p.resumeContext(cp)
-  ctx.lex.restore(cp.lexer, s)
+  ctx.lex.restore(cp.lexer, s, p.budget)
   result = ctx
 
 proc resume*(p: YamlParser, cp: YamlCheckpoint, s: string): YamlStream
@@ -916,8 +947,8 @@ proc newYamlFeedParser*(p: YamlParser, cp: YamlCheckpoint): YamlFeedParser
   ## Resumes parsing from a checkpoint as feed parser. Feed the original
   ## input from byte ``cp.offset`` on.
   let ctx = p.resumeContext(cp)
-  if cp.started: ctx.lex.restoreFeed(cp.lexer)
-  else: ctx.lex.initFeed()
+  if cp.started: ctx.lex.restoreFeed(cp.lexer, p.budget)
+  else: ctx.lex.initFeed(budget = p.budget)
   result = YamlFeedParser(ctx: ctx, starvedAt: -1, started: cp.started,
                           ended: cp.ended)
   privateAccess(YamlStream)

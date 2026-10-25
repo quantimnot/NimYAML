@@ -5,7 +5,7 @@
 #    distribution, for details about the copyright.
 
 import streams, strutils, unicode
-import ../data
+import ../data, ../memory
 when defined(yamlDebug):
   import terminal
   export terminal
@@ -63,12 +63,19 @@ type
     scalar, starvedScalar: ScalarContext
     gate: CompletionGate
     gateDisabled: bool
+    # memory budget of the buffer, and the buffer length it is charged for
+    budget: MemoryBudget
+    charged: int
+    # bytes read from ``stream`` at a time
+    chunk: int
 
   Source = object
     buf: SourceBuffer
     bufpos, lineNumber, lineStart: int
     # bufpos from which on compaction is attempted
     compactAt: int
+    # consumed input that makes compaction worthwhile
+    threshold: int
 
   Lexer* = object
     cur*: Token
@@ -162,6 +169,19 @@ const
 
 # source buffer
 
+proc charge(b: SourceBuffer, length: int): bool {.raises: [].} =
+  ## Charges the budget for a buffer of ``length``. On failure, the limit
+  ## error becomes the buffer's stream error and the input ends here.
+  if b.budget.isNil or length <= b.charged: return true
+  try:
+    b.budget.reserve(length - b.charged, "buffering a line or token")
+    b.charged = length
+    result = true
+  except YamlMemoryLimitError as e:
+    if b.error.isNil: b.error = e
+    b.final = true
+    result = false
+
 proc fetch(b: SourceBuffer, i: int): char {.noinline, raises: [].} =
   while i >= b.data.len and not b.final:
     if b.stream.isNil:
@@ -169,11 +189,14 @@ proc fetch(b: SourceBuffer, i: int): char {.noinline, raises: [].} =
         b.starved = true
         b.starvedScalar = b.scalar
       return EndOfFile
-    let oldLen = b.data.len
-    b.data.setLen(oldLen + sourceChunkSize)
+    let
+      oldLen = b.data.len
+      chunk = if b.chunk > 0: b.chunk else: sourceChunkSize
+    if not b.charge(oldLen + chunk): break
+    b.data.setLen(oldLen + chunk)
     var n = 0
     try:
-      n = b.stream.readDataStr(b.data, oldLen ..< oldLen + sourceChunkSize)
+      n = b.stream.readDataStr(b.data, oldLen ..< oldLen + chunk)
     except CatchableError as ce:
       b.error = ce
     b.data.setLen(oldLen + n)
@@ -945,25 +968,47 @@ proc next*(lex: var Lexer) {.raises: [LexerError].}=
   debug("lexer -> [" & $lex.curStartPos.line & "," & $lex.curStartPos.column &
       "-" & $lex.curEndPos.line & "," & $lex.curEndPos.column & "] " & $lex.cur)
 
-proc init*(lex: var Lexer, source: Stream, offset = 0, line = 1)
-    {.raises: [IOError, OSError].} =
+proc sizedBuffer(budget: MemoryBudget, threshold: var int): SourceBuffer
+    {.raises: [].} =
+  ## A buffer whose chunks and compaction fit into ``budget``: a chunk is a
+  ## sixteenth of its limit, compaction starts at an eighth, within the
+  ## defaults for unlimited memory.
+  result = SourceBuffer(budget: budget)
+  threshold = compactThreshold
+  if not budget.isNil and budget.limit != int.high:
+    result.chunk = clamp(budget.limit div 16, 256, sourceChunkSize)
+    threshold = clamp(budget.limit div 8, 1024, compactThreshold)
+
+proc init*(lex: var Lexer, source: Stream, offset = 0, line = 1,
+    budget: MemoryBudget = nil) {.raises: [IOError, OSError].} =
   ## ``offset`` and ``line`` give the position of the start of ``source`` in
   ## the whole input; ``source`` must start at the beginning of a line.
-  lex.source = Source(buf: SourceBuffer(stream: source, base: offset),
-                      lineNumber: line, compactAt: compactThreshold)
+  ## ``budget`` is charged for the buffer of input being read.
+  var threshold: int
+  let buf = sizedBuffer(budget, threshold)
+  buf.stream = source
+  buf.base = offset
+  lex.source = Source(buf: buf, lineNumber: line, compactAt: threshold,
+                      threshold: threshold)
   lex.basicInit()
 
 proc init*(lex: var Lexer, source: string, offset = 0, line = 1) {.raises: [].} =
   lex.source = Source(buf: SourceBuffer(data: source, final: true, base: offset),
-                      lineNumber: line, compactAt: int.high) # in memory anyway
+                      lineNumber: line, compactAt: int.high, # in memory anyway
+                      threshold: compactThreshold)
   lex.basicInit()
 
-proc initFeed*(lex: var Lexer, offset = 0, line = 1) {.raises: [].} =
+proc initFeed*(lex: var Lexer, offset = 0, line = 1,
+    budget: MemoryBudget = nil) {.raises: [].} =
   ## Initializes the lexer for input that is supplied via ``feed``.
   ## ``start`` must be called before the first token is read; since it
   ## reads the first character, it is subject to starvation like ``next``.
-  lex.source = Source(buf: SourceBuffer(base: offset), lineNumber: line,
-                      compactAt: compactThreshold)
+  ## ``budget`` is charged for the fed input that is buffered.
+  var threshold: int
+  let buf = sizedBuffer(budget, threshold)
+  buf.base = offset
+  lex.source = Source(buf: buf, lineNumber: line, compactAt: threshold,
+                      threshold: threshold)
 
 proc lineOffset*(lex: Lexer): int {.raises: [].} =
   ## Offset of the start of the current line in the whole input.
@@ -1028,10 +1073,15 @@ proc start*(lex: var Lexer) {.raises: [].} =
   lex.basicInit()
 
 proc feed*(lex: var Lexer, data: openArray[char]) {.raises: [ValueError].} =
-  ## Appends input. Raises ``ValueError`` after ``finish``.
+  ## Appends input. Raises ``ValueError`` after ``finish``, and
+  ## `YamlMemoryLimitError` if the buffered input would exceed the budget.
   if lex.source.buf.final:
     raise newException(ValueError, "cannot feed input after finish")
-  let oldLen = lex.source.buf.data.len
+  let b = lex.source.buf
+  let oldLen = b.data.len
+  if not b.budget.isNil and oldLen + data.len > b.charged:
+    b.budget.reserve(oldLen + data.len - b.charged, "buffering fed input")
+    b.charged = oldLen + data.len
   lex.source.buf.data.setLen(oldLen + data.len)
   if data.len > 0:
     copyMem(addr lex.source.buf.data[oldLen], unsafeAddr data[0], data.len)
@@ -1062,17 +1112,21 @@ proc retainedStart(lex: Lexer): int {.raises: [].} =
 proc compactBuffer(lex: var Lexer) {.noinline, raises: [].} =
   let b = lex.source.buf
   let keep = lex.retainedStart()
-  if keep < compactThreshold or keep * 2 < b.data.len:
-    lex.source.compactAt = lex.source.bufpos + compactThreshold div 4
+  let threshold = lex.source.threshold
+  if keep < threshold or keep * 2 < b.data.len:
+    lex.source.compactAt = lex.source.bufpos + threshold div 4
     return
   let rest = b.data.len - keep
   if rest > 0: moveMem(addr b.data[0], addr b.data[keep], rest)
   b.data.setLen(rest)
+  if b.charged > rest:
+    b.budget.release(b.charged - rest)
+    b.charged = rest
   b.base += keep
   lex.source.bufpos -= keep
   lex.source.lineStart -= keep
   lex.tokenStart = max(0, lex.tokenStart - keep)
-  lex.source.compactAt = lex.source.bufpos + compactThreshold div 4
+  lex.source.compactAt = lex.source.bufpos + threshold div 4
 
 proc compact*(lex: var Lexer, allowFeed = false) {.inline, raises: [].} =
   ## Drops consumed input from the buffer. Must only be called between
@@ -1378,7 +1432,8 @@ proc restore(lex: var Lexer, cp: LexerCheckpoint, buf: SourceBuffer, compactAt: 
     raise newException(ValueError, "invalid lexer checkpoint")
   buf.base = cp.offset
   lex.source = Source(buf: buf, bufpos: cp.bufpos, lineNumber: cp.lineNumber,
-                      lineStart: cp.lineStart, compactAt: compactAt)
+                      lineStart: cp.lineStart, compactAt: compactAt,
+                      threshold: compactAt)
   lex.cur = Token(cp.cur)
   lex.curStartPos = Mark(line: cp.curStartLine, column: cp.curStartColumn)
   lex.curEndPos = Mark(line: cp.curEndLine, column: cp.curEndColumn)
@@ -1393,11 +1448,14 @@ proc restore(lex: var Lexer, cp: LexerCheckpoint, buf: SourceBuffer, compactAt: 
   lex.seenMultiline = cp.seenMultiline
   lex.propertyIndentation = cp.propertyIndentation
 
-proc restore*(lex: var Lexer, cp: LexerCheckpoint, source: Stream)
-    {.raises: [ValueError].} =
+proc restore*(lex: var Lexer, cp: LexerCheckpoint, source: Stream,
+    budget: MemoryBudget = nil) {.raises: [ValueError].} =
   ## Restores a checkpoint. ``source`` must deliver the input from
   ## ``cp.offset`` on.
-  lex.restore(cp, SourceBuffer(stream: source), compactThreshold)
+  var threshold: int
+  let buf = sizedBuffer(budget, threshold)
+  buf.stream = source
+  lex.restore(cp, buf, threshold)
 
 proc restore*(lex: var Lexer, cp: LexerCheckpoint, source: string)
     {.raises: [ValueError].} =
@@ -1405,10 +1463,13 @@ proc restore*(lex: var Lexer, cp: LexerCheckpoint, source: string)
   ## on.
   lex.restore(cp, SourceBuffer(data: source, final: true), int.high)
 
-proc restoreFeed*(lex: var Lexer, cp: LexerCheckpoint) {.raises: [ValueError].} =
+proc restoreFeed*(lex: var Lexer, cp: LexerCheckpoint,
+    budget: MemoryBudget = nil) {.raises: [ValueError].} =
   ## Restores a checkpoint for input that is supplied via ``feed``, starting
   ## at ``cp.offset``.
-  lex.restore(cp, SourceBuffer(), compactThreshold)
+  var threshold: int
+  let buf = sizedBuffer(budget, threshold)
+  lex.restore(cp, buf, threshold)
 
 # states
 
