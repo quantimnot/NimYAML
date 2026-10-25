@@ -4,7 +4,7 @@
 #    See the file "copying.txt", included in this
 #    distribution, for details about the copyright.
 
-import ../yaml/[cbor, data, stream, dumping, presenter, parser]
+import ../yaml/[cbor, data, stream, dumping, presenter, parser, memory]
 import unittest, streams, strutils, tables, times
 
 when not defined(gcArc) or defined(gcOrc):
@@ -25,10 +25,40 @@ type
 proc bytes(hex: string): string = parseHexStr(hex)
 proc hex(data: string): string = toHex(data).toLowerAscii
 
-proc events(hex: string): seq[string] =
-  for e in parseCbor(bytes(hex)):
+type Trickle = ref object of StreamObj
+  ## A stream that delivers one byte per read, so that the streaming
+  ## decoder refills at every byte.
+  data: string
+  pos: int
+
+proc trickleRead(s: Stream, buffer: pointer, bufLen: int): int =
+  let t = Trickle(s)
+  if bufLen == 0 or t.pos >= t.data.len: return 0
+  cast[ptr char](buffer)[] = t.data[t.pos]
+  inc t.pos
+  1
+
+proc trickleReadStr(s: Stream, buffer: var string, slice: Slice[int]): int =
+  trickleRead(s, addr buffer[slice.a], slice.len)
+
+proc trickleAtEnd(s: Stream): bool = Trickle(s).pos >= Trickle(s).data.len
+
+proc trickle(data: string): Stream =
+  Trickle(data: data, readDataImpl: trickleRead,
+      readDataStrImpl: trickleReadStr, atEndImpl: trickleAtEnd)
+
+proc contentEvents(s: YamlStream): seq[string] =
+  for e in s:
     if e.kind notin {yamlStartStream, yamlEndStream, yamlStartDoc, yamlEndDoc}:
       result.add($e)
+
+proc events(hex: string): seq[string] =
+  result = contentEvents(parseCbor(bytes(hex)))
+  # the streaming decoder must agree with the one over a string
+  let streamed = contentEvents(parseCbor(trickle(bytes(hex))))
+  if streamed != result:
+    echo "  streamed ", hex, " -> ", streamed
+    raise newException(AssertionDefect, "streamed decoding differs")
 
 proc decodes(hex: string, expected: varargs[string]): bool =
   result = events(hex) == @expected
@@ -45,11 +75,44 @@ proc encodes(yaml, hex: string): bool =
   if not result: echo "  ", yaml, " -> ", output
 
 proc decodeError(hex: string): YamlCborError =
+  var streamedMsg = ""
+  try:
+    for e in parseCbor(trickle(bytes(hex))): discard
+  except YamlStreamError as e:
+    streamedMsg = e.parent.msg
   try:
     for e in parseCbor(bytes(hex)): discard
   except YamlStreamError as e:
-    return (ref YamlCborError)(e.parent)[]
+    result = (ref YamlCborError)(e.parent)[]
+    # a stream has no known end, so a truncated collection is found where
+    # the input ends rather than at its head; the message is the same
+    if streamedMsg != result.msg:
+      raise newException(AssertionDefect, "streamed error differs for " &
+          hex & ": " & streamedMsg)
+    return
   raise newException(AssertionDefect, "no error for " & hex)
+
+suite "CBOR streaming":
+  test "A large document within a budget":
+    var items: seq[string]
+    for i in 0 ..< 60_000:
+      items.add("{\"id\": " & $i & ", \"name\": \"item " & $i & "\"}")
+    let data = yamlToCbor("[" & items.join(", ") & "]")
+    check data.len > 1_000_000
+    let budget = newMemoryBudget(256 * 1024)
+    check contentEvents(parseCbor(newStringStream(data), budget)) ==
+        contentEvents(parseCbor(data))
+    check budget.peak < 256 * 1024
+    check budget.used == 0
+
+  test "A string larger than the budget":
+    let data = yamlToCbor("\"" & repeat('x', 100_000) & "\"")
+    try:
+      for e in parseCbor(newStringStream(data), newMemoryBudget(64 * 1024)):
+        discard
+      check false
+    except YamlStreamError as e:
+      check not memoryLimitError(e).isNil
 
 suite "CBOR decoding (RFC 8949 Appendix A)":
   test "Integers":

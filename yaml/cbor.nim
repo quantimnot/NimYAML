@@ -88,7 +88,7 @@
 
 import std / [base64, formatfloat, math, streams, strutils, tables, times, unicode]
 import data, stream, hints, native, parser, presenter, dumping, taglib,
-    private/internal
+    private/internal, memory
 export data, stream, native, dumping
 
 type
@@ -181,8 +181,13 @@ type
     indefinite: bool
 
   CborYamlStream = ref object of YamlStream
-    input: string
-    pos: int
+    input: string   # all input, or a window of a stream
+    base: int       # offset of input[0]
+    pos: int        # offset of the next byte
+    total: int      # size of all input; -1 for a stream
+    stream: Stream  # nil for string input
+    budget: MemoryBudget
+    charged: int    # window length the budget is charged for
     state: ReaderState
     stack: seq[Frame]
     sharedCount: int
@@ -194,16 +199,52 @@ proc cborError(pos: int, msg: string): ref YamlCborError =
 
 proc sharedAnchor(index: uint64): Anchor = Anchor("s" & $index)
 
+const cborChunk = 65536
+
+proc fill(c: CborYamlStream, n: int): bool =
+  ## Whether the next ``n`` bytes are in the window, reading them from the
+  ## stream if they are not; false at the end of the input. The window is
+  ## charged to the budget, so a string larger than it raises
+  ## `YamlMemoryLimitError`.
+  if c.pos - c.base + n <= c.input.len: return true
+  if c.stream.isNil: return false
+  let consumed = c.pos - c.base
+  if consumed > 0:
+    c.input.delete(0 ..< consumed)
+    c.base = c.pos
+  let want = max(n - c.input.len, cborChunk)
+  if c.input.len + want > c.charged:
+    c.budget.reserve(c.input.len + want - c.charged, "reading CBOR input")
+    c.charged = c.input.len + want
+  let old = c.input.len
+  c.input.setLen(old + want)
+  var got = 0
+  while got < want:
+    let r = c.stream.readDataStr(c.input, old + got ..< old + want)
+    if r <= 0: break
+    got += r
+  c.input.setLen(old + got)
+  if c.charged > c.input.len + cborChunk:
+    c.budget.release(c.charged - c.input.len - cborChunk)
+    c.charged = c.input.len + cborChunk
+  c.pos - c.base + n <= c.input.len
+
+proc atByte(c: CborYamlStream, b: char): bool =
+  ## Whether the next byte is ``b``.
+  c.fill(1) and c.input[c.pos - c.base] == b
+
 proc readByte(c: CborYamlStream): byte =
-  if c.pos >= c.input.len:
+  if not c.fill(1):
     raise cborError(c.pos, "unexpected end of CBOR input")
-  result = byte(c.input[c.pos])
+  result = byte(c.input[c.pos - c.base])
   inc c.pos
 
 proc readBytes(c: CborYamlStream, len: uint64): string =
-  if len > uint64(c.input.len - c.pos):
+  if (c.total >= 0 and len > uint64(c.total - c.pos)) or
+      len > uint64(int.high div 2) or not c.fill(int(len)):
     raise cborError(c.pos, "unexpected end of CBOR input")
-  result = c.input[c.pos ..< c.pos + int(len)]
+  let start = c.pos - c.base
+  result = c.input[start ..< start + int(len)]
   c.pos += int(len)
 
 proc readHead(c: CborYamlStream): Head =
@@ -229,7 +270,7 @@ proc readString(c: CborYamlStream, head: Head): string =
   if not head.indefinite: return c.readBytes(head.arg)
   while true:
     let start = c.pos
-    if c.pos < c.input.len and c.input[c.pos] == '\xff':
+    if c.atByte('\xff'):
       inc c.pos
       break
     let chunk = c.readHead()
@@ -369,7 +410,7 @@ proc readItem(c: CborYamlStream, e: var Event) =
     let kind = if head.major == 4: fkArray else: fkMap
     if not head.indefinite:
       # every item takes at least one byte
-      if head.arg > uint64(c.input.len - c.pos):
+      if c.total >= 0 and head.arg > uint64(c.total - c.pos):
         raise cborError(start, "unexpected end of CBOR input")
     c.stack.add(Frame(kind: kind, indefinite: head.indefinite,
         remaining: if kind == fkMap: head.arg * 2 else: head.arg))
@@ -404,9 +445,11 @@ proc cborNext(s: YamlStream, e: var Event): bool {.raises: [CatchableError].} =
     e = startStreamEvent()
     c.state = rsBetween
   of rsBetween:
-    if c.pos >= c.input.len:
+    if not c.fill(1):
       e = endStreamEvent()
       c.state = rsDone
+      c.budget.release(c.charged)
+      c.charged = 0
     else:
       e = startDocEvent(startPos = mark(c.pos), endPos = mark(c.pos))
       c.sharedCount = 0
@@ -415,7 +458,7 @@ proc cborNext(s: YamlStream, e: var Event): bool {.raises: [CatchableError].} =
     if c.stack.len > 0:
       var ended = false
       if c.stack[^1].indefinite:
-        if c.pos < c.input.len and c.input[c.pos] == '\xff':
+        if c.atByte('\xff'):
           if c.stack[^1].kind == fkMap and c.stack[^1].count mod 2 == 1:
             raise cborError(c.pos, "map ends after a key without a value")
           inc c.pos
@@ -441,14 +484,22 @@ proc parseCbor*(input: string): YamlStream {.raises: [].} =
   ## Returns the events of the CBOR data items in ``input``, which holds
   ## bytes. The stream raises a `YamlStreamError`_ whose ``parent`` is a
   ## `YamlCborError`_ for input that is not well-formed CBOR.
-  let c = CborYamlStream(input: input)
+  let c = CborYamlStream(input: input, total: input.len)
   c.basicInit()
   c.nextImpl = cborNext
   result = c
 
-proc parseCbor*(input: Stream): YamlStream {.raises: [IOError, OSError].} =
-  ## Reads all of ``input`` and returns the events of its CBOR data items.
-  result = parseCbor(input.readAll())
+proc parseCbor*(input: Stream, budget: MemoryBudget = nil): YamlStream
+    {.raises: [].} =
+  ## Returns the events of the CBOR data items in ``input``, which is read
+  ## in chunks as the events are pulled, so that input of any size can be
+  ## decoded. ``budget`` is charged for the window of input held, which
+  ## must hold every byte or text string whole: a larger one raises a
+  ## `YamlStreamError`_ whose ``parent`` is a `YamlMemoryLimitError`.
+  let c = CborYamlStream(total: -1, stream: input, budget: budget)
+  c.basicInit()
+  c.nextImpl = cborNext
+  result = c
 
 # Writing
 # -------

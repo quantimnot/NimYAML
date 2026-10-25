@@ -476,13 +476,36 @@ proc events(input: Input, format: DataFormat): YamlStream =
   of dfJsonLines: parser.parse(jsonLinesAsYaml(input.content))
   of dfCbor: parseCbor(input.content)
 
+proc events(src: YamlSource, format: DataFormat): YamlStream =
+  ## The events of ``src``, read as a stream within its budget.
+  var parser = initYamlParser(budget = src.budget)
+  case format
+  of dfYaml, dfJson: parser.parse(src)
+  of dfJsonc: parser.parse(newJsonCommentStripStream(newSourceStream(src)))
+  of dfJsonLines: parser.parse(newJsonLinesStream(newSourceStream(src)))
+  of dfCbor: parseCbor(newSourceStream(src), src.budget)
+
+iterator inputSources(files: seq[string]): YamlSource =
+  ## The sources of ``files`` (standard input without any), one open at a
+  ## time.
+  for file in (if files.len == 0: @[""] else: files):
+    let src = openInput(file)
+    try: yield src
+    finally: src.close()
+
 proc rootCause(e: ref Exception): ref Exception =
   result = e
   while result of YamlStreamError and not result.parent.isNil:
     result = result.parent
 
 proc describe(name: string, e: ref Exception): string =
-  let cause = rootCause(e)
+  var cause = rootCause(e)
+  # a stream filter (like the JSONC one) reports its own parser error
+  # through the parser that reads it; that one is the actual cause
+  var inner = cause
+  while not inner.isNil:
+    if inner != cause and inner of YamlParserError: cause = inner
+    inner = inner.parent
   let limit = memoryLimitError(e)
   if not limit.isNil:
     var at = name
@@ -712,7 +735,7 @@ proc convertCommand(command: string, args: seq[string]): int =
     yamlStyle = toolConfigFor(
         if files.len > 0: files[0] else: getCurrentDir() / "-").format
     stream = newStream()
-  for input in readInputs(files):
+  for input in inputSources(files):
     let format = source.get(
         if files.len == 0: dfYaml else: formatOf(input.name))
     try:
@@ -849,6 +872,26 @@ proc queryCommand(args: seq[string]): int =
             if paths: stdout.writeLine(location)
             else: selected.collect(represent(node))
           continue
+    if not assigns:
+      let src = openInput(name)
+      try:
+        var s = events(src, format)
+        discard s.next() # yamlStartStream
+        while s.peek().kind == yamlStartDoc:
+          var root: YamlNode
+          construct(s, root)
+          for found in root.queryLocated(path):
+            if paths: stdout.writeLine(found.path)
+            else: selected.collect(represent(found.node))
+      except YamlStreamError, YamlParserError, YamlConstructionError,
+          YamlPresenterCborError:
+        return failed(src.name, getCurrentException())
+      finally: src.close()
+      if settings.mode != imOff:
+        # the index is built from the whole text (see yaml/nodeindex)
+        updateIndex(name, readText(name).content, [location], settings,
+            json = format != dfYaml)
+      continue
     let input = readText(name, randomAccess = assigns)
     try:
       if assigns:
@@ -861,17 +904,6 @@ proc queryCommand(args: seq[string]): int =
           asText = true
           stdout.write(edited.text)
         else: selected.collect(events((input.name, edited.text), format))
-        continue
-      var s = events(input, format)
-      discard s.next() # yamlStartStream
-      while s.peek().kind == yamlStartDoc:
-        var root: YamlNode
-        construct(s, root)
-        for found in root.queryLocated(path):
-          if paths: stdout.writeLine(found.path)
-          else: selected.collect(represent(found.node))
-      updateIndex(name, input.content, [location], settings,
-          json = format != dfYaml)
     except YamlEditError as e:
       stderr.writeLine(input.name & ": " & e.msg)
       return 1
@@ -884,7 +916,7 @@ proc queryCommand(args: seq[string]): int =
     except YamlPresenterJsonError, YamlPresenterCborError, YamlStreamError:
       return failed("<output>", getCurrentException())
 
-proc documents(input: Input, format: DataFormat): seq[YamlNode] =
+proc documents(input: YamlSource, format: DataFormat): seq[YamlNode] =
   ## The documents of ``input`` as graphs.
   var s = events(input, format)
   discard s.next() # yamlStartStream
@@ -928,7 +960,7 @@ proc transformCommand(command: string, args: seq[string], operands: int,
     output = newStream()
     outputFormat = target
     rewritten: seq[tuple[file, text: string]]
-  for input in readInputs(files):
+  for input in inputSources(files):
     let format = source.get(
         if files.len == 0: dfYaml else: formatOf(input.name))
     if outputFormat.isNone: outputFormat = some(format)
@@ -967,7 +999,9 @@ proc patchCommand(args: seq[string]): int =
   proc readPatch(operands: seq[string]): int =
     let file = operands[0]
     try:
-      let docs = documents(readText(file), formatOf(file))
+      let src = openInput(file)
+      defer: src.close()
+      let docs = documents(src, formatOf(file))
       if docs.len != 1:
         stderr.writeLine(file & ": a patch must be a single document")
         return 1
@@ -1009,7 +1043,7 @@ proc mergeCommand(args: seq[string]): int =
     output = newStream()
     outputFormat = target
     rewritten: seq[tuple[file, text: string]]
-  for input in readInputs(files):
+  for input in inputSources(files):
     let format = source.get(
         if files.len == 0: dfYaml else: formatOf(input.name))
     if outputFormat.isNone: outputFormat = some(format)
@@ -1048,7 +1082,7 @@ proc canonicalCommand(args: seq[string]): int =
       if key == "from": source = some(parseFormat("canonical", val))
       else: fail("canonical")
     of cmdEnd: discard
-  for input in readInputs(files):
+  for input in inputSources(files):
     let format = source.get(
         if files.len == 0: dfYaml else: formatOf(input.name))
     try:
@@ -1063,10 +1097,6 @@ proc canonicalCommand(args: seq[string]): int =
 type
   ColorMode = enum
     cmAuto = "auto", cmAlways = "always", cmNever = "never"
-
-proc readInput(file: string): Input =
-  ## ``file``, or standard input for ``-``.
-  readText(file)
 
 proc diffLine(change: DiffChange, document: int, numbered, asJsonPath,
     color: bool): string =
@@ -1131,7 +1161,8 @@ proc diffCommand(args: seq[string]): int =
     sides: array[2, seq[YamlNode]]
     formats: array[2, DataFormat]
   for i in 0 .. 1:
-    let input = readInput(files[i])
+    let input = openInput(files[i])
+    defer: input.close()
     formats[i] = source.get(if files[i] == "-": dfYaml else: formatOf(names[i]))
     try:
       sides[i] = documents(input, formats[i])

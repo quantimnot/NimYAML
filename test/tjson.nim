@@ -9,7 +9,7 @@ import ../yaml/[ parser, stream, tojson, loading, dumping]
 when defined(nimPreviewSlimSystem):
   import std/assertions
 
-import unittest, json, streams, options
+import unittest, json, streams, options, strutils
 
 type
   JsoncConfig = object
@@ -119,7 +119,33 @@ suite "JSONC":
       check e.mark.column == 5
       check e.lineContent == "  2 /* three\n    ^"
 
+  test "Streamed stripping equals stripping a string":
+    let inputs = ["{\"a\": /* x\n y */ 1} // z\r\n",
+        "[\"a//b\", \"c\\\"//d\", \"e\\\\\", \"/*f*/\"] // g",
+        "[1, // one\n 2 /* two */, 3]\n" & repeat("// filler\n", 2000) &
+          "{\"k\": \"v /* not */\"} /* long\n" & repeat("x", 9000) & "\n*/ 4"]
+    for input in inputs:
+      check newJsonCommentStripStream(newStringStream(input)).readAll() ==
+          stripJsonComments(input)
+
+  test "Streamed stripping of an unclosed block comment":
+    try:
+      discard newJsonCommentStripStream(
+          newStringStream("[1,\n  2 /* three\n]")).readAll()
+      check false
+    except IOError as e:
+      check e.parent of YamlParserError
+      let p = (ref YamlParserError)(e.parent)
+      check p.mark.line == 2
+      check p.mark.column == 5
+      check p.lineContent == "  2 /* three\n    ^"
+
 suite "JSON Lines":
+  test "Streamed as YAML documents":
+    let input = "{\"a\": 1}\r\n\n  \n  {\"b\": [2]}\n{\"c\": 3}"
+    check newJsonLinesStream(newStringStream(input)).readAll() ==
+        "--- {\"a\": 1}\r\n\n  \n---   {\"b\": [2]}\n--- {\"c\": 3}"
+
   test "Loading":
     var events: seq[Record]
     loadJsonLines("""{"kind": "a", "count": 1}""" & "\r\n\n  \n" &

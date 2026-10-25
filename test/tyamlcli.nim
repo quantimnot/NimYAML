@@ -655,6 +655,43 @@ suite "memory cli":
     check code == 3
     check "needs random access" in output
 
+  test "inputs are streamed, not read whole":
+    var json = "["
+    for i in 0 ..< 6000:
+      json.add("{\"id\": " & $i & ", \"name\": \"item " & $i & "\"}" &
+          (if i < 5999: "," else: "") & " // " & $i & "\n")
+    json.add("]\n")
+    writeFile(dir / "big.jsonc", json)
+    var lines = ""
+    for i in 0 ..< 6000:
+      lines.add("{\"id\": " & $i & ", \"name\": \"item " & $i & "\"}\n")
+    writeFile(dir / "big.jsonl", lines)
+    let huge = dir / "huge.yaml"
+    var yaml = ""
+    for i in 0 ..< 12000: yaml.add("key" & $i & ": value " & $i & "\n")
+    writeFile(huge, yaml)
+    check execCmd(quoteShell(bin) & " to cbor " & quoteShell(huge) & " > " &
+        quoteShell(dir / "big.cbor")) == 0
+    for file in [huge, dir / "big.jsonc", dir / "big.jsonl", dir / "big.cbor"]:
+      check getFileSize(file) > 128 * 1024
+      let (output, code) = cli("as", "jsonl", "--memory-limit=128KiB",
+          "--source=seek", file)
+      check code == 0
+      let same = output == cli("as", "jsonl", file).output
+      check same
+      if code != 0: echo output[0 ..< min(output.len, 300)]
+
+  test "every tier reads every format":
+    let expected = cli("as", "jsonl", "a.yaml", "b.jsonc", "c.jsonl")
+    for tier in ["memory", "mmap", "seek", "stream"]:
+      check cli("as", "jsonl", "--source=" & tier, "a.yaml", "b.jsonc",
+          "c.jsonl") == expected
+
+  test "an unclosed block comment":
+    writeFile(dir / "u.jsonc", "[1,\n  2 /* three\n]")
+    check cli("as", "json", "u.jsonc") ==
+        ("u.jsonc:2:5: block comment is not closed\n", 1)
+
   test "usage":
     check cli("convert", "json", "--memory-limit=lots", big).exitCode == 2
     check cli("convert", "json", "--source=nope", big).exitCode == 2
