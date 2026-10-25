@@ -31,7 +31,7 @@ The language of a block is, in this order:
    ```
 
 Names are VS Code language IDs or `yaml+lsp.embedded.aliases` (`py`, `sh`,
-`js`, …). *NimYAML: Show Embedded Language Regions* lists the blocks found,
+`js`, …). *YAML+: Show Embedded Language Regions* lists the blocks found,
 their language and where it came from.
 
 ### How it works
@@ -53,7 +53,7 @@ add to that:
 }
 ```
 
-Key rules name language IDs. *NimYAML: Show Embedded Language Regions*
+Key rules name language IDs. *YAML+: Show Embedded Language Regions*
 lists the blocks found, their language and where it came from.
 
 Colour comes from two places. A grammar injected into VS Code's YAML grammar
