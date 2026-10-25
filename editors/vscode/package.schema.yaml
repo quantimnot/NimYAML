@@ -1,0 +1,10 @@
+# What vsce requires of an extension manifest
+# (https://code.visualstudio.com/api/references/extension-manifest), which
+# neither vscode://schemas/vscode-extensions nor SchemaStore's package.json
+# schema does. package.yaml is validated against all three.
+$schema: https://json-schema.org/draft/2020-12/schema
+type: object
+required: [name, version, publisher, engines]
+properties:
+  engines:
+    required: [vscode]

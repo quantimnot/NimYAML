@@ -97,11 +97,21 @@ is validated against. Relative references resolve against the YAML file.
 ---
 ```
 
-Schemas are read from `file:` URIs, and VS Code's own from `vscode:` URIs
-(below); yamllsp never accesses the network, so
-`%SCHEMA https://example.com/schema.json` gives a `schema-unavailable`
-warning instead of a validation. A schema file must load as YAML, so a
-`.jsonc` schema with comments cannot be used either.
+Several schemas can be named at once, and the document must be valid
+against each of them (they are not merged); each violation names the schema
+it breaks:
+
+```yaml
+%SCHEMA vscode://schemas/vscode-extensions https://www.schemastore.org/package.json package.schema.yaml
+---
+```
+
+Schemas are read from `file:` URIs, VS Code's own from `vscode:` URIs
+(below), and `https:` ones are downloaded by the extension, like VS Code
+does for JSON, unless `json.schemaDownload.enable` is off; yamllsp itself
+never accesses the network. Other URIs (`http:`) give a
+`schema-unavailable` warning instead of a validation. A schema file must
+load as YAML, so a `.jsonc` schema with comments cannot be used.
 
 A document can also name its schema the way other editors do; the highest
 of these wins, and a document that uses several gets a `schema-source` note
@@ -176,6 +186,10 @@ settings or of keybindings is validated like its JSON:
 name: my-extension
 engines: {vscode: 1}   # error: not a string [schema-validation]
 ```
+
+That schema requires no fields at all (neither does SchemaStore's
+`package.json`); this extension's own `package.yaml` adds a small local
+schema for what `vsce` needs, see the example above.
 
 The extension gives them to yamllsp when it asks, and again when VS Code
 changes one (an extension that contributes settings is installed, say).

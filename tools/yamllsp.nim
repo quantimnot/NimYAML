@@ -67,6 +67,7 @@ type
     ## Schemas the client is asked for (see `schemaLoader`).
     schemes: seq[string]             ## the URI schemes it serves
     texts: Table[string, string]     ## uri -> its answer; "" if it had none
+    failures: Table[string, string]  ## uri -> why the client had none
     asked: Table[string, string]     ## request id -> uri, unanswered
     unsent: seq[string]              ## uris to ask for
     nextId: int
@@ -1153,7 +1154,7 @@ proc diffOf(params: JsonNode): JsonNode =
 # documents are published again when the answer comes, which may ask for
 # the schemas the answer refers to in turn. Answers are kept until the
 # client sends ``nimyaml/schemaChanged`` (``{uri}``); an error or a null
-# answer makes the schema unavailable.
+# answer makes the schema unavailable, with the error's message.
 #
 # The client's schemas are compiled leniently: VS Code's settings schemas
 # carry whatever the installed extensions contribute, mistakes included
@@ -1174,7 +1175,9 @@ proc schemaLoader(s: Server): SchemaLoader =
   result = proc(uri: string): YamlNode {.closure, raises: [CatchableError].} =
     result = files(uri)
     if not result.isNil or not client.serves(uri): return
-    if uri in client.texts:
+    if uri in client.failures:
+      raise newException(IOError, client.failures[uri])
+    elif uri in client.texts:
       let text = client.texts[uri]
       if text.len > 0: result = loadAs[YamlNode](text)
     else:
@@ -1324,15 +1327,22 @@ proc handle*(s: var Server, msg: JsonNode): seq[JsonNode] =
   of "nimyaml/schemaChanged":
     if not s.clientSchemas.isNil:
       s.clientSchemas.texts.del(params["uri"].getStr())
+      s.clientSchemas.failures.del(params["uri"].getStr())
       result.add(s.publishAll())
   of "":
     # the client's answer to a request of the server
     let client = s.clientSchemas
     let key = id.getStr()
     if not client.isNil and key in client.asked:
-      let answer = msg{"result"}
-      client.texts[client.asked[key]] =
-        if answer.isNil or answer.kind != JString: "" else: answer.getStr()
+      let
+        uri = client.asked[key]
+        answer = msg{"result"}
+        error = msg{"error"}{"message"}
+      if not error.isNil and error.kind == JString:
+        client.failures[uri] = error.getStr()
+      else:
+        client.texts[uri] =
+          if answer.isNil or answer.kind != JString: "" else: answer.getStr()
       client.asked.del(key)
       result.add(s.publishAll())
   of "shutdown":

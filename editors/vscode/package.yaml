@@ -1,14 +1,18 @@
 #!/usr/bin/env yaml as json
-# yaml-language-server: $schema=vscode://schemas/vscode-extensions
 #
-# Schema:
-# The official schema is dynamically localized at runtime:
-# https://github.com/microsoft/vscode/blob/HEAD/src/vs/workbench/services/extensions/common/extensionsRegistry.ts#L174
-# This extension (schemas/) gives it to yamllsp, which validates this file
-# with it.
+# Schemas, all of which this file must satisfy:
+# - VS Code's, which is dynamically localized at runtime:
+#   https://github.com/microsoft/vscode/blob/HEAD/src/vs/workbench/services/extensions/common/extensionsRegistry.ts#L174
+#   This extension (schemas/) gives it to yamllsp.
+# - npm's package.json, from SchemaStore, which this extension downloads
+#   (json.schemaDownload.enable).
+# - package.schema.yaml: the fields vsce requires, which neither of them
+#   does.
 #
 # See also:
 # https://code.visualstudio.com/api/references/extension-manifest
+%SCHEMA vscode://schemas/vscode-extensions https://www.schemastore.org/package.json package.schema.yaml
+---
 name: yaml-plus-lsp
 displayName: yaml+lsp
 description: >-

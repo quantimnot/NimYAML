@@ -365,6 +365,7 @@ suite "LSP schemas from the client":
         .diagnosticsOf("untitled:a")
     check diags.len == 1
     check diags[0]["code"].getStr() == "schema-unavailable"
+    check "no such schema" in diags[0]["message"].getStr()
 
   test "a changed schema is asked for again":
     var s = initialized(@["vscode"])
