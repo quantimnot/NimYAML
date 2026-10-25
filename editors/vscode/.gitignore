@@ -2,3 +2,4 @@ node_modules/
 *.vsix
 syntaxes/yaml-embedded.tmLanguage.json
 dist/
+package.json
