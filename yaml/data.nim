@@ -99,8 +99,8 @@ type
   # ----------
   #
   # YAML 1.2 defines ``%YAML`` and ``%TAG`` and scopes both to one document.
-  # NimYAML adds two directives of its own: ``%SCHEMA <uri-reference>``
-  # names the JSON Schema of the document, and ``%GLOBAL <directive>`` (only
+  # NimYAML adds two directives of its own: ``%SCHEMA <uri-reference>...``
+  # names the JSON Schemas of the document, and ``%GLOBAL <directive>`` (only
   # in the directive block of the first document) makes a ``YAML``, ``TAG``
   # or ``SCHEMA`` directive apply to every document of the stream. The types
   # below describe, per document, which directives are in effect and where
@@ -119,7 +119,9 @@ type
   Directive* = object
     ## A directive declaration. ``startPos`` .. ``endPos`` spans the
     ## declaring line from ``%`` to the end of the last parameter,
-    ## ``valueStart`` .. ``valueEnd`` the version, prefix or URI.
+    ## ``valueStart`` .. ``valueEnd`` the version, prefix or URI. A
+    ## ``%SCHEMA`` line with several URI references declares one directive
+    ## per reference, all with the span of the line.
     origin*: DirectiveOrigin
     overridden*: bool
       ## a global directive that the document replaces with its own
@@ -139,7 +141,8 @@ type
       ## a reserved directive, which YAML 1.2 (§6.8) says to ignore with a
       ## warning
     diInvalidSchema = "invalid-schema-directive"
-      ## ``%SCHEMA`` without exactly one URI reference
+      ## ``%SCHEMA`` without URI references, or with one that is not a URI
+      ## reference (that one is ignored)
     diDuplicateSchema = "duplicate-schema-directive"
     diUnresolvableSchema = "unresolvable-schema-uri"
       ## a relative reference in a stream without source URI
@@ -159,8 +162,7 @@ type
   DocumentDirectives* = ref object
     ## What the directives of one document amount to.
     schema*: string
-      ## the URI of the effective ``%SCHEMA`` (the document's own or the
-      ## global one), resolved; empty if there is none
+      ## the first of `schemas`; empty if there is none
     declarations*: seq[Directive]
       ## the global directives (with ``overridden`` set where the document
       ## replaces them), then the document's own, in source order
@@ -365,6 +367,17 @@ proc `==`*(left, right: Directive): bool {.raises: [].} =
   of dkYaml: left.version == right.version
   of dkTag: left.handle == right.handle and left.prefix == right.prefix
   of dkSchema: left.reference == right.reference and left.uri == right.uri
+
+proc schemas*(d: DocumentDirectives): seq[string] {.raises: [].} =
+  ## The URIs of the effective ``%SCHEMA`` directives, resolved: the
+  ## document's own, or else the global ones. A document is valid if it is
+  ## valid against all of them.
+  if d.isNil: return
+  for declaration in d.declarations:
+    if declaration.kind == dkSchema and not declaration.overridden:
+      result.add(declaration.uri)
+  # directives made without declarations
+  if result.len == 0 and d.schema.len > 0: result.add(d.schema)
 
 proc `==`*(left: Event, right: Event): bool {.raises: [].} =
   ## compares all existing fields of the given items

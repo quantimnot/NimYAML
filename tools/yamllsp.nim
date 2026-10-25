@@ -288,11 +288,14 @@ proc hoverForDirective(a: Analysis, doc: int, d: Directive): string =
         result.add(" Overrides the global `" & g.describe & "` (line " &
             $g.startPos.line & ").")
   if d.kind == dkSchema:
-    let winner = a.documents[doc].schema.sources
-    if winner.len > 0 and winner[0].startPos != d.valueStart:
+    let applied = a.documents[doc].schema.schemas
+    var used = false
+    for s in applied:
+      if s.startPos == d.valueStart: used = true
+    if applied.len > 0 and not used:
       result.add("\n\nNot used for document " & $(doc + 1) & ": its schema " &
-          "comes from the " & $winner[0].kind & " (line " &
-          $winner[0].startPos.line & ").")
+          "comes from the " & $applied[0].kind & " (line " &
+          $applied[0].startPos.line & ").")
 
 proc hoverForDocument(a: Analysis, doc: int): string =
   ## Markdown: the directives and the schema in effect for document ``doc``.
@@ -306,8 +309,7 @@ proc hoverForDocument(a: Analysis, doc: int): string =
       result.add("\n- `" & d.describe & "` (" &
           (if d.origin == doGlobal: "global" else: "document") & ", line " &
           $d.startPos.line & ")")
-  if info.schema.sources.len > 0:
-    let winner = info.schema.sources[0]
+  for winner in info.schema.schemas:
     any = true
     result.add("\n- schema <" & (if winner.uri.len > 0: winner.uri
         else: winner.reference) & "> (" & $winner.kind & ", line " &
@@ -325,7 +327,14 @@ proc hover(s: Server, uri: string, line, character: int): JsonNode =
   if text.startsWith("%"):
     let found = a.declarationsAt(markLine)
     if found.len > 0:
-      let (doc, d) = found[0]
+      # of the several schemas of a %SCHEMA line, the one under the cursor
+      let column = byteColumn(text, character)
+      var (doc, d) = found[0]
+      for (i, other) in found:
+        if other.kind == dkSchema and column >= other.valueStart.column and
+            column <= other.valueEnd.column:
+          (doc, d) = (i, other)
+          break
       return %*{"contents": {"kind": "markdown",
           "value": a.hoverForDirective(doc, d)},
           "range": lspRange(a.lines, d.startPos, d.endPos)}

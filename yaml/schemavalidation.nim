@@ -8,7 +8,7 @@
 ## Module yaml/schemavalidation
 ## ============================
 ##
-## Validates each document of a YAML stream against the JSON Schema it
+## Validates each document of a YAML stream against the JSON Schemas it
 ## declares (see `documentschema <documentschema.html>`_) and reports the
 ## result as `Diagnostic`s, positioned at the offending nodes. This is what
 ## the ``yamllint`` command line tool and the ``yamllsp`` language server
@@ -111,42 +111,45 @@ proc validateDocuments*(source: string, registry: SchemaRegistry,
       buffer.put(e)
       if e.kind == yamlEndDoc: break
     if index notin byIndex or byIndex[index].schema.len == 0: continue
-    let declared = byIndex[index].sources[0]
-    let uri = declared.uri
+    let applied = byIndex[index].schemas
     var root: YamlNode
     try:
       var docEvents = YamlStream(buffer)
       construct(docEvents, root)
     except CatchableError as e:
       result.add(Diagnostic(rule: "schema-unavailable",
-          severity: severityWarning, startPos: declared.startPos,
-          endPos: declared.endPos,
+          severity: severityWarning, startPos: applied[0].startPos,
+          endPos: applied[0].endPos,
           message: "cannot validate document " & $(index + 1) & ": " & e.msg))
       continue
-    if uri notin compiled and uri notin unavailable:
-      try: compiled[uri] = registry.compile(uri)
-      except JsonSchemaError as e: unavailable[uri] = e.msg
-    if uri in unavailable:
-      result.add(Diagnostic(rule: "schema-unavailable",
-          severity: severityWarning, startPos: declared.startPos,
-          endPos: declared.endPos,
-          message: "cannot use schema " & uri & ": " & unavailable[uri]))
-      continue
-    var validation: ValidationResult
-    try: validation = compiled[uri].validate(root, options)
-    except JsonSchemaError as e:
-      result.add(Diagnostic(rule: "schema-unavailable",
-          severity: severityWarning, startPos: declared.startPos,
-          endPos: declared.endPos,
-          message: "cannot validate against " & uri & ": " & e.msg))
-      continue
-    if validation.valid: continue
-    var leaves: seq[OutputUnit]
-    leafErrors(validation.outputTree, leaves)
-    for unit in leaves:
-      let (startPos, endPos) = root.rangeOf(unit.instanceLocation,
-          root.startPos)
-      result.add(Diagnostic(rule: "schema-validation",
-          severity: severityError, startPos: startPos, endPos: endPos,
-          message: unit.error & " (" & unit.keywordLocation & " in " & uri &
-              ")"))
+    # valid against all of them: each is reported on its own
+    for declared in applied:
+      let uri = declared.uri
+      if uri.len == 0: continue
+      if uri notin compiled and uri notin unavailable:
+        try: compiled[uri] = registry.compile(uri)
+        except JsonSchemaError as e: unavailable[uri] = e.msg
+      if uri in unavailable:
+        result.add(Diagnostic(rule: "schema-unavailable",
+            severity: severityWarning, startPos: declared.startPos,
+            endPos: declared.endPos,
+            message: "cannot use schema " & uri & ": " & unavailable[uri]))
+        continue
+      var validation: ValidationResult
+      try: validation = compiled[uri].validate(root, options)
+      except JsonSchemaError as e:
+        result.add(Diagnostic(rule: "schema-unavailable",
+            severity: severityWarning, startPos: declared.startPos,
+            endPos: declared.endPos,
+            message: "cannot validate against " & uri & ": " & e.msg))
+        continue
+      if validation.valid: continue
+      var leaves: seq[OutputUnit]
+      leafErrors(validation.outputTree, leaves)
+      for unit in leaves:
+        let (startPos, endPos) = root.rangeOf(unit.instanceLocation,
+            root.startPos)
+        result.add(Diagnostic(rule: "schema-validation",
+            severity: severityError, startPos: startPos, endPos: endPos,
+            message: unit.error & " (" & unit.keywordLocation & " in " &
+                uri & ")"))

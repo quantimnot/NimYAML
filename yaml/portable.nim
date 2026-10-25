@@ -33,7 +33,8 @@
 ## those markers are added where a document gains directives without having
 ## them. With ``schemas = soModeline``, ``%SCHEMA`` directives become
 ## ``# yaml-language-server: $schema=...`` modelines, which editors
-## understand, so that no NimYAML directive is left at all.
+## understand, so that no NimYAML directive is left at all; except those
+## that name several schemas, since a modeline names one.
 ##
 ## The rewrite works on the text, line by line, rather than by re-presenting
 ## the parsed events, because re-presenting would lose comments, styles and
@@ -47,7 +48,8 @@ import data, parser, stream
 type
   SchemaOutput* = enum
     soDirective ## keep ``%SCHEMA`` (and expand ``%GLOBAL SCHEMA`` into it)
-    soModeline  ## write the effective schema as a modeline comment instead
+    soModeline  ## write the effective schema as a modeline comment instead,
+                ## if there is only one
 
   ExpandOptions* = object
     schemas*: SchemaOutput = soDirective
@@ -82,13 +84,26 @@ proc documentsOf(source: string, sourceUri: string): seq[DocumentInfo] =
     # documentStart only fails for streams that do not come from a parser
     raise newException(YamlStreamError, e.msg)
 
-proc directiveLine(d: Directive, schemas: SchemaOutput): string =
-  case d.kind
-  of dkYaml: "%YAML " & d.version
-  of dkTag: "%TAG " & d.handle & " " & d.prefix
-  of dkSchema:
-    if schemas == soModeline: modelinePrefix & d.reference
-    else: "%SCHEMA " & d.reference
+proc directiveLines(directives: seq[Directive], schemas: SchemaOutput):
+    seq[string] =
+  ## The lines that declare ``directives``: those from one ``%SCHEMA`` line
+  ## (with the same start) on one line again.
+  var i = 0
+  while i < directives.len:
+    let d = directives[i]
+    case d.kind
+    of dkYaml: result.add("%YAML " & d.version)
+    of dkTag: result.add("%TAG " & d.handle & " " & d.prefix)
+    of dkSchema:
+      var references = @[d.reference]
+      while i + 1 < directives.len and directives[i + 1].kind == dkSchema and
+          directives[i + 1].startPos == d.startPos:
+        inc(i)
+        references.add(directives[i].reference)
+      if schemas == soModeline and references.len == 1:
+        result.add(modelinePrefix & d.reference)
+      else: result.add("%SCHEMA " & references.join(" "))
+    inc(i)
 
 proc isDirective(text, name: string): bool =
   ## Whether the line ``text`` is the directive ``%name``.
@@ -106,9 +121,10 @@ proc expandDirectives*(source: string, options = ExpandOptions(),
   var inserted = newSeq[seq[string]](docs.len)
   for i, doc in docs:
     if doc.directives.isNil: continue
+    var globals: seq[Directive]
     for d in doc.directives.declarations:
-      if d.origin == doGlobal and not d.overridden:
-        inserted[i].add(d.directiveLine(options.schemas))
+      if d.origin == doGlobal and not d.overridden: globals.add(d)
+    inserted[i] = globals.directiveLines(options.schemas)
   var line = 0
   var pos = 0
   var current = -1 # index of the document whose directive block we are in
@@ -137,9 +153,13 @@ proc expandDirectives*(source: string, options = ExpandOptions(),
       discard # expanded above
     elif inBlock and options.schemas == soModeline and
         text.isDirective("SCHEMA"):
-      let params = text["%SCHEMA".len .. ^1].strip().split({' ', '\t'})
-      if params.len > 0 and params[0].len > 0 and params[0][0] != '#':
-        result.add(modelinePrefix & params[0] & newline)
+      var params = text["%SCHEMA".len .. ^1].strip().splitWhitespace()
+      for j, p in params:
+        if p.startsWith('#'):
+          params.setLen(j)
+          break
+      if params.len == 1: result.add(modelinePrefix & params[0] & newline)
+      elif params.len > 1: result.add(source[pos ..< next])
     else:
       result.add(source[pos ..< next])
     pos = next

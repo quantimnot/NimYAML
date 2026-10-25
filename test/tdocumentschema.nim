@@ -19,6 +19,12 @@ import "../yaml", "../yaml/dom", "../yaml/data", "../yaml/diagnostics",
 proc winners(source: string, sourceUri = ""): seq[string] =
   for doc in documentSchemas(source, sourceUri): result.add(doc.schema)
 
+proc appliedOf(source: string, sourceUri = ""): seq[seq[string]] =
+  for doc in documentSchemas(source, sourceUri):
+    var uris: seq[string]
+    for s in doc.schemas: uris.add(s.uri)
+    result.add(uris)
+
 proc kindsOf(source: string, sourceUri = ""): seq[seq[SchemaSourceKind]] =
   for doc in documentSchemas(source, sourceUri):
     var kinds: seq[SchemaSourceKind]
@@ -69,6 +75,26 @@ suite "schema precedence":
     check winners(source) == @["https://x.example/global",
         "https://x.example/directive", "https://x.example/global"]
     check kindsOf(source)[1] == @[sskDocumentDirective, sskGlobalDirective]
+    check documentSchemas(source).diagnostics.rules == @["schema-source"]
+
+  test "every URI of the winning directive applies":
+    const several = "%SCHEMA https://x.example/a https://x.example/b\n"
+    check appliedOf(several & "--- a\n") ==
+        @[@["https://x.example/a", "https://x.example/b"]]
+    check winners(several & "--- a\n") == @["https://x.example/a"]
+    check documentSchemas(several & "--- a\n").diagnostics.len == 0
+    check appliedOf("%GLOBAL SCHEMA https://x.example/a https://x.example/b\n" &
+        "--- a\n") == @[@["https://x.example/a", "https://x.example/b"]]
+    let d = documentSchemas(modeline & several & "--- a\n").diagnostics
+    check d.rules == @["schema-source"]
+    check "https://x.example/a" in d[0].message
+    check "https://x.example/b" in d[0].message
+    check "ignored: modeline" in d[0].message
+
+  test "only the first modeline applies":
+    let source = modeline &
+        "# yaml-language-server: $schema=https://x.example/other\na: 1\n"
+    check appliedOf(source) == @[@["https://x.example/modeline"]]
     check documentSchemas(source).diagnostics.rules == @["schema-source"]
 
   test "the $schema key counts only at the root":
@@ -138,6 +164,21 @@ properties:
     check "maximum" in d[0].message
     check d[1].startPos.line == 6
     check "name" in d[1].message
+
+  test "a document is validated against all its schemas":
+    registry.addSchema(loadAs[YamlNode](
+        "{properties: {port: {maximum: 100}}}"), "https://x.example/small")
+    let d = validateDocuments("%SCHEMA https://x.example/service " &
+        "https://x.example/small\n--- {port: 200}\n", registry)
+    check d.rules == @["schema-validation", "schema-validation"]
+    check "name" in d[0].message and "x.example/service" in d[0].message
+    check "maximum" in d[1].message and "x.example/small" in d[1].message
+
+  test "one unavailable schema among several":
+    let d = validateDocuments("%SCHEMA https://x.example/service " &
+        "https://x.example/missing\n--- {port: 1}\n", registry)
+    check d.rules == @["schema-validation", "schema-unavailable"]
+    check d[1].startPos == Mark(line: 1, column: 35)
 
   test "documents without schema are not validated":
     check validateDocuments("{port: x}\n", registry).len == 0

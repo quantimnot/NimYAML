@@ -292,8 +292,9 @@ suite "Lint: directive rules":
   test "%SCHEMA errors":
     check directiveSpans("%SCHEMA\n--- a\n") ==
         @["invalid-schema-directive 1:1-1:8 error"]
-    check directiveSpans("%SCHEMA a b\n--- a\n", "file:///x.yaml") ==
-        @["invalid-schema-directive 1:1-1:12 error"]
+    check directiveSpans("%SCHEMA a b\n--- a\n", "file:///x.yaml").len == 0
+    check directiveSpans("%SCHEMA a http://[x\n--- a\n", "file:///x.yaml") ==
+        @["invalid-schema-directive 1:11-1:20 error"]
     check directiveSpans(
         "%SCHEMA https://x.example/1\n%SCHEMA https://x.example/2\n--- a\n") ==
         @["duplicate-schema-directive 2:1-2:28 error"]

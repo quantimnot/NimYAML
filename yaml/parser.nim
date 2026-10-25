@@ -1004,8 +1004,9 @@ proc atStreamEnd(ctx: Context, e : var Event): bool =
 # enabled, NimYAML also gives meaning to two names that would otherwise be
 # reserved:
 #
-# * ``%SCHEMA <uri-reference>`` names the JSON Schema of the document,
-#   resolved against the source URI of the stream.
+# * ``%SCHEMA <uri-reference>...`` names the JSON Schemas of the document,
+#   resolved against the source URI of the stream; the document is to be
+#   valid against all of them. Each reference becomes a directive of its own.
 # * ``%GLOBAL <directive>`` wraps a ``YAML``, ``TAG`` or ``SCHEMA`` directive
 #   and makes it apply to every document of the stream. It may only appear
 #   in the directive block of the first document. A document's own
@@ -1073,34 +1074,31 @@ proc readTagDirective(ctx: Context, origin: DirectiveOrigin,
   ctx.safeNext()
 
 proc readSchemaDirective(ctx: Context, origin: DirectiveOrigin, start: Mark,
-    issues: var seq[DirectiveIssue], directive: var Directive): bool =
-  ## Reads a ``%SCHEMA`` directive. Returns ``false``, after recording why,
-  ## if it does not name a schema that can be located.
+    issues: var seq[DirectiveIssue], directives: var seq[Directive]): Mark =
+  ## Reads a ``%SCHEMA`` directive into one directive per schema that can be
+  ## located, recording why for the others. Returns the end of the line.
   let directiveEnd = ctx.lex.curEndPos
   let params = ctx.readParameters()
-  let lineEnd = if params.len > 0: params[^1].endPos else: directiveEnd
-  if params.len != 1:
-    issues.issue(diInvalidSchema, start, lineEnd,
-        "%SCHEMA expects exactly one URI reference, got " & $params.len &
-        " parameters")
-    return false
-  let (reference, valueStart, valueEnd) = params[0]
-  if not isUriReference(reference):
-    issues.issue(diInvalidSchema, valueStart, valueEnd,
-        escape(reference) & " is not a URI reference")
-    return false
-  var uri = reference
-  if not reference.isAbsolute:
-    if ctx.sourceUri.len == 0:
-      issues.issue(diUnresolvableSchema, valueStart, valueEnd,
-          "relative schema reference " & escape(reference) &
-          " cannot be resolved: the input has no source URI")
-      return false
-    uri = resolve(ctx.sourceUri, reference)
-  directive = Directive(kind: dkSchema, origin: origin, reference: reference,
-      uri: uri, startPos: start, endPos: lineEnd, valueStart: valueStart,
-      valueEnd: valueEnd)
-  result = true
+  result = if params.len > 0: params[^1].endPos else: directiveEnd
+  if params.len == 0:
+    issues.issue(diInvalidSchema, start, result,
+        "%SCHEMA expects at least one URI reference")
+  for (reference, valueStart, valueEnd) in params:
+    if not isUriReference(reference):
+      issues.issue(diInvalidSchema, valueStart, valueEnd,
+          escape(reference) & " is not a URI reference")
+      continue
+    var uri = reference
+    if not reference.isAbsolute:
+      if ctx.sourceUri.len == 0:
+        issues.issue(diUnresolvableSchema, valueStart, valueEnd,
+            "relative schema reference " & escape(reference) &
+            " cannot be resolved: the input has no source URI")
+        continue
+      uri = resolve(ctx.sourceUri, reference)
+    directives.add(Directive(kind: dkSchema, origin: origin,
+        reference: reference, uri: uri, startPos: start, endPos: result,
+        valueStart: valueStart, valueEnd: valueEnd))
 
 proc skipRestOfLine(ctx: Context, line: int): Mark =
   ## Consumes the remaining tokens of directive line ``line``; returns the
@@ -1130,21 +1128,24 @@ proc readGlobalDirective(ctx: Context, issues: var seq[DirectiveIssue],
     issues.issue(diMissingGlobal, start, Mark(line: line,
         column: start.column + "%GLOBAL".len), "%GLOBAL needs a directive")
     return
-  var declared: Directive
+  var
+    declared: seq[Directive]
+    stop: Mark
   case wrapped
-  of Token.YamlDirective: declared = ctx.readYamlDirective(doGlobal, start)
-  of Token.TagDirective: declared = ctx.readTagDirective(doGlobal, start)
+  of Token.YamlDirective: declared.add(ctx.readYamlDirective(doGlobal, start))
+  of Token.TagDirective: declared.add(ctx.readTagDirective(doGlobal, start))
   of Token.SchemaDirective:
     if not firstDocument:
       # still read, so that it is checked like everywhere else
       var ignored: seq[DirectiveIssue]
-      discard ctx.readSchemaDirective(doGlobal, start, ignored, declared)
+      stop = ctx.readSchemaDirective(doGlobal, start, ignored, declared)
     else:
       let duplicate = seenGlobalSchema
       seenGlobalSchema = true
-      if not ctx.readSchemaDirective(doGlobal, start, issues, declared): return
+      stop = ctx.readSchemaDirective(doGlobal, start, issues, declared)
+      if declared.len == 0: return
       if duplicate:
-        issues.issue(diDuplicateGlobal, start, declared.endPos,
+        issues.issue(diDuplicateGlobal, start, stop,
             "a global %SCHEMA has already been declared")
         return
   of Token.GlobalDirective:
@@ -1157,17 +1158,20 @@ proc readGlobalDirective(ctx: Context, issues: var seq[DirectiveIssue],
     issues.issue(diUnknownGlobal, start, stop, "%GLOBAL " & name &
         " is ignored: only YAML, TAG and SCHEMA can be global")
     return
+  if wrapped != Token.SchemaDirective: stop = declared[0].endPos
   if not firstDocument:
-    issues.issue(diMisplacedGlobal, start, declared.endPos,
+    issues.issue(diMisplacedGlobal, start, stop,
         "%GLOBAL is only allowed before the first document")
     return
-  for existing in ctx.globals:
-    if existing.sameDeclaration(declared) and declared.kind != dkSchema:
-      issues.issue(diDuplicateGlobal, start, declared.endPos,
-          "a global %" & $declared.kind &
-          (if declared.kind == dkTag: " for " & declared.handle else: "") &
-          " has already been declared")
-      return
+  if wrapped != Token.SchemaDirective:
+    let d = declared[0]
+    for existing in ctx.globals:
+      if existing.sameDeclaration(d):
+        issues.issue(diDuplicateGlobal, start, d.endPos,
+            "a global %" & $d.kind &
+            (if d.kind == dkTag: " for " & d.handle else: "") &
+            " has already been declared")
+        return
   ctx.globals.add(declared)
 
 proc effectiveDirectives(ctx: Context, own: seq[Directive],
@@ -1178,20 +1182,21 @@ proc effectiveDirectives(ctx: Context, own: seq[Directive],
   ## record).
   resetHandles(ctx.handles)
   version = ""
-  var schema = ""
   for d in ctx.globals & own:
     case d.kind
     of dkYaml: version = d.version
     of dkTag: discard registerHandle(ctx.handles, d.handle, d.prefix)
-    of dkSchema: schema = d.uri
+    of dkSchema: discard
   if ctx.globals.len == 0 and own.len == 0 and issues.len == 0: return nil
-  result = DocumentDirectives(schema: schema, issues: issues)
+  result = DocumentDirectives(issues: issues)
   for g in ctx.globals:
     var declaration = g
     for d in own:
       if d.sameDeclaration(g): declaration.overridden = true
     result.declarations.add(declaration)
   result.declarations.add(own)
+  let schemas = result.schemas
+  if schemas.len > 0: result.schema = schemas[0]
 
 proc beforeDoc(ctx: Context, e: var Event): bool =
   var
@@ -1257,10 +1262,11 @@ proc beforeDoc(ctx: Context, e: var Event): bool =
         start = ctx.lex.curStartPos
         duplicate = seenSchema
       seenSchema = true
-      var declared: Directive
-      if ctx.readSchemaDirective(doDocument, start, issues, declared):
+      var declared: seq[Directive]
+      let stop = ctx.readSchemaDirective(doDocument, start, issues, declared)
+      if declared.len > 0:
         if duplicate:
-          issues.issue(diDuplicateSchema, start, declared.endPos,
+          issues.issue(diDuplicateSchema, start, stop,
               "a document can have only one %SCHEMA")
         else: own.add(declared)
     of GlobalDirective:

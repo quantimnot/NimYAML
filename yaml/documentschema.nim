@@ -18,11 +18,15 @@
 ##    convention of the YAML language server used by many editors,
 ## 4. a top-level ``$schema`` key whose value is a string.
 ##
-## The highest one present wins; schemas are never merged, because a merge
-## of two schemas has no well-defined meaning and would hide that the
-## document contradicts itself. When a document has more than one source, a
-## ``schema-source`` diagnostic (severity info) names the winner, so that the
-## ignored ones are not silently ignored.
+## The highest one present wins. A directive may name several schemas
+## (``%SCHEMA a.json b.json``), and then the document must be valid against
+## each of them, as with ``allOf``; a modeline or key names one, and of
+## several modelines the first wins. Schemas from different sources are
+## never combined, and schemas are never merged keyword by keyword, because
+## such a merge has no well-defined meaning and would hide that the
+## document contradicts itself. When a document has sources that are not
+## used, a ``schema-source`` diagnostic (severity info) names the winners,
+## so that the ignored ones are not silently ignored.
 ##
 ## Directives are ranked above the other two because they are the only
 ## sources that are part of the YAML presentation rather than of its
@@ -207,9 +211,18 @@ proc finish*(c: var SchemaCollector): seq[DocumentSchema] =
     doc.sources = sorted
   result = c.documents
 
+proc schemas*(doc: DocumentSchema): seq[SchemaSource] =
+  ## The sources whose schemas ``doc`` is validated with, all of them: the
+  ## references of the winning directive, or the winning modeline or key.
+  if doc.sources.len == 0: return
+  let kind = doc.sources[0].kind
+  if kind in {sskModeline, sskSchemaKey}: return @[doc.sources[0]]
+  for s in doc.sources:
+    if s.kind == kind: result.add(s)
+
 proc schema*(doc: DocumentSchema): string =
-  ## The URI of the schema that ``doc`` is validated with; empty if it
-  ## declares none (or the winning declaration could not be resolved).
+  ## The URI of the first schema that ``doc`` is validated with; empty if
+  ## it declares none (or the winning declaration could not be resolved).
   if doc.sources.len > 0: doc.sources[0].uri else: ""
 
 proc diagnostics*(documents: seq[DocumentSchema]): seq[Diagnostic] =
@@ -225,14 +238,16 @@ proc diagnostics*(documents: seq[DocumentSchema]): seq[Diagnostic] =
             message: "relative schema reference " & escape(s.reference) &
                 " in the " & $s.kind &
                 " cannot be resolved: the input has no source URI"))
-    if doc.sources.len > 1:
-      let winner = doc.sources[0]
-      var others: seq[string]
-      for s in doc.sources[1 .. ^1]: others.add($s.kind)
+    let winners = doc.schemas
+    if doc.sources.len > winners.len:
+      let winner = winners[0]
+      var references, others: seq[string]
+      for s in winners: references.add(escape(s.reference))
+      for s in doc.sources[winners.len .. ^1]: others.add($s.kind)
       result.add(Diagnostic(rule: "schema-source", severity: severityInfo,
           startPos: winner.startPos, endPos: winner.endPos,
           message: "document " & $(doc.index + 1) & " is validated against " &
-              escape(winner.reference) & " from the " & $winner.kind &
+              references.join(" and ") & " from the " & $winner.kind &
               "; ignored: " & others.join(", ")))
 
 proc documentSchemas*(source: string, sourceUri = ""): seq[DocumentSchema] =

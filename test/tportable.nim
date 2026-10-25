@@ -144,6 +144,22 @@ suite "expandDirectives":
     check roundTrips(source, modelines)
     check unknownDirectives(modelines) == 0
 
+  test "several schemas stay on one %SCHEMA line, even for modelines":
+    proc schemasOf(source: string): seq[seq[string]] =
+      for e in events(source, extensions = true):
+        if e.kind == yamlStartDoc: result.add(e.directives.schemas)
+    let source = "%GLOBAL SCHEMA https://x.example/a https://x.example/b\n" &
+        "--- 1\n...\n--- 2\n"
+    let expected = "%SCHEMA https://x.example/a https://x.example/b\n" &
+        "--- 1\n...\n%SCHEMA https://x.example/a https://x.example/b\n--- 2\n"
+    check expandDirectives(source) == expected
+    # a modeline names one schema
+    check expandDirectives(source, ExpandOptions(schemas: soModeline)) ==
+        expected
+    check schemasOf(expected) == schemasOf(source)
+    const own = "%SCHEMA https://x.example/a https://x.example/b\n--- 1\n"
+    check expandDirectives(own, ExpandOptions(schemas: soModeline)) == own
+
   test "comments, styles and line breaks are kept":
     let source = "%GLOBAL TAG !e! tag:e: # the e handle\r\n" &
         "--- # first\r\n- !e!a  'quoted'   # comment\r\n...\r\n" &
@@ -181,6 +197,17 @@ suite "presenter directive options":
     present(initYamlParser().parse(source), output, PresentationOptions(
         schemaDirective: sdDirective, newlines: nlLF))
     check output.data.count("%SCHEMA https://x.example/s") == 2
+
+  test "several schemas are written as one %SCHEMA, also for sdModeline":
+    let source = "%GLOBAL SCHEMA https://x.example/s https://x.example/t\n" &
+        "--- 1\n...\n--- 2\n"
+    for style in [sdDirective, sdModeline]:
+      var output = newStringStream()
+      present(initYamlParser().parse(source), output, PresentationOptions(
+          schemaDirective: style, newlines: nlLF))
+      check output.data.count(
+          "%SCHEMA https://x.example/s https://x.example/t\n") == 2
+      check "yaml-language-server" notin output.data
 
 suite "yamlexpand":
   let dir = getTempDir() / "nimyaml-tportable"

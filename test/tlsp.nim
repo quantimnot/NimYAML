@@ -222,6 +222,26 @@ suite "LSP directive features":
     check "**Document 1**" in ending["contents"]["value"].getStr()
     check s.answer(at("textDocument/hover", "untitled:h", 2, 6)).kind == JNull
 
+  test "several schemas: hover per reference, all on the marker, links":
+    var s: Server
+    discard s.handle(didOpen("untitled:m",
+        "%SCHEMA https://x.example/a.json https://x.example/b.json\n--- 1\n"))
+    let first = s.answer(at("textDocument/hover", "untitled:m", 0, 10))
+    check "**`%SCHEMA https://x.example/a.json`**" in
+        first["contents"]["value"].getStr()
+    let second = s.answer(at("textDocument/hover", "untitled:m", 0, 40))
+    let text = second["contents"]["value"].getStr()
+    check "**`%SCHEMA https://x.example/b.json`**" in text
+    check "Not used" notin text
+    let marker = s.answer(at("textDocument/hover", "untitled:m", 1, 1))
+    let doc = marker["contents"]["value"].getStr()
+    check "<https://x.example/a.json> (%SCHEMA, line 1)" in doc
+    check "<https://x.example/b.json> (%SCHEMA, line 1)" in doc
+    let links = s.answer(request(1, "textDocument/documentLink",
+        %*{"textDocument": {"uri": "untitled:m"}}))
+    check links.len == 2
+    check links[1]["target"].getStr() == "https://x.example/b.json"
+
   test "definition and document links of schema references":
     var s: Server
     discard s.handle(didOpen("untitled:h", stream))

@@ -61,7 +61,8 @@ type
     ## - ``sdDirective``: As a ``%SCHEMA`` directive. Other YAML processors
     ##   ignore it.
     ## - ``sdModeline``: As a ``# yaml-language-server: $schema=`` comment,
-    ##   which editors understand.
+    ##   which editors understand; as a directive if there are several
+    ##   schemas, since a modeline names one.
     sdNone, sdDirective, sdModeline
 
   ScalarQuotingStyle* = enum
@@ -935,17 +936,23 @@ proc doPresent(
               ctx.newline()
               ctx.wroteDirectivesEnd = true
           of ovNone: discard
-          if not item.directives.isNil and item.directives.schema.len > 0:
+          let schemas = item.directives.schemas
+          if schemas.len > 0:
             case ctx.options.schemaDirective
             of sdNone: discard
+            of sdModeline:
+              if schemas.len == 1:
+                ctx.target.write("# yaml-language-server: $schema=" &
+                    schemas[0])
+                ctx.newline()
+              else:
+                ctx.target.write("%SCHEMA " & schemas.join(" "))
+                ctx.newline()
+                ctx.wroteDirectivesEnd = true
             of sdDirective:
-              ctx.target.write("%SCHEMA " & item.directives.schema)
+              ctx.target.write("%SCHEMA " & schemas.join(" "))
               ctx.newline()
               ctx.wroteDirectivesEnd = true
-            of sdModeline:
-              ctx.target.write("# yaml-language-server: $schema=" &
-                  item.directives.schema)
-              ctx.newline()
           for v in ctx.handles:
             if v.handle == "!":
               if v.uriPrefix != "!":

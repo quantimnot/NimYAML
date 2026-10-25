@@ -28,6 +28,9 @@ proc documents(source: string, sourceUri = "", extensions = true): seq[Event] =
 proc schemaOf(doc: Event): string =
   if doc.directives.isNil: "" else: doc.directives.schema
 
+proc schemasOf(doc: Event): seq[string] =
+  if not doc.directives.isNil: result = doc.directives.schemas
+
 proc issueKinds(doc: Event): seq[DirectiveIssueKind] =
   if not doc.directives.isNil:
     for i in doc.directives.issues: result.add(i.kind)
@@ -85,13 +88,35 @@ suite "%SCHEMA":
     check docs[0].issueKinds == @[diDuplicateSchema]
     check docs[0].directives.issues[0].startPos.line == 2
 
-  test "exactly one URI reference":
+  test "at least one URI reference":
     check documents("%SCHEMA\n--- a\n")[0].issueKinds == @[diInvalidSchema]
-    check documents("%SCHEMA a b\n--- a\n")[0].issueKinds == @[diInvalidSchema]
     check documents("%SCHEMA http://[x\n--- a\n")[0].issueKinds ==
         @[diInvalidSchema]
     check documents("%SCHEMA a # comment\n--- a\n", "file:///x.yaml")[0]
         .schemaOf == "file:///a"
+
+  test "several URI references all apply":
+    let docs = documents(
+        "%SCHEMA https://a.example/1 b.json # both\n--- a\n",
+        sourceUri = "file:///work/x.yaml")
+    check docs[0].schemasOf == @["https://a.example/1", "file:///work/b.json"]
+    check docs[0].schemaOf == "https://a.example/1"
+    check docs[0].issueKinds.len == 0
+    let declared = docs[0].directives.declarations
+    check declared.len == 2
+    # one directive per URI, each spanning the line
+    check declared[0].startPos == declared[1].startPos
+    check declared[0].endPos == Mark(line: 1, column: 35)
+    check declared[1].endPos == Mark(line: 1, column: 35)
+    check declared[0].valueStart == Mark(line: 1, column: 9)
+    check declared[1].valueStart == Mark(line: 1, column: 29)
+    check declared[1].reference == "b.json"
+
+  test "an invalid URI reference among several is ignored":
+    let docs = documents("%SCHEMA https://a.example/1 http://[x s.json\n--- a\n")
+    check docs[0].schemasOf == @["https://a.example/1"]
+    check docs[0].issueKinds == @[diInvalidSchema, diUnresolvableSchema]
+    check docs[0].directives.issues[0].startPos == Mark(line: 1, column: 29)
 
 suite "%GLOBAL":
   const tagged = """%GLOBAL TAG !e! tag:example.com,2000:
@@ -143,6 +168,19 @@ suite "%GLOBAL":
     check second.len == 2
     check second[0].origin == doGlobal and second[0].overridden
     check second[1].origin == doDocument and not second[1].overridden
+
+  test "several global schemas, overridden together":
+    let docs = documents("""%GLOBAL SCHEMA https://g.example/1 https://g.example/2
+--- a
+...
+%SCHEMA https://example.com/second.json
+--- b
+""")
+    check docs[0].schemasOf == @["https://g.example/1", "https://g.example/2"]
+    check docs[1].schemasOf == @["https://example.com/second.json"]
+    let second = docs[1].directives.declarations
+    check second.len == 3
+    check second[0].overridden and second[1].overridden
 
   test "per-document TAG overrides the global TAG of the same handle":
     let source = """%GLOBAL TAG !e! tag:global:
@@ -312,6 +350,17 @@ suite "continuing a stream":
     check doc.kind == yamlStartDoc
     check doc.schemaOf == "https://example.com/s.json"
     check doc.directives.declarations.len == 2
+
+  test "checkpoint and resume with several global schemas":
+    const several = "%GLOBAL SCHEMA https://g.example/1 https://g.example/2\n" &
+        "--- a\n...\n--- b\n"
+    let s = initYamlParser().parse(several)
+    while s.next().kind != yamlEndDoc: discard
+    let cp = s.checkpoint()
+    let resumed = initYamlParser().resume(cp, several[cp.offset .. ^1])
+    var doc = resumed.next()
+    while doc.kind != yamlStartDoc: doc = resumed.next()
+    check doc.schemasOf == @["https://g.example/1", "https://g.example/2"]
 
   test "parsing from a later document start":
     let s = initYamlParser().parse(source)

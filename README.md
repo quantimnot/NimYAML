@@ -923,10 +923,13 @@ NimYAML gives meaning to two directive names that YAML 1.2 reserves:
 --- !e!service {name: c}          # !e! and the global schema apply again
 ```
 
-* `%SCHEMA <uri-reference>` names the JSON Schema of the document that
-  follows it. A relative reference resolves against the URI the stream was
-  read from (`initYamlParser(sourceUri = ...)`); without one, it is an error.
-  At most one per document.
+* `%SCHEMA <uri-reference>...` names the JSON Schemas of the document that
+  follows it, which must be valid against each of them (as with `allOf`,
+  not a merge): `%SCHEMA base.json strict.json`. A relative reference
+  resolves against the URI the stream was read from
+  (`initYamlParser(sourceUri = ...)`); without one, it is an error. At most
+  one `%SCHEMA` line per document; one with several references declares a
+  directive per reference.
 * `%GLOBAL <directive>` wraps a `YAML`, `TAG` or `SCHEMA` directive (whose
   parameters are read exactly as on their own line) and makes it apply to
   every document of the stream. It is only allowed before the first
@@ -934,7 +937,8 @@ NimYAML gives meaning to two directive names that YAML 1.2 reserves:
   overrides the global one for that document only.
 
 Each `yamlStartDoc` event reports the effective `version` and `handles`, and
-in `directives` the effective `schema`, every declaration in effect with its
+in `directives` the effective `schemas` (`schema` is the first), every
+declaration in effect with its
 origin (global or per-document) and position, and the problems found in the
 directive block. Misuse never makes the YAML invalid, because every such line
 is a valid reserved directive: the directive is ignored and an issue is
@@ -943,7 +947,7 @@ recorded instead, which `lint` reports under these ids:
 | rule | default | reports |
 |---|---|---|
 | `unknown-directive` | warning | a reserved directive (YAML 1.2, §6.8, says to ignore it with a warning) |
-| `invalid-schema-directive` | error | `%SCHEMA` without exactly one URI reference |
+| `invalid-schema-directive` | error | `%SCHEMA` without URI references, or a parameter that is not one (only that one is ignored) |
 | `duplicate-schema-directive` | error | a second `%SCHEMA` in one document |
 | `unresolvable-schema-uri` | error | a relative schema reference without source URI |
 | `misplaced-global-directive` | error | `%GLOBAL` after the first document |
@@ -959,8 +963,10 @@ reserved directives like any other.
 `yaml/documentschema` decides which schema a document is validated against,
 highest first: its `%SCHEMA`, a `%GLOBAL SCHEMA`, a
 `# yaml-language-server: $schema=<uri>` modeline in the document, a top-level
-`$schema` key. Schemas are never merged. `yaml/schemavalidation` validates
-every document against its schema (with `yaml/jsonschema`) and returns
+`$schema` key. Only the schemas of the highest source apply: all those of a
+directive, the first modeline. Schemas are never merged keyword by keyword.
+`yaml/schemavalidation` validates every document against each of its
+schemas (with `yaml/jsonschema`) and returns
 diagnostics (`schema-validation`, `schema-unavailable`) positioned at the
 offending nodes.
 
