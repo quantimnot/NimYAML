@@ -25,6 +25,11 @@ task memoryTests, "Run memory budget tests":
   --verbosity:0
   setCommand "c", "test/tmemory"
 
+task sourceTests, "Run input source tests":
+  --r
+  --verbosity:0
+  setCommand "c", "test/tsource"
+
 task lexerTests, "Run lexer tests":
   --r
   --verbosity:0
