@@ -133,6 +133,11 @@ task editTests, "Run tests of assignments to the source text":
   --verbosity:0
   setCommand "c", "test/tedit"
 
+task nodeIndexTests, "Run tests of node spans and the index of node locations":
+  --r
+  --verbosity:0
+  setCommand "c", "test/tnodeindex"
+
 task jsonSchemaTests, "Run the JSON Schema Test Suite and JSON Schema tests":
   --r
   --verbosity:0
@@ -205,7 +210,7 @@ task bench, "Benchmarking":
   setCommand "c", "bench/bench"
 
 task clean, "Remove all generated files":
-  exec "rm -rf libyaml.* test/tests test/tjsonpath test/tjsonpatch test/tmergepatch test/tmerge test/tjcs test/tedit test/tjsonschema test/thyperschema test/tschemainternals test/turitemplate test/tdirectives test/tdocumentschema test/tportable test/parsing test/lexing bench/json docout"
+  exec "rm -rf libyaml.* test/tests test/tjsonpath test/tjsonpatch test/tmergepatch test/tmerge test/tjcs test/tedit test/tnodeindex test/tjsonschema test/thyperschema test/tschemainternals test/turitemplate test/tdirectives test/tdocumentschema test/tportable test/parsing test/lexing bench/json docout"
   setCommand "nop"
 
 task testSuiteEvents, "Compile the testSuiteEvents tool":

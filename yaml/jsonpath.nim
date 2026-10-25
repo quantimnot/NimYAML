@@ -707,6 +707,25 @@ proc addNameSegment*(path: var string, name: string) =
     else: path.add(c)
   path.add("']")
 
+proc normalizedPath*(path: JsonPath): string {.raises: [].} =
+  ## The Normalized Path of the node that the singular query ``path``
+  ## selects, so that ``$.a["b"][0]`` and ``$['a']['b'][0]`` look the same;
+  ## "" if ``path`` is not singular or has a negative index, whose node
+  ## depends on the length of its sequence. Lets a location be looked up
+  ## without evaluating the query, as `yaml/nodeindex <nodeindex.html>`_
+  ## does.
+  if not path.query.singular or path.query.relative: return ""
+  result = "$"
+  for segment in path.query.segments:
+    if segment.descendant or segment.selectors.len != 1: return ""
+    let selector = segment.selectors[0]
+    case selector.kind
+    of skName: result.addNameSegment(selector.name)
+    of skIndex:
+      if selector.index < 0: return ""
+      result.add("[" & $selector.index & "]")
+    else: return ""
+
 # ============================================================================
 # Evaluation
 #

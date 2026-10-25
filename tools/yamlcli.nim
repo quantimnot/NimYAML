@@ -28,6 +28,9 @@
 ## * ``expand``: makes ``%GLOBAL`` directives portable
 ## * ``config``: writes the config in effect, with all defaults, to
 ##   ``.yaml.yaml``
+## * ``index``: builds, prints or drops the index of node locations that
+##   ``query`` reads nodes through (see `yaml/nodeindex
+##   <../yaml/nodeindex.html>`_)
 ## * ``lsp``: the language server, over stdio
 ## * ``help``: this overview, or the usage of a command
 ##
@@ -41,11 +44,12 @@
 ## ``diff``, the files differ), 2 for usage, I/O and config errors (and with
 ## ``diff``, invalid inputs).
 
-import std/[os, parseopt, streams, strutils, terminal]
+import std/[options, os, parseopt, streams, strutils, terminal]
 when defined(nimPreviewSlimSystem):
   import std/syncio
 import ../yaml/[data, dom, dumping, loading, parser, presenter, stream, cbor,
-    jsonpath, toolconfig, edit, jsonpatch, mergepatch, merge, jcs, diff]
+    jsonpath, toolconfig, edit, jsonpatch, mergepatch, merge, jcs, diff,
+    nodeindex, spans]
 import ../yaml/private/lex
 from ../yaml/hints import guessType, TypeHint
 import yamllint, yamlexpand, yamllsp
@@ -78,6 +82,7 @@ commands:
             or JSON Merge Patch that makes them
   expand    expand %GLOBAL directives into the documents
   config    write the config in effect, with all defaults, to .yaml.yaml
+  index     build, print or drop the index that query reads nodes through
   lsp       the language server, over stdio
   help      this overview, or the usage of COMMAND
 
@@ -150,7 +155,38 @@ node is replaced by VALUE, read as YAML, and the edited input is written
 instead: only the text of the selected nodes changes, so comments, styles
 and layout stay. Several inputs and --to are written as by yaml convert.
 With -i (or --in-place), each file in which a node is selected is edited
-in place instead. CBOR has no text to edit and is encoded again."""
+in place instead. CBOR has no text to edit and is encoded again.
+
+With an index (index.mode in the config; see yaml help index), a PATH that
+names a single location, like $.a.b[0], is looked up in the index of each
+YAML or JSON file first, and the node is read from its slice of the file
+without parsing the rest. A file without a current index is parsed, which
+brings its index up to date."""
+
+  indexUsage = """usage: yaml index [--mode:all|recent] [--format:cbor|yaml]
+                  [--location:beside|project|user] FILE...
+       yaml index --print [--mode:...] [--format:...] [--location:...] FILE...
+       yaml index --drop [--mode:...] [--format:...] [--location:...] FILE...
+
+Builds the index of each YAML or JSON file, which records where each node
+is, so that yaml query reads a node from its slice of the file instead of
+parsing all of it, and prints the path of each index written. The index
+section of the config sets how files are indexed; the options override it.
+Without either, the mode is all.
+
+--mode:all      every node (the default here)
+--mode:recent   only the paths looked up lately, at most index.recent-limit
+--format:F      cbor (default) or yaml
+--location:L    beside: .NAME.index.FORMAT next to the file; project: in
+                .yaml-index next to the config file; user: in the user's
+                cache directory (default)
+--print         write the index of each file as YAML instead (building it
+                if it is missing or stale)
+--drop          remove the index of each file
+
+An index holds a fingerprint of its file, so an index of a file changed by
+anything else is not used. Commands that edit files in place (format -i,
+query -i, patch -i, merge -i) build the index of the files they write."""
 
   patchUsage = """usage: yaml patch [--merge] [--from:FORMAT] [--to:FORMAT | -i] PATCH [FILE...]
 
@@ -253,7 +289,12 @@ is read as its lint section. All keys are optional:
     comments: keep          # or drop
     comment-indentation: node  # or source
     comment-gap: 2
-    comment-blank-lines: keep  # or drop"""
+    comment-blank-lines: keep  # or drop
+  index:                    # see yaml help index
+    mode: off               # off, recent or all
+    format: cbor            # or yaml
+    location: user          # beside, project or user
+    recent-limit: 256"""
 
 proc usageOf(command: string): string =
   case command
@@ -270,6 +311,7 @@ proc usageOf(command: string): string =
   of "lsp": lspUsage
   of "help": helpUsage
   of "config": configHelp
+  of "index": indexUsage
   else: ""
 
 proc wantsHelp(args: seq[string]): bool =
@@ -300,6 +342,22 @@ proc formatOf(file: string): DataFormat =
   of ".jsonl", ".ndjson": dfJsonLines
   of ".cbor": dfCbor
   else: dfYaml
+
+# indexes
+#
+# A file queried again and again is read through its index (see
+# yaml/nodeindex); whatever writes a file brings its index up to date, since
+# the writer knows the new content.
+
+proc indexable(format: DataFormat): bool = format in {dfYaml, dfJson, dfJsonc}
+
+proc writeSource(file, text: string) =
+  ## Writes ``text`` to ``file`` and builds its index, if files there are
+  ## indexed.
+  writeFile(file, text)
+  let format = formatOf(file)
+  if format.indexable:
+    refreshIndex(file, text, indexSettingsFor(file), json = format != dfYaml)
 
 proc parseFormat(command, value: string): DataFormat =
   for f in DataFormat:
@@ -519,7 +577,7 @@ proc formatCommand(args: seq[string]): int =
         stdout.writeLine(name)
         result = 1
     elif write:
-      if formatted != content: writeFile(name, formatted)
+      if formatted != content: writeSource(name, formatted)
     else: stdout.write(formatted)
 
 proc convertCommand(command: string, args: seq[string]): int =
@@ -666,16 +724,28 @@ proc queryCommand(args: seq[string]): int =
         if files.len > 0: files[0] else: getCurrentDir() / "-").format
     selected = newStream()
   var asText = false # the edited text of a single input is written as is
-  for input in readInputs(files):
-    let format = source.get(
-        if files.len == 0: dfYaml else: formatOf(input.name))
+  let location = if assigns: "" else: path.normalizedPath
+  for name in (if files.len == 0: @[""] else: files):
+    let format = source.get(if files.len == 0: dfYaml else: formatOf(name))
+    var settings = IndexSettings(mode: imOff)
+    if name.len > 0 and not assigns and format.indexable:
+      settings = indexSettingsFor(name)
+      if location.len > 0:
+        let nodes = indexedNodes(name, location, settings)
+        if nodes.isSome:
+          for node in nodes.get():
+            if paths: stdout.writeLine(location)
+            else: selected.collect(represent(node))
+          continue
+    let input: Input =
+      if name.len == 0: ("<stdin>", stdin.readAll()) else: (name, readFile(name))
     try:
       if assigns:
         let edited = assigned(input, format, path, valueText,
             if files.len == 0: yamlStyle
             else: toolConfigFor(input.name).format)
         if inPlace:
-          if edited.count > 0: writeFile(input.name, edited.text)
+          if edited.count > 0: writeSource(input.name, edited.text)
         elif files.len <= 1 and target.isNone and format != dfCbor:
           asText = true
           stdout.write(edited.text)
@@ -689,6 +759,8 @@ proc queryCommand(args: seq[string]): int =
         for found in root.queryLocated(path):
           if paths: stdout.writeLine(found.path)
           else: selected.collect(represent(found.node))
+      updateIndex(name, input.content, [location], settings,
+          json = format != dfYaml)
     except YamlEditError as e:
       stderr.writeLine(input.name & ": " & e.msg)
       return 1
@@ -768,7 +840,7 @@ proc transformCommand(command: string, args: seq[string], operands: int,
       stderr.writeLine(input.name & ": " & getCurrentExceptionMsg())
       return 1
   if inPlace:
-    for (file, text) in rewritten: writeFile(file, text)
+    for (file, text) in rewritten: writeSource(file, text)
     return 0
   try:
     stdout.write(output, outputFormat.get(dfYaml), yamlStyle)
@@ -852,7 +924,7 @@ proc mergeCommand(args: seq[string]): int =
       else: stderr.writeLine(describe(input.name, getCurrentException()))
       return 1
   if inPlace:
-    for (file, text) in rewritten: writeFile(file, text)
+    for (file, text) in rewritten: writeSource(file, text)
     return 0
   try:
     stdout.write(output, outputFormat.get(dfYaml), yamlStyle)
@@ -1059,6 +1131,80 @@ proc lspCommand(args: seq[string]): int =
       fail("lsp")
   serve(newFileStream(stdin), stdout)
 
+proc indexCommand(args: seq[string]): int =
+  var
+    files: seq[string]
+    mode = none(IndexMode)
+    format = none(IndexFormat)
+    location = none(IndexLocation)
+    print, drop = false
+  for kind, key, val in options(args):
+    case kind
+    of cmdArgument: files.add(key)
+    of cmdLongOption, cmdShortOption:
+      case key
+      of "mode":
+        try: mode = some(parseEnum[IndexMode](val))
+        except ValueError: fail("index")
+      of "format":
+        try: format = some(parseEnum[IndexFormat](val))
+        except ValueError: fail("index")
+      of "location":
+        try: location = some(parseEnum[IndexLocation](val))
+        except ValueError: fail("index")
+      of "print": print = true
+      of "drop": drop = true
+      else: fail("index")
+    of cmdEnd: discard
+  if files.len == 0 or (print and drop) or mode == some(imOff):
+    fail("index")
+  for file in files:
+    let dataFormat = formatOf(file)
+    if not dataFormat.indexable:
+      stderr.writeLine(file & ": only YAML and JSON files are indexed")
+      result = 1
+      continue
+    var settings = indexSettingsFor(file)
+    if mode.isSome: settings.mode = mode.get()
+    elif settings.mode == imOff: settings.mode = imAll
+    if format.isSome: settings.format = format.get()
+    if location.isSome: settings.location = location.get()
+    let indexPath = indexFile(file, settings)
+    if drop:
+      if dropIndex(file, settings): stdout.writeLine(indexPath)
+      continue
+    let
+      content = readFile(file)
+      json = dataFormat != dfYaml
+      old = readIndex(indexPath, settings.format)
+      current = old.isSome and old.get().mode == settings.mode and
+          old.get().json == json and
+          old.get().source.hash == fingerprint(content).hash
+    var index: YamlIndex
+    if current: index = old.get()
+    else:
+      try:
+        let spans = sourceSpans(content, json)
+        index = buildIndex(content, spans, settings.mode, json,
+            modificationTime(file))
+        # a recent index keeps its paths, looked up in the new content
+        if settings.mode == imRecent and old.isSome:
+          for lookup in old.get().lookups:
+            index.record(content, spans, lookup.path, lookup.used,
+                settings.recentLimit)
+      except YamlParserError, YamlStreamError, YamlSpanError:
+        stderr.writeLine(describe(file, getCurrentException()))
+        result = 1
+        continue
+    index.source.mtime = modificationTime(file)
+    if print:
+      stdout.write(blockOnlyDumper().dump(index))
+    elif index.writeIndex(indexPath, settings.format):
+      stdout.writeLine(indexPath)
+    else:
+      stderr.writeLine(indexPath & ": cannot write the index")
+      result = 2
+
 proc helpCommand(args: seq[string]): int =
   if args.len == 0:
     stdout.writeLine(overview)
@@ -1092,6 +1238,7 @@ proc run*(args: seq[string]): int =
     of "diff": diffCommand(rest)
     of "expand": yamlexpand.run(rest, stdin, stdout)
     of "config": configCommand(rest)
+    of "index": indexCommand(rest)
     of "lsp": lspCommand(rest)
     of "help": helpCommand(rest)
     else:

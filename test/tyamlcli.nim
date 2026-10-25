@@ -4,7 +4,7 @@
 #    See the file "copying.txt", included in this
 #    distribution, for details about the copyright.
 
-import std/[os, osproc, strutils, unittest]
+import std/[os, osproc, strutils, times, unittest]
 when defined(nimPreviewSlimSystem):
   import std/[syncio, assertions]
 import ../yaml/[toolconfig, dumping, presenter]
@@ -59,6 +59,10 @@ suite "toolconfig":
     expect ToolConfigError:
       discard parseToolConfig("format: {indentation: 0}\n")
     expect ToolConfigError:
+      discard parseToolConfig("index: {recent-limit: 0}\n")
+    expect ToolConfigError:
+      discard parseToolConfig("index: {mode: sometimes}\n")
+    expect ToolConfigError:
       discard parseToolConfig("format: {style: fancy}\n")
     expect ToolConfigError:
       discard parseToolConfig("format: {comment-gap: 0}\n")
@@ -103,12 +107,18 @@ suite "toolconfig":
     check defaults.format.style == some(fsDefault)
     check defaults.format.indentation == some(2)
     check defaults.format.maxLineLength == some(80)
+    check defaults.index.mode == some(imOff)
+    check defaults.index.format == some(ifCbor)
+    check defaults.index.location == some(ilUser)
+    check defaults.index.recentLimit == some(256)
     check parseToolConfig($defaultToolConfig()) == defaults
     let c = parseToolConfig("lint: {rules: {truthy: {level: off}, " &
         "line-length: {max: 90}}}\n" &
         "validate: {schema: false, remote-schemas: false, " &
         "schema-cache: project}\n" &
-        "format: {style: json, max-line-length: 0, comment-gap: 3}\n")
+        "format: {style: json, max-line-length: 0, comment-gap: 3}\n" &
+        "index: {mode: recent, format: yaml, location: project, " &
+        "recent-limit: 9}\n")
     let r = c.resolved
     check r.lint.rules["truthy"].level == some(levelOff)
     check r.lint.rules["line-length"] ==
@@ -120,6 +130,8 @@ suite "toolconfig":
     check r.format.style == some(fsJson)
     check r.format.maxLineLength == some(0)
     check r.format.commentGap == some(3)
+    check c.indexSettings("dir") == IndexSettings(mode: imRecent,
+        format: ifYaml, location: ilProject, recentLimit: 9, configDir: "dir")
     check r.format.dumper.presentation == c.format.dumper.presentation
     check parseToolConfig($c) == r
     check "  max-line-length: 0  # 0 for no limit\n" in $c
@@ -463,6 +475,82 @@ suite "yaml":
     check r.output.startsWith("Content-Length: ")
     check "\"serverInfo\":{\"name\":\"yamllsp\"}" in r.output
     check cli("lsp", "--socket=8080").exitCode == 2
+
+suite "yaml index":
+  let indexed = tmp / "indexed"
+  createDir(indexed)
+  writeFile(indexed / ".yaml", "index: {mode: all, location: beside}\n")
+  let data = indexed / "data.yaml"
+  let index = indexed / ".data.yaml.index.cbor"
+
+  # File times are kept with less precision than an index has on some
+  # systems, so files are given whole seconds to be put back exactly.
+  let pinned = fromUnix(1_700_000_000)
+
+  test "query builds the index, then reads nodes through it":
+    writeFile(data, "a:\n  b: [1, {c: deep}]\n  s: &s hello\nt: *s\n")
+    setLastModificationTime(data, pinned)
+    check cli(@["$.a.b[1].c", "data.yaml"], workingDir = indexed) ==
+        ("deep\n", 0)
+    check fileExists(index)
+    # a query that is not singular parses
+    check cli(@["$.a.b[*]", "data.yaml"], workingDir = indexed) ==
+        ("1\n...\nc: deep\n", 0)
+    # bytes outside the node change, so that the file does not parse, but
+    # size and time stay: only a read through the index still finds nodes
+    writeFile(data, "a:\n  b: [1; {c: deep}]\n  s: &s hello\nt: *s\n")
+    setLastModificationTime(data, pinned)
+    check cli(@["$.a.b[1].c", "data.yaml"], workingDir = indexed) ==
+        ("deep\n", 0)
+    check cli(@["$.t", "data.yaml"], workingDir = indexed) == ("hello\n", 0)
+    check cli(@["query", "--paths", "$['t']", "data.yaml"],
+        workingDir = indexed) == ("$['t']\n", 0)
+    check cli(@["$.a.b[*]", "data.yaml"], workingDir = indexed).exitCode == 1
+
+  test "an edit by anything else makes the index stale":
+    writeFile(data, "a: 1\n")
+    setLastModificationTime(data, pinned)
+    check cli(@["$.a", "data.yaml"], workingDir = indexed) == ("1\n", 0)
+    writeFile(data, "a: 2\n") # same size and time: the hash tells
+    setLastModificationTime(data, pinned + initDuration(seconds = 1))
+    check cli(@["$.a", "data.yaml"], workingDir = indexed) == ("2\n", 0)
+
+  test "writing in place refreshes the index":
+    writeFile(data, "a: 1\nb: 2\n")
+    check cli(@["$.a = 333", "-i", "data.yaml"], workingDir = indexed) ==
+        ("", 0)
+    # the index written with the file matches its content, so only its time
+    # is updated by the next lookup
+    setLastModificationTime(data, pinned)
+    check cli(@["$.a", "data.yaml"], workingDir = indexed) == ("333\n", 0)
+    writeFile(data, "a: 333\nb: [\n")
+    setLastModificationTime(data, pinned)
+    check cli(@["$.a", "data.yaml"], workingDir = indexed) == ("333\n", 0)
+
+  test "index, --print and --drop":
+    writeFile(data, "a: [1, 2]\n")
+    check cli(@["index", "data.yaml"], workingDir = indexed) ==
+        (expandFilename(indexed) / ".data.yaml.index.cbor\n", 0)
+    let printed = cli(@["index", "--print", "data.yaml"], workingDir = indexed)
+    check printed.exitCode == 0
+    check "path: \"$['a'][1]\"" in printed.output
+    check cli(@["index", "--mode:recent", "--format:yaml", "data.yaml"],
+        workingDir = indexed).exitCode == 0
+    check fileExists(indexed / ".data.yaml.index.yaml")
+    check cli(@["index", "--drop", "--format:yaml", "data.yaml"],
+        workingDir = indexed).exitCode == 0
+    check not fileExists(indexed / ".data.yaml.index.yaml")
+    check cli(@["index", "--drop", "data.yaml"], workingDir = indexed) ==
+        (expandFilename(indexed) / ".data.yaml.index.cbor\n", 0)
+    check not fileExists(index)
+
+  test "usage errors":
+    check cli("index").exitCode == 2
+    check cli("index", "--mode:off", "x.yaml").exitCode == 2
+    check cli("index", "--mode:sometimes", "x.yaml").exitCode == 2
+    check cli("index", "--print", "--drop", "x.yaml").exitCode == 2
+    writeFile(indexed / "x.cbor", "\x01")
+    check cli(@["index", "x.cbor"], workingDir = indexed).exitCode == 1
 
 suite "yaml config":
   createDir(tmp / "config" / "sub")

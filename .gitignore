@@ -49,3 +49,4 @@ test/tjsonpatch
 test/tmergepatch
 test/tmerge
 test/tjcs
+test/tnodeindex

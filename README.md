@@ -643,6 +643,44 @@ an invalid value, `YamlEditError` is raised.
  * **Anchors that aliases elsewhere need** cannot be replaced away; such an
    assignment fails the check.
 
+### Node spans and the index
+
+`yaml/spans` gives the byte range of every node of a source that a
+Normalized Path names, with where its properties end, the span of its key,
+the anchored node of each alias, and a digest of what it means (kind, tag,
+content and children, as the parser reads them). `yaml/edit` finds its
+nodes with it.
+
+`yaml/nodeindex` keeps those ranges in a file of its own, so that a node of
+a large file can be read from its slice of the file instead of parsing all
+of it:
+
+```nim
+import yaml/nodeindex
+
+let source = "a:\n  b: [1, 2]\nc: 3\n"
+let index = buildIndex(source)                  # every node: imAll
+let entry = index.lookup("$['a']['b']").get()[0].entry
+let node = nodeOfSlice(source[entry.start ..< entry.stop], entry)
+# node.get() is the sequence [1, 2]
+```
+
+ * **Never another answer.** A slice is used only if it parses to a node
+   with the digest of the node in its document; a tag on the line before
+   it, an alias of an anchor outside it, a block scalar indentation that
+   counts from its parent, `%TAG` handles: anything that would change its
+   meaning makes it fall back to parsing the source.
+ * **Stale indexes are not used.** An index holds its source's size,
+   modification time and FNV-1a hash; a source that changed is parsed, and
+   its index built again.
+ * **All or recent.** An `all` index has every node; a `recent` one only
+   the paths looked up lately, up to a limit, the least recently used
+   dropped first.
+ * **CBOR or YAML, wherever.** Indexes are stored with NimYAML's own
+   serialization, as CBOR (default) or YAML, beside the source
+   (`.NAME.index.cbor`), in the project (`.yaml-index/`) or in the user's
+   cache.
+
 ## JSON Schema
 
 `yaml/jsonschema` validates `YamlNode` graphs against [JSON Schema][11],
@@ -1092,6 +1130,7 @@ yaml '$.servers[*].port = 8080' [-i] [FILE...]         # replace, -i in place
 yaml expand [--modeline] [FILE]                        # portable %GLOBAL
 yaml diff [--patch | --merge-patch] OLD NEW           # semantic diff
 yaml config [--config:FILE] [--print] [--force] [DIR]  # write .yaml.yaml
+yaml index [--mode:all|recent] [--print | --drop] FILE...  # node index
 yaml lsp                                               # language server, stdio
 yaml help [COMMAND]
 ```
@@ -1110,7 +1149,11 @@ the documents of all files as one stream; JSON output has one value per
 document, with scalars typed by the YAML core schema. `query` applies a
 JSONPath to each document and writes the selected nodes as documents;
 with `PATH = VALUE`, it assigns VALUE to them with `yaml/edit` and writes
-the edited input instead, or with `-i` edits the files in place.
+the edited input instead, or with `-i` edits the files in place. With an
+`index` configured, a PATH that names one location (`$.a.b[0]`) is read
+through the file's index (`yaml/nodeindex`) without parsing the file;
+`index` builds, prints (`--print`, as YAML) or removes (`--drop`) indexes,
+and commands that write files in place build theirs.
 
 One config file, `.yaml` or `.yaml.yaml` (not both in one directory), found
 by walking up from each file's directory, configures `lint`, `validate`,
@@ -1133,6 +1176,12 @@ format:
   comment-indentation: node  # or source, see below
   comment-gap: 2        # spaces between content and a comment after it
   comment-blank-lines: keep  # or drop: blank lines next to comment lines
+index:
+  mode: off             # off, recent (paths looked up lately) or all
+  format: cbor          # or yaml
+  location: user        # beside (.NAME.index.cbor), project (.yaml-index/)
+                        # or user (the user's cache)
+  recent-limit: 256     # paths a recent index keeps
 ```
 
 Downloaded schemas are cached, so that they validate again without a

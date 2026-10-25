@@ -2,6 +2,19 @@
 
 Features:
 
+ * new module `yaml/spans` gives the byte range of every node of a source
+   that a Normalized Path names, the spans of keys, the anchored node of
+   each alias and a digest of each node's meaning; `yaml/edit` is built on
+   it. `yaml/jsonpath` has `normalizedPath` for singular queries.
+ * new module `yaml/nodeindex`: an index of node locations, stored as CBOR
+   or YAML beside the source, in the project or in the user's cache, that
+   reads a node from its slice of a file instead of parsing the file. It
+   holds every node (`all`) or the paths looked up lately (`recent`), is
+   checked against a fingerprint of its source, and falls back to parsing
+   whenever a slice would mean something else than the node in its
+   document. Configured by the new `index` section of `.yaml`; the `yaml`
+   command's `query` reads through it, commands that write in place build
+   it, and a new command `index` builds, prints or drops it.
  * new module `yaml/jsonpatch` applies RFC 6902 JSON Patches to `YamlNode`
    graphs without changing them, atomically; passes json-patch-tests.
  * new module `yaml/mergepatch` applies and creates RFC 7396 JSON Merge

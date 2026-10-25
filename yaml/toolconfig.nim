@@ -32,6 +32,11 @@
 ##     comment-indentation: node  # or source: the column in the input
 ##     comment-gap: 2   # spaces between content and a comment after it
 ##     comment-blank-lines: keep  # or drop: blank lines next to comments
+##   index:
+##     mode: off        # off (default), recent or all
+##     format: cbor     # cbor (default) or yaml
+##     location: user   # beside, project or user (default)
+##     recent-limit: 256  # paths a recent index keeps
 ##
 ## ``remote-schemas: false`` keeps schemas from the network out of the
 ## validation of the files the config applies to, so that opening a file
@@ -50,6 +55,11 @@
 ## `yaml/presenter <presenter.html>`_. The ``minimal``, ``json`` and
 ## ``json-lines`` styles have no room for comments.
 ##
+## The ``index`` section configures the index of node locations that lets
+## ``yaml query`` read a node from its slice of a file instead of parsing
+## all of it (see `nodeindex <nodeindex.html>`_). A ``project`` index lives
+## in the directory ``.yaml-index`` next to the config file.
+##
 ## A legacy ``.nimyaml-lint.yaml`` holds only what the ``lint`` section
 ## holds; it is still found, as a config with defaults for the other
 ## sections.
@@ -57,8 +67,9 @@
 import std/[options, os, strutils]
 when defined(nimPreviewSlimSystem):
   import std/syncio
-import annotations, presenter, dumping, loading, lint, schemacache
-export options, lint, SchemaCacheLocation
+import annotations, presenter, dumping, loading, lint, nodeindex, schemacache
+export options, lint, SchemaCacheLocation, IndexMode, IndexFormat,
+    IndexLocation, IndexSettings
 
 type
   FormatStyle* = enum
@@ -86,10 +97,18 @@ type
     commentGap* {.yamlKey: "comment-gap".}: Option[int]
     commentBlankLines* {.yamlKey: "comment-blank-lines".}: Option[Keeping]
 
+  IndexConfig* {.sparse.} = object
+    mode*: Option[IndexMode]         ## none: off
+    format*: Option[IndexFormat]     ## none: cbor
+    location*: Option[IndexLocation] ## none: user
+    recentLimit* {.yamlKey: "recent-limit".}: Option[int]
+      ## none: 256
+
   ToolConfig* = object
     lint* {.defaultVal: defaultConfig().}: LintConfig
     validate* {.defaultVal: ValidateConfig().}: ValidateConfig
     format* {.defaultVal: FormatConfig().}: FormatConfig
+    index* {.defaultVal: IndexConfig().}: IndexConfig
 
   ToolConfigError* = object of ValueError
 
@@ -110,6 +129,15 @@ proc remoteSchemas*(config: ToolConfig): bool =
 proc schemaCache*(config: ToolConfig): SchemaCacheLocation =
   ## The cache downloaded schemas are written to.
   config.validate.schemaCache.get(sclUser)
+
+proc indexSettings*(config: ToolConfig, configDir = ""): IndexSettings =
+  ## How files that ``config`` applies to are indexed; ``configDir`` is the
+  ## directory of the config file, where a ``project`` index lives.
+  IndexSettings(mode: config.index.mode.get(imOff),
+      format: config.index.format.get(ifCbor),
+      location: config.index.location.get(ilUser),
+      recentLimit: config.index.recentLimit.get(defaultRecentLimit),
+      configDir: configDir)
 
 proc dumper*(style: FormatStyle): Dumper =
   ## The `Dumper` preset of ``style``.
@@ -157,6 +185,10 @@ proc resolved*(config: ToolConfig): ToolConfig =
     commentIndentation: some(presentation.comments.indentation),
     commentGap: some(presentation.comments.gap),
     commentBlankLines: some(format.commentBlankLines.get(kKeep)))
+  let index = config.indexSettings
+  result.index = IndexConfig(mode: some(index.mode),
+      format: some(index.format), location: some(index.location),
+      recentLimit: some(index.recentLimit))
 
 proc `$`*(config: ToolConfig): string =
   ## The content of a config file that `parseToolConfig` reads as
@@ -187,6 +219,12 @@ proc `$`*(config: ToolConfig): string =
       "  comment-gap: " & $f.commentGap.get() & "\n" &
       "  comment-blank-lines: " & $f.commentBlankLines.get() &
       "  # keep or drop\n")
+  let i = c.index
+  result.add("index:\n" &
+      "  mode: " & $i.mode.get() & "  # off, recent or all\n" &
+      "  format: " & $i.format.get() & "  # cbor or yaml\n" &
+      "  location: " & $i.location.get() & "  # beside, project or user\n" &
+      "  recent-limit: " & $i.recentLimit.get() & "\n")
 
 proc isBlank(content: string): bool =
   for line in content.splitLines:
@@ -219,6 +257,9 @@ proc parseToolConfig*(content: string): ToolConfig =
   if result.format.commentGap.isSome and result.format.commentGap.get() < 1:
     raise newException(ToolConfigError,
         "format: comment-gap must be at least 1")
+  if result.index.recentLimit.isSome and result.index.recentLimit.get() < 1:
+    raise newException(ToolConfigError,
+        "index: recent-limit must be at least 1")
 
 proc loadToolConfig*(path: string): ToolConfig =
   ## Loads the config file at ``path``: a legacy lint config if it is named
@@ -273,3 +314,9 @@ proc toolConfigFor*(file: string): ToolConfig =
   ## directory, or the defaults.
   let path = findToolConfig(parentDir(absolutePath(file)))
   if path.len == 0: defaultToolConfig() else: loadToolConfig(path)
+
+proc indexSettingsFor*(file: string): IndexSettings =
+  ## How ``file`` is indexed, by the config that applies to it.
+  let path = findToolConfig(parentDir(absolutePath(file)))
+  if path.len == 0: defaultToolConfig().indexSettings
+  else: loadToolConfig(path).indexSettings(path.parentDir)

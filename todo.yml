@@ -49,15 +49,6 @@
   - compliance tests
   - cross-implementation consensus analysis
 
-- id: binary-index
-  status: todo
-  feature:
-  - configurable
-  - index stored as CBOR or YAML
-  - optionally, index sits beside source
-  - optionally, index recently queried locations
-  - optionally, index all locations
-
 - id: memory-constrained-host
   status: todo
   feature:
@@ -68,6 +59,19 @@
 # ⬆⬆⬆ TODO ⬆⬆⬆
 # -----------
 # ⬇⬇⬇ DONE ⬇⬇⬇
+
+- id: binary-index
+  status: done
+  info:
+  - "doc/YAML file structure indexing feature - Claude.pdf"
+  feature:
+  - configurable  # index section of .yaml
+  - index stored as CBOR or YAML
+  - optionally, index sits beside source  # location: beside
+  - optionally, index recently queried locations  # mode: recent
+  - optionally, index all locations  # mode: all
+  - yaml/spans, extracted from yaml/edit, gives the node ranges
+  - node digests make slices safe; anything else falls back to a parse
 
 - id: consolidated commands
   status: done

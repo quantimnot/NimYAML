@@ -34,46 +34,25 @@
 ## The edited text is parsed again and must have the documents that
 ## assigning to (or renaming in) the parsed source gives; otherwise
 ## `YamlEditError` is raised.
+##
+## Where each node is in the text comes from `yaml/spans <spans.html>`_.
 
 import std/[algorithm, strutils, tables, sets, options]
-import data, dom, hints, jsonpath, loading, native, parser, presenter, stream
+import data, dom, hints, jsonpath, loading, native, parser, presenter, spans,
+    stream
 import private/jsonmodel
 
 type
   YamlEditError* = object of ValueError
     ## Raised when an assignment cannot be written into the source text.
 
-  TargetKind = enum
-    tkScalar, tkEmpty, tkAlias, tkFlow, tkBlock
-
-  Token = tuple[first, last: int, tag: bool]
-
-  Target = object
-    ## A node of the source. Offsets are bytes; ``stop`` is exclusive and
-    ## after the last character of content.
-    kind: TargetKind
-    start, content, stop: int
-    props: seq[Token] # anchor and tag tokens before ``content``
-    inFlow: bool
-    parentMapColumn: int # of the block mapping the node is a value of, or -1
-    parentPath: string
-    index: int # in the parent sequence, or -1 for a member or the root
-    name: string # in the parent mapping
+  Target = NodeSpan
 
   Document = object
-    targets: Table[string, Target]
-    keys: Table[string, Target] # path of a member -> its key
-    aliases: Table[string, string] # path of an alias -> path of its anchor
+    ## A document of the source: where its nodes are, and its graph, which
+    ## is edited the way the text is supposed to be.
+    spans: DocumentSpans
     root: YamlNode
-
-  Walker = object
-    src: string
-    lineStarts: seq[int]
-    events: seq[Event]
-    i: int
-    doc: Document
-    anchors: Table[string, string] # anchor -> path of its node
-    anchorNames: HashSet[string]
 
   Edit = tuple[first, last: int, text: string]
 
@@ -95,161 +74,6 @@ proc fail(reason: string, op = opAssign) {.noreturn.} =
   let verb = if op == opAssign: "assign" else: $op
   raise newException(YamlEditError, "cannot " & verb & " in place: " & reason)
 
-proc offset(w: Walker, m: Mark): int =
-  if m.line < 1: return 0
-  if m.line > w.lineStarts.len: return w.src.len
-  min(w.lineStarts[m.line - 1] + m.column - 1, w.src.len)
-
-proc column(src: string, offset: int): int =
-  ## Zero-based column of ``offset``.
-  var i = offset
-  while i > 0 and src[i - 1] != '\l': dec(i)
-  offset - i
-
-proc trimEnd(src: string, first, last: int): int =
-  result = last
-  while result > first and src[result - 1] in {' ', '\t', '\l', '\c'}:
-    dec(result)
-
-proc after(src: string, pos: int, indicator: char): int =
-  ## The offset after ``indicator`` that follows ``pos`` across whitespace
-  ## and comments, or -1.
-  var i = pos
-  while i < src.len:
-    case src[i]
-    of ' ', '\t', '\l', '\c': inc(i)
-    of '#':
-      while i < src.len and src[i] notin {'\l', '\c'}: inc(i)
-    else: break
-  if i < src.len and src[i] == indicator: i + 1 else: -1
-
-proc tokens(src: string, first, last: int): seq[Token] =
-  ## The anchor and tag tokens in ``first ..< last``; comments are skipped.
-  var i = first
-  while i < last:
-    case src[i]
-    of ' ', '\t', '\l', '\c': inc(i)
-    of '#':
-      while i < last and src[i] notin {'\l', '\c'}: inc(i)
-    else:
-      let start = i
-      while i < last and src[i] notin {' ', '\t', '\l', '\c'}: inc(i)
-      if src[start] in {'&', '!'}:
-        result.add((start, i, src[start] == '!'))
-
-proc contentAfterProps(src: string, first, last: int): int =
-  ## Skips the anchor and tag tokens at ``first``; plain scalars cannot start
-  ## with ``&`` or ``!``.
-  result = first
-  while result < last and src[result] in {'&', '!'}:
-    while result < last and src[result] notin {' ', '\t', '\l', '\c'}:
-      inc(result)
-    while result < last and src[result] in {' ', '\t', '\l', '\c'}:
-      inc(result)
-
-proc anchorOf(e: Event): Anchor =
-  case e.kind
-  of yamlScalar: e.scalarProperties.anchor
-  of yamlStartMap: e.mapProperties.anchor
-  of yamlStartSeq: e.seqProperties.anchor
-  else: yAnchorNone
-
-proc scalarTarget(w: Walker, e: Event): Target =
-  ## The scalar ``e`` as it is in the source: its properties, then its
-  ## content.
-  result = Target(kind: tkScalar, start: w.offset(e.startPos))
-  let stop = w.offset(e.endPos)
-  result.content = contentAfterProps(w.src, result.start, stop)
-  result.props = tokens(w.src, result.start, result.content)
-  result.stop = trimEnd(w.src, result.content, stop)
-
-proc walk(w: var Walker, path, parentPath: string, index: int, name: string,
-    inFlow: bool, parentMapColumn, indicatorEnd: int): int =
-  ## Indexes the node at ``w.i`` and its children under ``path`` (empty for
-  ## nodes that no path names) and returns the end of its content.
-  ## ``indicatorEnd`` is the offset after the ``:`` or ``-`` before the node,
-  ## or -1.
-  let e = w.events[w.i]
-  inc(w.i)
-  var t = Target(inFlow: inFlow, parentMapColumn: parentMapColumn,
-      parentPath: parentPath, index: index, name: name)
-  let anchor = e.anchorOf
-  if anchor != yAnchorNone:
-    w.anchors[$anchor] = path
-    w.anchorNames.incl($anchor)
-  case e.kind
-  of yamlScalar:
-    if w.offset(e.endPos) == w.offset(e.startPos) and
-        anchor == yAnchorNone and
-        e.scalarProperties.tag in [yTagQuestionMark, yTagExclamationMark]:
-      t.kind = tkEmpty
-      t.start = indicatorEnd
-      t.content = indicatorEnd
-      t.stop = indicatorEnd
-    else:
-      let s = w.scalarTarget(e)
-      t.kind = tkScalar
-      t.start = s.start
-      t.content = s.content
-      t.props = s.props
-      t.stop = s.stop
-  of yamlAlias:
-    t.kind = tkAlias
-    t.start = w.offset(e.startPos)
-    t.content = t.start
-    t.stop = w.offset(e.endPos)
-    if path.len > 0 and w.anchors.hasKey($e.aliasTarget):
-      w.doc.aliases[path] = w.anchors[$e.aliasTarget]
-  of yamlStartMap, yamlStartSeq:
-    let
-      isMap = e.kind == yamlStartMap
-      flow = (if isMap: e.mapStyle else: e.seqStyle) == csFlow
-      startEnd = w.offset(e.endPos)
-    t.start = w.offset(e.startPos)
-    if flow:
-      t.kind = tkFlow
-      t.content = startEnd - 1
-    else:
-      t.kind = tkBlock
-      t.content = if isMap: startEnd else: startEnd - 1
-    t.props = tokens(w.src, t.start, max(t.start, t.content))
-    let childFlow = inFlow or flow
-    var last = if isMap and not flow: t.content else: t.content + 1
-    if isMap:
-      let mapColumn = if flow: -1 else: column(w.src, t.content)
-      while w.events[w.i].kind != yamlEndMap:
-        let key = w.events[w.i]
-        var keyName = ""
-        let named = path.len > 0 and key.kind == yamlScalar and
-            YamlNode(kind: yScalar, tag: key.scalarProperties.tag,
-                content: key.scalarContent).isStringKey
-        if named: keyName = key.scalarContent
-        let keyEnd = w.walk("", "", -1, "", childFlow, -1, -1)
-        var childPath = ""
-        if named:
-          childPath = path
-          childPath.addNameSegment(keyName)
-          w.doc.keys[childPath] = w.scalarTarget(key)
-        last = w.walk(childPath, path, -1, keyName, childFlow, mapColumn,
-            after(w.src, keyEnd, ':'))
-    else:
-      var index = 0
-      while w.events[w.i].kind != yamlEndSeq:
-        let indicator =
-          if flow: -1
-          elif index == 0: t.content + 1
-          else: after(w.src, last, '-')
-        let childPath = if path.len > 0: path & "[" & $index & "]" else: ""
-        last = w.walk(childPath, path, index, "", childFlow, -1, indicator)
-        inc(index)
-    let endEvent = w.events[w.i]
-    inc(w.i)
-    t.stop = if flow: w.offset(endEvent.endPos) else: last
-  else:
-    raise newException(YamlEditError, "unexpected event " & $e.kind)
-  if path.len > 0: w.doc.targets[path] = t
-  result = t.stop
-
 proc readEvents(text: string, json: bool): seq[Event] =
   var parser = initYamlParser()
   var s = parser.parse(if json: stripJsonComments(text) else: text)
@@ -267,40 +91,21 @@ proc roots(events: seq[Event]): seq[YamlNode] =
 
 proc index(source: string, events: seq[Event]): tuple[docs: seq[Document],
     anchorNames: HashSet[string]] =
-  var w = Walker(src: source, events: events, lineStarts: @[0])
-  for i, c in source:
-    if c == '\l': w.lineStarts.add(i + 1)
-  let roots = roots(events)
-  w.i = 1 # after yamlStartStream
-  while w.events[w.i].kind == yamlStartDoc:
-    let docStart = w.offset(w.events[w.i].endPos)
-    inc(w.i)
-    w.doc = Document(root: roots[result.docs.len])
-    w.anchors.clear()
-    discard w.walk("$", "", -1, "", false, -1, docStart)
-    inc(w.i) # yamlEndDoc
-    result.docs.add(w.doc)
-  result.anchorNames = w.anchorNames
+  let
+    spans = sourceSpans(source, events)
+    roots = roots(events)
+  for i, doc in spans.documents:
+    result.docs.add(Document(spans: doc, root: roots[i]))
+  result.anchorNames = spans.anchorNames
 
 proc resolve(doc: Document, path: string, op = opAssign):
     tuple[path: string, target: Target] =
   ## The node of the source that ``path`` names; a path through an alias
   ## names the node of its anchor.
-  var current = path
-  for _ in 0 .. 64:
-    if doc.targets.hasKey(current): return (current, doc.targets[current])
-    var prefix = ""
-    for alias in doc.aliases.keys:
-      if alias.len > prefix.len and current.len > alias.len and
-          current.startsWith(alias) and current[alias.len] == '[':
-        prefix = alias
-    if prefix.len == 0: fail(path, "it is not in the source", op)
-    let anchored = doc.aliases[prefix]
-    if anchored.len == 0:
-      fail(path, "it leads through an alias of a node that no path names",
-          op)
-    current = anchored & current[prefix.len .. ^1]
-  fail(path, "its aliases do not end", op)
+  try:
+    let (resolved, span) = doc.spans.resolve(path)
+    result = (resolved, span)
+  except YamlSpanError as e: fail(path, e.msg, op)
 
 # rendering values
 
@@ -454,18 +259,18 @@ proc edits(src: string, t: Target, value: YamlNode, valueEvents: seq[Event],
     if last >= src.len or src[last] in {'\l', '\c'}:
       while first > 0 and src[first - 1] in {' ', '\t'}: dec(first)
     result.add((first, last, ""))
-  if t.kind == tkScalar and not json and t.content < t.stop and
+  if t.kind == skScalar and not json and t.content < t.stop and
       src[t.content] in {'|', '>'}:
     let text = literalBlock(src, t, value, newline)
     if text.len > 0:
       result.add((t.content, t.stop, text))
       return
-  if t.kind == tkBlock and not json and
+  if t.kind == skBlock and not json and
       options.quoting != sqJson and options.containers != cFlow and
       value.kind != yScalar:
     var lines = blockLines(valueEvents, options, taken)
     if lines.len > 0:
-      var indentation = column(src, t.content)
+      var indentation = columnOf(src, t.content)
       var first = ""
       if t.parentMapColumn >= 0 and indentation <= t.parentMapColumn and
           value.kind == yMapping:
@@ -480,7 +285,7 @@ proc edits(src: string, t: Target, value: YamlNode, valueEvents: seq[Event],
   let text = render(valueEvents, inlineOptions(options, json), json, true,
       taken)
   case t.kind
-  of tkEmpty:
+  of skEmpty:
     if t.content < 0: raise newException(YamlEditError, "no place for a value")
     # after the indicator: the rest of its line, if blank, or before what is
     # there, like a comment
@@ -492,7 +297,7 @@ proc edits(src: string, t: Target, value: YamlNode, valueEvents: seq[Event],
     if lineEnd >= src.len or src[lineEnd] in {'\l', '\c'}:
       result.add((at, lineEnd, prefix & text))
     else: result.add((at, at, prefix & text))
-  of tkBlock:
+  of skBlock:
     var colon = t.content
     while colon > 0 and src[colon - 1] in {' ', '\t', '\l', '\c'}: dec(colon)
     if t.props.len == 0 and colon > 0 and src[colon - 1] == ':':
@@ -613,7 +418,7 @@ proc doAssign(source: string, path: JsonPath, value: string,
   # what the edited text must be: the source with the values assigned
   for k in kept:
     let root = docs[k.doc].root
-    if k.c.target.kind == tkAlias: root.setSlot(k.c, loadValue(value))
+    if k.c.target.kind == skAlias: root.setSlot(k.c, loadValue(value))
     else:
       for found in root.queryLocated(parseJsonPath(k.c.path)):
         found.node[] = loadValue(value)[]
@@ -675,9 +480,9 @@ proc doRename(source: string, path: JsonPath, name: string,
       if target.index >= 0 or target.parentPath.len == 0:
         fail(found.path, "it is not a member of a mapping", opRename)
       if target.name == name: continue
-      if not doc.keys.hasKey(resolved):
+      if not doc.spans.keys.hasKey(resolved):
         fail(found.path, "its key is not in the source", opRename)
-      let key = doc.keys[resolved]
+      let key = doc.spans.keys[resolved]
       chosen.add((d, chosen(resolved, target,
           @[(key.content, key.stop, nameText)])))
   let kept = outermost(chosen)
