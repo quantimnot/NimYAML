@@ -61,44 +61,17 @@ contributes:
   languages:
     - id: yaml
       aliases: [yaml, YAML]
+      configuration: ./languages/yaml.language-configuration.json
       extensions: [.yaml, .yml]
       mimetypes: [application/yaml, "application/x-yaml", text/yaml, "text/x-yaml"]
       filenames: []
       filenamePatterns: []
-      comments: {lineComment: "#"}
       icon:
         dark: "icons/yaml-dark.svg"
         light: "icons/yaml-light.svg"
-      folding:
-        offSide: true
-        markers:
-          start: "^\\s*#\\s*region\\b"
-          end: "^\\s*#\\s*endregion\\b"
-      indentationRules:
-        increaseIndentPattern:
-          "^\\s*.*(:|-) ?(&[^\\s,\\[\\]{}]+)?(\\{[^}\"']*|\\([^)\"']*)?$"
-        decreaseIndentPattern: "^\\s+\\}$"
-      wordPattern: "[^\\s\\[\\]{}:,\"']+(?:[:'][^\\s\\[\\]{}:,\"']+)*"
-      brackets:
-        - ["{", "}"]
-        - ["[", "]"]
-        - [(, )]
-      autoClosingPairs:
-        - ["{", "}"]
-        - ["[", "]"]
-        - [(, )]
-        - ["\"", "\""]
-        - ["'", "'"]
-        - ["`", "`"]
-      surroundingPairs:
-        - ["{", "}"]
-        - ["[", "]"]
-        - [(, )]
-        - ["\"", "\""]
-        - ["'", "'"]
-        - ["`", "`"]
     - id: json
       aliases: [JSON, json]
+      configuration: ./languages/json.language-configuration.json
       extensions: [.json, .geojson, .har, .jsonld, .webmanifest]
       mimetypes:
         - application/json
@@ -109,86 +82,33 @@ contributes:
       icon:
         dark: "icons/json-dark.svg"
         light: "icons/json-light.svg"
-      brackets:
-        - ["{", "}"]
-        - ["[", "]"]
-      autoClosingPairs:
-        - ["{", "}"]
-        - ["[", "]"]
-        - ["\"", "\""]
-      surroundingPairs:
-        - ["{", "}"]
-        - ["[", "]"]
-        - ["\"", "\""]
     - id: jsonc
       aliases: [JSON with Comments, jsonc]
+      configuration: ./languages/jsonc.language-configuration.json
       extensions: [.jsonc, ".code-workspace", ".code-profile"]
       mimetypes: [application/jsonc]
       filenames: []
       icon:
         dark: "icons/jsonc-dark.svg"
         light: "icons/jsonc-light.svg"
-      comments:
-        lineComment: //
-        blockComment: [/*, "*/"]
-      brackets:
-        - ["{", "}"]
-        - ["[", "]"]
-      autoClosingPairs:
-        - ["{", "}"]
-        - ["[", "]"]
-        - ["\"", "\""]
-      surroundingPairs:
-        - ["{", "}"]
-        - ["[", "]"]
-        - ["\"", "\""]
     - id: jsonl
       aliases: [JSON Lines, jsonl, ndjson]
+      configuration: ./languages/jsonl.language-configuration.json
       extensions: [.jsonl, .ndjson]
       mimetypes: [application/jsonl, "application/x-ndjson"]
       filenames: []
       icon:
         dark: "icons/jsonl-dark.svg"
         light: "icons/jsonl-light.svg"
-      brackets:
-        - ["{", "}"]
-        - ["[", "]"]
-      autoClosingPairs:
-        - ["{", "}"]
-        - ["[", "]"]
-        - ["\"", "\""]
-      surroundingPairs:
-        - ["{", "}"]
-        - ["[", "]"]
-        - ["\"", "\""]
     - id: cbor
       aliases: [CBOR, cbor]
+      configuration: ./languages/cbor.language-configuration.json
       extensions: [.cbor, .cbordiag]
       filenames: []
       mimetypes: [application/cbor, "application/cbor-diagnostic"]
       icon:
         dark: "icons/cbor-dark.svg"
         light: "icons/cbor-light.svg"
-      comments:
-        lineComment: "#"
-        blockComment: [/, /]
-      brackets:
-        - ["{", "}"]
-        - ["[", "]"]
-        - [(, )]
-        - [<<, ">>"]
-      autoClosingPairs:
-        - ["{", "}"]
-        - ["[", "]"]
-        - [(, )]
-        - ["\"", "\""]
-        - ["'", "'"]
-      surroundingPairs:
-        - ["{", "}"]
-        - ["[", "]"]
-        - [(, )]
-        - ["\"", "\""]
-        - ["'", "'"]
   grammars:
     - language: json
       scopeName: source.json
