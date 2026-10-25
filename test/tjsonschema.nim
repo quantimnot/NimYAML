@@ -266,6 +266,36 @@ properties:
     expect JsonSchemaError:
       discard compile(loadAs[YamlNode]("type: thing"))
 
+  test "compile errors name the invalid subschema":
+    try:
+      discard compile(loadAs[YamlNode]("{properties: {a/b: {items: string}}}"))
+      check false
+    except JsonSchemaError as e:
+      check e.msg == "invalid schema at #/properties/a~1b/items: expected a schema"
+
+  test "lenient resources skip invalid keywords":
+    const text = """
+$defs: {list: {type: array, items: string}}
+properties:
+  p: {$ref: '#/$defs/list'}
+  q: {type: integer, required: true}
+  r: {$ref: 'vscode://schemas/missing'}
+"""
+    let loader = proc(uri: string): YamlNode
+        {.closure, raises: [CatchableError].} =
+      if uri == "vscode://schemas/s": result = loadAs[YamlNode](text)
+    let lenient = newSchemaRegistry(loader,
+        lenient = proc(uri: string): bool = uri.startsWith("vscode:"))
+    let s = lenient.compile("vscode://schemas/s")
+    check s.isValid(loadAs[YamlNode]("{p: [1], q: 1, r: 2}"))
+    check not s.isValid(loadAs[YamlNode]("{p: 1}"))
+    check not s.isValid(loadAs[YamlNode]("{q: x}"))
+    # other resources are not lenient
+    expect JsonSchemaError:
+      discard lenient.compile(loadAs[YamlNode]("items: string"))
+    expect JsonSchemaError:
+      discard newSchemaRegistry(loader).compile("vscode://schemas/s")
+
   test "infinite recursion is reported":
     let s = compile(loadAs[YamlNode]("$ref: '#'"))
     expect JsonSchemaError:

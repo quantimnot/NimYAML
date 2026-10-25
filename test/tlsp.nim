@@ -327,6 +327,16 @@ suite "LSP schemas from the client":
     check diags.len == 1
     check diags[0]["code"].getStr() == "schema-validation"
 
+  test "invalid keywords of a client's schema are ignored":
+    # VS Code's schemas carry what extensions contribute, mistakes included
+    var s = initialized(@["vscode"])
+    let asked = s.handle(didOpen("untitled:a", doc)).contentRequests()
+    let diags = s.handle(asked[0].answer("""{"properties": {
+        "name": {"type": "string"}, "list": {"items": "string"}}}"""))
+        .diagnosticsOf("untitled:a")
+    check diags.len == 1
+    check diags[0]["code"].getStr() == "schema-validation"
+
   test "a schema the client cannot give is unavailable":
     var s = initialized(@["vscode"])
     let asked = s.handle(didOpen("untitled:a", doc)).contentRequests()

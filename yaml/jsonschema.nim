@@ -49,6 +49,14 @@
 ## is no default loader: NimYAML never accesses the network or the file
 ## system on its own.
 ##
+## A registry can be lenient with some resources (``lenient`` of
+## `newSchemaRegistry`): a keyword of theirs whose value is invalid, or whose
+## reference cannot be resolved, is ignored instead of failing the
+## compilation. This is for schemas assembled from contributions nobody
+## checks, such as VS Code's settings schemas, which carry the mistakes of
+## every installed extension (``"items": "string"``, draft-03's
+## ``"required": true``) and which VS Code's own validator skips over.
+##
 ## Each ``compile`` call has its own scope for the schema it compiles, so
 ## that compiling two schemas that both lack ``$id`` (or share one) does not
 ## make them collide in the registry.
@@ -123,6 +131,10 @@ type
       raises: [CatchableError].}
     ## Retrieves the schema document identified by ``uri`` (an absolute URI
     ## without fragment), or returns ``nil`` if it does not know it.
+
+  LenientPredicate* = proc(uri: string): bool {.closure, raises: [].}
+    ## Whether the schema resource ``uri`` (without fragment) is compiled
+    ## leniently.
 
   ValidationOptions* = object
     formatAssertion*: bool
@@ -208,6 +220,7 @@ type
     store: Store
     loader: SchemaLoader
     defaultDraft: Draft
+    lenient: LenientPredicate
 
   JsonType = enum
     jtNull = "null", jtBoolean = "boolean", jtObject = "object",
@@ -489,11 +502,14 @@ proc keywordLocation(s: Schema, keyword: string): string =
   s.resource.locationOf(s.pointer / keyword)
 
 proc newSchemaRegistry*(loader: SchemaLoader = nil,
-    defaultDraft = draft2020): SchemaRegistry =
+    defaultDraft = draft2020, lenient: LenientPredicate = nil):
+    SchemaRegistry =
   ## Creates a registry. ``loader`` is asked for schema resources the
   ## registry does not know; ``defaultDraft`` is the dialect of schemas that
-  ## do not declare one with ``$schema``.
-  SchemaRegistry(store: newStore(), loader: loader, defaultDraft: defaultDraft)
+  ## do not declare one with ``$schema``; the resources ``lenient`` accepts
+  ## have their invalid keywords ignored (see the module documentation).
+  SchemaRegistry(store: newStore(), loader: loader, defaultDraft: defaultDraft,
+      lenient: lenient)
 
 proc findLocal(store: Store, uri: string): Resource =
   var s = store
@@ -820,7 +836,9 @@ proc compileRegex(s: Schema, name, pattern: string): EcmaRegex =
 proc subschemaAt(c: Compiler, s: Schema, node: YamlNode, pointer: string):
     Schema =
   if node.kind != yMapping and node.jsonKind != jkBool:
-    s.fail(pointer, "expected a schema")
+    # ``pointer`` is already a JSON Pointer, not a keyword to escape
+    raise schemaError("invalid schema at " & s.location &
+        encodeFragment(pointer) & ": expected a schema")
   var info: NodeInfo
   if not c.discovery.scope.infoOf(node, info):
     c.discovery.discover(node, s.resource, s.pointer & pointer,
@@ -993,16 +1011,21 @@ proc compileSchema(c: Compiler, node: YamlNode): Schema =
     return
   let refOnly = result.dialect.draft <= draft7 and
       not node.member("$ref").isNil
+  let lenient = c.discovery.registry.lenient
+  let tolerant = not lenient.isNil and lenient(result.resource.uri)
   for (name, value) in node.orderedMembers:
     if refOnly and name != "$ref": continue
     let kind = keywordKind(name, result.dialect)
     if kind == kUnknown and isCoreName(name, result.dialect): continue
+    var keyword: Keyword
+    try: keyword = c.compileKeyword(result, name, value, kind)
+    except JsonSchemaError:
+      if tolerant: continue
+      raise
+    # draft-04: a modifier of maximum and minimum
     if kind in {kExclusiveMaximum, kExclusiveMinimum} and
-        result.dialect.draft == draft4:
-      # draft-04: a modifier of maximum and minimum
-      discard c.compileKeyword(result, name, value, kind)
-      continue
-    result.keywords.add(c.compileKeyword(result, name, value, kind))
+        result.dialect.draft == draft4: continue
+    result.keywords.add(keyword)
     if kind in {kUnevaluatedItems, kUnevaluatedProperties}:
       result.hasUnevaluated = true
   # evaluation order

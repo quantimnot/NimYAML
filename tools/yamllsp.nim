@@ -1145,6 +1145,11 @@ proc diffOf(params: JsonNode): JsonNode =
 # the schemas the answer refers to in turn. Answers are kept until the
 # client sends ``nimyaml/schemaChanged`` (``{uri}``); an error or a null
 # answer makes the schema unavailable.
+#
+# The client's schemas are compiled leniently: VS Code's settings schemas
+# carry whatever the installed extensions contribute, mistakes included
+# (``"items": "string"``), and an invalid keyword would otherwise make the
+# whole schema unavailable where VS Code's own validator just skips it.
 
 proc serves(c: ClientSchemas, uri: string): bool =
   let colon = uri.find(':')
@@ -1169,6 +1174,12 @@ proc schemaLoader(s: Server): SchemaLoader =
       for pending in client.asked.values:
         if pending == uri: asked = true
       if not asked: client.unsent.add(uri)
+
+proc lenient(s: Server): LenientPredicate =
+  ## The client's schemas, compiled leniently.
+  let client = s.clientSchemas
+  if client.isNil or client.schemes.len == 0: return nil
+  result = proc(uri: string): bool = client.serves(uri)
 
 proc schemaRequests(s: var Server): seq[JsonNode] =
   ## The requests for the schemas the client has not been asked for yet.
@@ -1199,7 +1210,7 @@ proc publish(s: var Server, uri: string): JsonNode =
     if config.validateSchemas:
       # a fresh registry per publish, so that edits of schema files take
       # effect on the next change
-      let registry = newSchemaRegistry(s.schemaLoader())
+      let registry = newSchemaRegistry(s.schemaLoader(), lenient = s.lenient())
       let found = validateDocuments(text, registry, sourceUri)
       let missing = not s.clientSchemas.isNil and s.clientSchemas.missing
       for d in found:
