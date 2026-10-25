@@ -41,6 +41,33 @@
   info:
   - https://www.rfc-editor.org/info/rfc8746/
 
+- id: rfc9535-jsonpath-community-tests
+  status: todo
+  info:
+  - https://github.com/cburgmer/json-path-comparison
+  feature:
+  - compliance tests
+  - cross-implementation consensus analysis
+
+- id: binary-index
+  status: todo
+  feature:
+  - configurable
+  - index stored as CBOR or YAML
+  - optionally, index sits beside source
+  - optionally, index recently queried locations
+  - optionally, index all locations
+
+- id: memory-constrained-host
+  status: todo
+  feature:
+  - configurable memory limits
+  - use host APIs like mmap
+
+
+# ⬆⬆⬆ TODO ⬆⬆⬆
+# -----------
+# ⬇⬇⬇ DONE ⬇⬇⬇
 
 - id: consolidated commands
   status: done
@@ -128,13 +155,6 @@
     status: done
     info:
     - https://datatracker.ietf.org/doc/rfc9535/
-  - id: rfc9535-jsonpath-community-tests
-    status: todo
-    info:
-    - https://github.com/cburgmer/json-path-comparison
-    feature:
-    - compliance tests
-    - cross-implementation consensus analysis
 
 - id: yaml-merge
   status: done
