@@ -42,14 +42,19 @@
 ## Exit code: 0 on success, 1 if an input is invalid or has error
 ## diagnostics (or, with ``format --check``, is not formatted, or with
 ## ``diff``, the files differ), 2 for usage, I/O and config errors (and with
-## ``diff``, invalid inputs).
+## ``diff``, invalid inputs), 3 if the memory limit is exceeded.
+##
+## Every command takes ``--memory-limit:SIZE`` (like ``64MiB``, or
+## ``unlimited``) and ``--source:TIER`` (``auto``, ``memory``, ``mmap``,
+## ``seek`` or ``stream``), which override the ``memory`` section of the
+## config, and ``--verbose``, which prints how each input is read.
 
 import std/[options, os, parseopt, streams, strutils, terminal]
 when defined(nimPreviewSlimSystem):
   import std/syncio
 import ../yaml/[data, dom, dumping, loading, parser, presenter, stream, cbor,
     jsonpath, toolconfig, edit, jsonpatch, mergepatch, merge, jcs, diff,
-    nodeindex, spans]
+    nodeindex, spans, memory, source]
 import ../yaml/private/lex
 from ../yaml/hints import guessType, TypeHint
 import yamllint, yamlexpand, yamllsp
@@ -87,7 +92,18 @@ commands:
   help      this overview, or the usage of COMMAND
 
 Commands that take files read standard input without them. Files are
-configured by the nearest .yaml or .yaml.yaml file; see yaml help config."""
+configured by the nearest .yaml or .yaml.yaml file; see yaml help config.
+
+options of every command:
+  --memory-limit:SIZE  the memory budget, like 64MiB, or unlimited
+                       (default: memory.limit in the config, auto: half of
+                       the host memory)
+  --source:TIER        how files are read: auto, memory, mmap, seek or
+                       stream (default: memory.source in the config)
+  --verbose            print how each input is read
+
+Exit code 0 on success, 1 for invalid inputs, 2 for usage, I/O and config
+errors, 3 if the memory limit is exceeded."""
 
   lintUsage = """usage: yaml lint [--config:FILE] [--no-schema] [FILE...]
 
@@ -294,7 +310,17 @@ is read as its lint section. All keys are optional:
     mode: off               # off, recent or all
     format: cbor            # or yaml
     location: user          # beside, project or user
-    recent-limit: 256"""
+    recent-limit: 256
+  memory:
+    limit: auto             # auto (half the host memory), unlimited or a
+                            # size like 64MiB; exit code 3 when exceeded
+    source: auto            # auto, memory, mmap, seek or stream
+    mmap: auto              # or off
+    map-window: auto        # size of a mapped window of a file
+    page-cache: auto        # cached pages of a file read by seeking
+    spool: auto             # or off: streams that need random access are
+                            # read into memory instead of a temporary file
+    spool-dir: auto         # directory of spooled streams"""
 
 proc usageOf(command: string): string =
   case command
@@ -329,11 +355,82 @@ iterator options(args: seq[string]): tuple[kind: CmdLineKind, key,
 proc fail(command: string) =
   raise newException(UsageError, usageOf(command))
 
+# memory
+#
+# One budget for the whole run, made from the config of the first input
+# read and the --memory-limit option; each input is read by the policy of
+# its own config and the --source option.
+
+var
+  memoryOverride: tuple[limit: Option[int], source: Option[TierChoice]]
+  verbose = false
+  runBudget: MemoryBudget
+
+proc configFile(file: string): string =
+  ## The path a config is looked up for: the file, or for standard input a
+  ## file in the current directory.
+  if file.len == 0 or file == "-": getCurrentDir() / "-" else: file
+
+proc budgetFor(file: string): MemoryBudget =
+  if runBudget.isNil:
+    runBudget = newMemoryBudget(memoryOverride.limit.get(
+        toolConfigFor(configFile(file)).memoryLimit))
+  runBudget
+
+proc policyFor(file: string): SourcePolicy =
+  result = toolConfigFor(configFile(file)).sourcePolicy
+  if memoryOverride.source.isSome: result.choice = memoryOverride.source.get()
+
+proc openInput(file: string, randomAccess = false): YamlSource =
+  ## The source of ``file``; "" or "-" is standard input.
+  let
+    budget = budgetFor(file)
+    policy = policyFor(file)
+  result =
+    if file.len == 0 or file == "-":
+      openSource(stdin, "<stdin>", budget, policy, randomAccess)
+    else: openSource(file, budget, policy, randomAccess)
+  if verbose:
+    stderr.writeLine(result.name & ": tier " & $result.tier & ", limit " &
+        formatSize(budget.limit))
+
+proc readText(file: string, randomAccess = false): Input =
+  ## The whole text of ``file`` (standard input for "" or "-"), which must
+  ## fit into the budget.
+  let src = openInput(file, randomAccess)
+  try: result = (src.name, src.readAll("reading " & src.name))
+  finally: src.close()
+
+proc takeMemoryOptions(args: seq[string]): seq[string] =
+  ## ``args`` without the options every command takes, which are applied.
+  for arg in args:
+    if arg == "--": return
+  for i, arg in args:
+    if arg == "--":
+      return result & args[i .. ^1]
+    var key, value = ""
+    if arg.startsWith("--"):
+      let sep = arg.find({':', '='})
+      key = if sep < 0: arg[2 .. ^1] else: arg[2 ..< sep]
+      value = if sep < 0: "" else: arg[sep + 1 .. ^1]
+    case key
+    of "memory-limit":
+      try: memoryOverride.limit = some(parseSize(value))
+      except ValueError:
+        raise newException(UsageError, "invalid --memory-limit: " & value)
+    of "source":
+      try: memoryOverride.source = some(parseEnum[TierChoice](value))
+      except ValueError:
+        raise newException(UsageError, "invalid --source: " & value &
+            "; use auto, memory, mmap, seek or stream")
+    of "verbose": verbose = true
+    else: result.add(arg)
+
 # inputs
 
 proc readInputs(files: seq[string]): seq[Input] =
-  if files.len == 0: result.add(("<stdin>", stdin.readAll()))
-  for file in files: result.add((file, readFile(file)))
+  if files.len == 0: result.add(readText(""))
+  for file in files: result.add(readText(file))
 
 proc formatOf(file: string): DataFormat =
   case file.splitFile.ext.toLowerAscii()
@@ -386,6 +483,18 @@ proc rootCause(e: ref Exception): ref Exception =
 
 proc describe(name: string, e: ref Exception): string =
   let cause = rootCause(e)
+  let limit = memoryLimitError(e)
+  if not limit.isNil:
+    var at = name
+    var current = e
+    while not current.isNil:
+      if current of YamlParserError:
+        let m = (ref YamlParserError)(current).mark
+        at.add(":" & $m.line & ":" & $m.column)
+        break
+      current = current.parent
+    return at & ": " & limit.describe &
+        ". Raise memory.limit or use --memory-limit"
   if cause of YamlParserError:
     let m = (ref YamlParserError)(cause).mark
     name & ":" & $m.line & ":" & $m.column & ": " & cause.msg
@@ -393,6 +502,12 @@ proc describe(name: string, e: ref Exception): string =
     let m = (ref YamlLoadingError)(cause).mark
     name & ":" & $m.line & ":" & $m.column & ": " & cause.msg
   else: name & ": " & cause.msg
+
+proc failed(name: string, e: ref Exception): int =
+  ## Reports the error ``e`` of the input ``name``; the exit code is 3 if
+  ## the memory limit was exceeded, else 1.
+  stderr.writeLine(describe(name, e))
+  if memoryLimitError(e).isNil: 1 else: 3
 
 proc collect(target: BufferYamlStream, source: YamlStream) =
   ## Adds the documents of ``source`` to ``target``.
@@ -569,8 +684,7 @@ proc formatCommand(args: seq[string]): int =
     try:
       formatted = dumper.transform(content)
     except YamlParserError, YamlPresenterJsonError:
-      stderr.writeLine(describe(name, getCurrentException()))
-      result = 1
+      result = max(result, failed(name, getCurrentException()))
       continue
     if checkOnly:
       if formatted != content:
@@ -604,13 +718,11 @@ proc convertCommand(command: string, args: seq[string]): int =
     try:
       stream.collect(events(input, format))
     except YamlStreamError, YamlParserError:
-      stderr.writeLine(describe(input.name, getCurrentException()))
-      return 1
+      return failed(input.name, getCurrentException())
   try:
     stdout.write(stream, target, yamlStyle)
   except YamlPresenterJsonError, YamlPresenterCborError, YamlStreamError:
-    stderr.writeLine(describe("<output>", getCurrentException()))
-    return 1
+    return failed("<output>", getCurrentException())
 
 proc splitAssignment(expr: string):
     tuple[path, value: string, assigns: bool] =
@@ -737,8 +849,7 @@ proc queryCommand(args: seq[string]): int =
             if paths: stdout.writeLine(location)
             else: selected.collect(represent(node))
           continue
-    let input: Input =
-      if name.len == 0: ("<stdin>", stdin.readAll()) else: (name, readFile(name))
+    let input = readText(name, randomAccess = assigns)
     try:
       if assigns:
         let edited = assigned(input, format, path, valueText,
@@ -766,14 +877,12 @@ proc queryCommand(args: seq[string]): int =
       return 1
     except YamlStreamError, YamlParserError, YamlConstructionError,
         YamlPresenterCborError:
-      stderr.writeLine(describe(input.name, getCurrentException()))
-      return 1
+      return failed(input.name, getCurrentException())
   if not (paths or inPlace or asText):
     try:
       stdout.write(selected, target.get(dfYaml), yamlStyle)
     except YamlPresenterJsonError, YamlPresenterCborError, YamlStreamError:
-      stderr.writeLine(describe("<output>", getCurrentException()))
-      return 1
+      return failed("<output>", getCurrentException())
 
 proc documents(input: Input, format: DataFormat): seq[YamlNode] =
   ## The documents of ``input`` as graphs.
@@ -834,8 +943,7 @@ proc transformCommand(command: string, args: seq[string], operands: int,
             toolConfigFor(input.name).format)))
     except YamlStreamError, YamlParserError, YamlConstructionError,
         YamlPresenterJsonError, YamlPresenterCborError:
-      stderr.writeLine(describe(input.name, getCurrentException()))
-      return 1
+      return failed(input.name, getCurrentException())
     except YamlJsonPatchError:
       stderr.writeLine(input.name & ": " & getCurrentExceptionMsg())
       return 1
@@ -845,8 +953,7 @@ proc transformCommand(command: string, args: seq[string], operands: int,
   try:
     stdout.write(output, outputFormat.get(dfYaml), yamlStyle)
   except YamlPresenterJsonError, YamlPresenterCborError, YamlStreamError:
-    stderr.writeLine(describe("<output>", getCurrentException()))
-    return 1
+    return failed("<output>", getCurrentException())
 
 proc patchCommand(args: seq[string]): int =
   var mergePatch = false
@@ -860,7 +967,7 @@ proc patchCommand(args: seq[string]): int =
   proc readPatch(operands: seq[string]): int =
     let file = operands[0]
     try:
-      let docs = documents((file, readFile(file)), formatOf(file))
+      let docs = documents(readText(file), formatOf(file))
       if docs.len != 1:
         stderr.writeLine(file & ": a patch must be a single document")
         return 1
@@ -868,8 +975,7 @@ proc patchCommand(args: seq[string]): int =
       if patch.kind == ySequence and not mergePatch:
         jsonPatch = parseJsonPatch(patch)
     except YamlStreamError, YamlParserError, YamlConstructionError:
-      stderr.writeLine(describe(file, getCurrentException()))
-      return 1
+      return failed(file, getCurrentException())
     except YamlJsonPatchError as e:
       stderr.writeLine(file & ": " & e.msg)
       return 1
@@ -921,16 +1027,15 @@ proc mergeCommand(args: seq[string]): int =
         let m = (ref YamlMergeError)(cause).mark
         stderr.writeLine(input.name & ":" & $m.line & ":" & $m.column & ": " &
             cause.msg)
-      else: stderr.writeLine(describe(input.name, getCurrentException()))
-      return 1
+        return 1
+      return failed(input.name, getCurrentException())
   if inPlace:
     for (file, text) in rewritten: writeSource(file, text)
     return 0
   try:
     stdout.write(output, outputFormat.get(dfYaml), yamlStyle)
   except YamlPresenterJsonError, YamlPresenterCborError, YamlStreamError:
-    stderr.writeLine(describe("<output>", getCurrentException()))
-    return 1
+    return failed("<output>", getCurrentException())
 
 proc canonicalCommand(args: seq[string]): int =
   var
@@ -950,8 +1055,7 @@ proc canonicalCommand(args: seq[string]): int =
       for root in documents(input, format):
         stdout.writeLine(canonicalJson(root))
     except YamlStreamError, YamlParserError, YamlConstructionError:
-      stderr.writeLine(describe(input.name, getCurrentException()))
-      return 1
+      return failed(input.name, getCurrentException())
     except YamlJcsError as e:
       stderr.writeLine(input.name & ": " & e.msg)
       return 1
@@ -962,8 +1066,7 @@ type
 
 proc readInput(file: string): Input =
   ## ``file``, or standard input for ``-``.
-  if file == "-": ("<stdin>", stdin.readAll())
-  else: (file, readFile(file))
+  readText(file)
 
 proc diffLine(change: DiffChange, document: int, numbered, asJsonPath,
     color: bool): string =
@@ -1033,8 +1136,7 @@ proc diffCommand(args: seq[string]): int =
     try:
       sides[i] = documents(input, formats[i])
     except YamlStreamError, YamlParserError, YamlConstructionError:
-      stderr.writeLine(describe(input.name, getCurrentException()))
-      return 2
+      return max(2, failed(input.name, getCurrentException()))
   let
     (old, new) = (sides[0], sides[1])
     count = max(old.len, new.len)
@@ -1056,8 +1158,7 @@ proc diffCommand(args: seq[string]): int =
     try:
       stdout.write(output, target.get(formats[1]), yamlStyle)
     except YamlPresenterJsonError, YamlPresenterCborError, YamlStreamError:
-      stderr.writeLine(describe("<output>", getCurrentException()))
-      return 2
+      return max(2, failed("<output>", getCurrentException()))
     return
   let
     color = case colorMode
@@ -1174,7 +1275,7 @@ proc indexCommand(args: seq[string]): int =
       if dropIndex(file, settings): stdout.writeLine(indexPath)
       continue
     let
-      content = readFile(file)
+      content = readText(file, randomAccess = true).content
       json = dataFormat != dfYaml
       old = readIndex(indexPath, settings.format)
       current = old.isSome and old.get().mode == settings.mode and
@@ -1193,8 +1294,7 @@ proc indexCommand(args: seq[string]): int =
             index.record(content, spans, lookup.path, lookup.used,
                 settings.recentLimit)
       except YamlParserError, YamlStreamError, YamlSpanError:
-        stderr.writeLine(describe(file, getCurrentException()))
-        result = 1
+        result = max(result, failed(file, getCurrentException()))
         continue
     index.source.mtime = modificationTime(file)
     if print:
@@ -1217,9 +1317,12 @@ proc run*(args: seq[string]): int =
   if args.len == 0:
     stderr.writeLine(overview)
     return 2
-  let
-    command = args[0]
-    rest = args[1 .. ^1]
+  let command = args[0]
+  var rest: seq[string]
+  try: rest = takeMemoryOptions(args[1 .. ^1])
+  except UsageError as e:
+    stderr.writeLine(e.msg)
+    return 2
   if command in ["-h", "--help"]: return helpCommand(@[])
   if usageOf(command).len > 0 and command != "help" and
       rest.wantsHelp:
@@ -1242,7 +1345,7 @@ proc run*(args: seq[string]): int =
     of "lsp": lspCommand(rest)
     of "help": helpCommand(rest)
     else:
-      if command.startsWith("$"): queryCommand(args)
+      if command.startsWith("$"): queryCommand(command & rest)
       else:
         stderr.writeLine("unknown command: " & command & "\n\n" & overview)
         2
@@ -1252,6 +1355,9 @@ proc run*(args: seq[string]): int =
   except ToolConfigError as e:
     stderr.writeLine("config error: " & e.msg)
     2
+  except YamlMemoryLimitError as e:
+    stderr.writeLine(e.describe & ". Raise memory.limit or use --memory-limit")
+    3
   except IOError, OSError:
     stderr.writeLine(getCurrentExceptionMsg())
     2

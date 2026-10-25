@@ -7,7 +7,7 @@
 import std/[os, osproc, strutils, times, unittest]
 when defined(nimPreviewSlimSystem):
   import std/[syncio, assertions]
-import ../yaml/[toolconfig, dumping, presenter]
+import ../yaml/[toolconfig, dumping, presenter, memory, source]
 
 let
   root = currentSourcePath.parentDir.parentDir
@@ -602,5 +602,62 @@ suite "yaml config":
     writeFile(project / "bad.yaml", "nope: 1\n")
     check cli(@["config", "--print", "--config:bad.yaml"],
         workingDir = project).exitCode == 2
+
+suite "memory config":
+  test "the memory section":
+    let c = parseToolConfig(
+        "memory: {limit: 64KiB, source: seek, mmap: off, spool: off}\n")
+    check c.memoryLimit == 65536
+    let policy = c.sourcePolicy
+    check policy.choice == tcSeek
+    check policy.mmap == swOff
+    check policy.spool == swOff
+
+  test "defaults":
+    let c = defaultToolConfig()
+    check c.memoryLimit == autoLimit()
+    check c.sourcePolicy.choice == tcAuto
+
+  test "invalid sizes":
+    expect ToolConfigError: discard parseToolConfig("memory: {limit: lots}\n")
+    expect ToolConfigError:
+      discard parseToolConfig("memory: {map-window: 1XB}\n")
+
+  test "yaml config prints it":
+    let printed = cli("config", "--print").output
+    check "memory:" in printed
+    check "  limit: auto" in printed
+    check "detected" in printed
+
+suite "memory cli":
+  let big = dir / "big.yaml"
+  var text = ""
+  for i in 0 ..< 2000: text.add("key" & $i & ": value " & $i & "\n")
+  writeFile(big, text)
+
+  test "exceeding the limit is exit code 3":
+    let (output, code) = cli("convert", "json", "--memory-limit=1KiB", big)
+    check code == 3
+    check "memory limit exceeded" in output
+
+  test "--source and --verbose":
+    let (output, code) = cli("convert", "json", "--source=seek", "--verbose",
+        big)
+    check code == 0
+    check "big.yaml: tier seek" in output
+
+  test "a stream that needs random access, without spooling":
+    let project = dir / "nospool"
+    createDir(project)
+    writeFile(project / ".yaml", "memory: {limit: 4KiB, spool: off}\n")
+    let (output, code) = cli(@["query", "$.key1 = 2"], input = text,
+        workingDir = project)
+    check code == 3
+    check "needs random access" in output
+
+  test "usage":
+    check cli("convert", "json", "--memory-limit=lots", big).exitCode == 2
+    check cli("convert", "json", "--source=nope", big).exitCode == 2
+    check "3 if the memory limit is exceeded" in cli("help").output
 
 removeDir(tmp)

@@ -37,6 +37,16 @@
 ##     format: cbor     # cbor (default) or yaml
 ##     location: user   # beside, project or user (default)
 ##     recent-limit: 256  # paths a recent index keeps
+##   memory:
+##     limit: auto      # auto (half the host memory), unlimited or a size
+##                      # like 64MiB
+##     source: auto     # auto, memory, mmap, seek or stream
+##     mmap: auto       # or off: never map files
+##     map-window: auto # size of a mapped window (64MiB)
+##     page-cache: auto # cached pages of a seekable file
+##     spool: auto      # or off: read streams that need random access
+##                      # into memory instead of a temporary file
+##     spool-dir: auto  # directory of spooled streams
 ##
 ## ``remote-schemas: false`` keeps schemas from the network out of the
 ## validation of the files the config applies to, so that opening a file
@@ -60,6 +70,11 @@
 ## all of it (see `nodeindex <nodeindex.html>`_). A ``project`` index lives
 ## in the directory ``.yaml-index`` next to the config file.
 ##
+## The ``memory`` section sets the memory budget of the ``yaml`` tool and
+## how it reads files (see `memory <memory.html>`_ and `source
+## <source.html>`_): huge files are read through a window of memory, and a
+## command that would exceed the limit fails with exit code 3 instead.
+##
 ## A legacy ``.nimyaml-lint.yaml`` holds only what the ``lint`` section
 ## holds; it is still found, as a config with defaults for the other
 ## sections.
@@ -67,9 +82,10 @@
 import std/[options, os, strutils]
 when defined(nimPreviewSlimSystem):
   import std/syncio
-import annotations, presenter, dumping, loading, lint, nodeindex, schemacache
+import annotations, presenter, dumping, loading, lint, nodeindex, schemacache,
+    memory, source
 export options, lint, SchemaCacheLocation, IndexMode, IndexFormat,
-    IndexLocation, IndexSettings
+    IndexLocation, IndexSettings, TierChoice, Switch, SourcePolicy
 
 type
   FormatStyle* = enum
@@ -104,11 +120,24 @@ type
     recentLimit* {.yamlKey: "recent-limit".}: Option[int]
       ## none: 256
 
+  MemoryConfig* {.sparse.} = object
+    limit*: Option[string]           ## auto, unlimited or a size; none: auto
+    source*: Option[TierChoice]      ## none: auto
+    mmap*: Option[Switch]            ## none: auto
+    mapWindow* {.yamlKey: "map-window".}: Option[string]
+      ## auto or a size; none: auto
+    pageCache* {.yamlKey: "page-cache".}: Option[string]
+      ## auto or a size; none: auto
+    spool*: Option[Switch]           ## none: auto
+    spoolDir* {.yamlKey: "spool-dir".}: Option[string]
+      ## auto or a directory; none: auto
+
   ToolConfig* = object
     lint* {.defaultVal: defaultConfig().}: LintConfig
     validate* {.defaultVal: ValidateConfig().}: ValidateConfig
     format* {.defaultVal: FormatConfig().}: FormatConfig
     index* {.defaultVal: IndexConfig().}: IndexConfig
+    memory* {.defaultVal: MemoryConfig().}: MemoryConfig
 
   ToolConfigError* = object of ValueError
 
@@ -138,6 +167,24 @@ proc indexSettings*(config: ToolConfig, configDir = ""): IndexSettings =
       location: config.index.location.get(ilUser),
       recentLimit: config.index.recentLimit.get(defaultRecentLimit),
       configDir: configDir)
+
+proc sizeOrAuto(value: Option[string]): int =
+  ## The size of ``value``; 0 for none or ``auto``.
+  if value.isNone or value.get() == "auto": 0 else: parseSize(value.get())
+
+proc memoryLimit*(config: ToolConfig): int =
+  ## The memory limit, in bytes: the configured size, or `autoLimit` for
+  ## ``auto``.
+  let limit = config.memory.limit.get("auto")
+  if limit == "auto": autoLimit() else: parseSize(limit)
+
+proc sourcePolicy*(config: ToolConfig): SourcePolicy =
+  ## How the files that ``config`` applies to are read.
+  let m = config.memory
+  SourcePolicy(choice: m.source.get(tcAuto), mmap: m.mmap.get(swAuto),
+      mapWindow: m.mapWindow.sizeOrAuto, pageCache: m.pageCache.sizeOrAuto,
+      spool: m.spool.get(swAuto),
+      spoolDir: if m.spoolDir.get("auto") == "auto": "" else: m.spoolDir.get())
 
 proc dumper*(style: FormatStyle): Dumper =
   ## The `Dumper` preset of ``style``.
@@ -189,6 +236,12 @@ proc resolved*(config: ToolConfig): ToolConfig =
   result.index = IndexConfig(mode: some(index.mode),
       format: some(index.format), location: some(index.location),
       recentLimit: some(index.recentLimit))
+  let m = config.memory
+  result.memory = MemoryConfig(limit: some(m.limit.get("auto")),
+      source: some(m.source.get(tcAuto)), mmap: some(m.mmap.get(swAuto)),
+      mapWindow: some(m.mapWindow.get("auto")),
+      pageCache: some(m.pageCache.get("auto")),
+      spool: some(m.spool.get(swAuto)), spoolDir: some(m.spoolDir.get("auto")))
 
 proc `$`*(config: ToolConfig): string =
   ## The content of a config file that `parseToolConfig` reads as
@@ -225,6 +278,20 @@ proc `$`*(config: ToolConfig): string =
       "  format: " & $i.format.get() & "  # cbor or yaml\n" &
       "  location: " & $i.location.get() & "  # beside, project or user\n" &
       "  recent-limit: " & $i.recentLimit.get() & "\n")
+  let
+    m = c.memory
+    host = hostMemory()
+  result.add("memory:\n" &
+      "  limit: " & m.limit.get() & "  # auto, unlimited or a size; " &
+      "detected host memory: " &
+      (if host > 0: formatSize(host) else: "unknown") & ", auto: " &
+      formatSize(autoLimit()) & "\n" &
+      "  source: " & $m.source.get() & "  # auto, memory, mmap, seek or stream\n" &
+      "  mmap: " & $m.mmap.get() & "  # auto or off\n" &
+      "  map-window: " & m.mapWindow.get() & "\n" &
+      "  page-cache: " & m.pageCache.get() & "\n" &
+      "  spool: " & $m.spool.get() & "  # auto or off\n" &
+      "  spool-dir: " & m.spoolDir.get() & "\n")
 
 proc isBlank(content: string): bool =
   for line in content.splitLines:
@@ -260,6 +327,15 @@ proc parseToolConfig*(content: string): ToolConfig =
   if result.index.recentLimit.isSome and result.index.recentLimit.get() < 1:
     raise newException(ToolConfigError,
         "index: recent-limit must be at least 1")
+  let m = result.memory
+  for (key, value, auto) in [("limit", m.limit, true),
+      ("map-window", m.mapWindow, true), ("page-cache", m.pageCache, true)]:
+    if value.isSome and not (auto and value.get() == "auto"):
+      try:
+        if parseSize(value.get()) <= 0:
+          raise newException(ValueError, "must be positive")
+      except ValueError as e:
+        raise newException(ToolConfigError, "memory: " & key & ": " & e.msg)
 
 proc loadToolConfig*(path: string): ToolConfig =
   ## Loads the config file at ``path``: a legacy lint config if it is named
