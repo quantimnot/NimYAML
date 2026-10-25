@@ -20,6 +20,11 @@ task test, "Run all tests":
   --verbosity:0
   setCommand "c", "test/tests"
 
+task memoryTests, "Run memory budget tests":
+  --r
+  --verbosity:0
+  setCommand "c", "test/tmemory"
+
 task lexerTests, "Run lexer tests":
   --r
   --verbosity:0
