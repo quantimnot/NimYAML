@@ -11,7 +11,9 @@
 // The other is `https:`: yamllsp never accesses the network, so schemas on
 // the web (https://www.schemastore.org/package.json) are downloaded here,
 // as VS Code's JSON support does, and only while its
-// `json.schemaDownload.enable` allows it.
+// `json.schemaDownload.enable` allows it. The project can forbid them too,
+// with `validate: {remote-schemas: false}` in its `.yaml` config; yamllsp
+// then does not ask for them.
 //
 // yamllsp is told in `initialize` which schemes the client serves
 // (`initializationOptions`), asks for a schema of them with

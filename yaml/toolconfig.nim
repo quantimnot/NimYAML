@@ -20,6 +20,7 @@
 ##       truthy: {level: off}
 ##   validate:
 ##     schema: true     # validate against declared JSON Schemas (default)
+##     remote-schemas: true  # may use http(s): schemas (default)
 ##   format:
 ##     style: default   # default, minimal, explanatory, json, json-lines
 ##                      # or block-only
@@ -29,6 +30,13 @@
 ##     comment-indentation: node  # or source: the column in the input
 ##     comment-gap: 2   # spaces between content and a comment after it
 ##     comment-blank-lines: keep  # or drop: blank lines next to comments
+##
+## ``remote-schemas: false`` keeps schemas from the network out of the
+## validation of the files the config applies to, so that opening a file
+## does not reveal it to the server its schema reference names. The ``yaml``
+## tool never accesses the network anyway; the language server then does
+## not ask the editor to download ``http:`` and ``https:`` schemas, and
+## reports them as unavailable.
 ##
 ## The comment keys are described at ``CommentOptions`` of
 ## `yaml/presenter <presenter.html>`_. The ``minimal``, ``json`` and
@@ -54,6 +62,8 @@ type
 
   ValidateConfig* {.sparse.} = object
     schema*: Option[bool] ## none: validate
+    remoteSchemas* {.yamlKey: "remote-schemas".}: Option[bool]
+      ## none: allowed
 
   FormatConfig* {.sparse.} = object
     style*: Option[FormatStyle]
@@ -82,6 +92,10 @@ proc defaultToolConfig*(): ToolConfig = ToolConfig()
 proc validateSchemas*(config: ToolConfig): bool =
   ## Whether documents are validated against the schemas they declare.
   config.validate.schema.get(true)
+
+proc remoteSchemas*(config: ToolConfig): bool =
+  ## Whether schemas from the network (``http:``, ``https:``) may be used.
+  config.validate.remoteSchemas.get(true)
 
 proc dumper*(style: FormatStyle): Dumper =
   ## The `Dumper` preset of ``style``.
@@ -115,6 +129,7 @@ proc resolved*(config: ToolConfig): ToolConfig =
   ## that applies to it, so that dumping it shows the config in effect.
   result.lint = config.lint.resolved
   result.validate.schema = some(config.validateSchemas)
+  result.validate.remoteSchemas = some(config.remoteSchemas)
   let
     format = config.format
     style = format.style.get(fsDefault)
@@ -140,7 +155,9 @@ proc `$`*(config: ToolConfig): string =
     if rule.max.isSome: result.add(", max: " & $rule.max.get())
     result.add("}\n")
   result.add("validate:\n  schema: " & $c.validate.schema.get() &
-      "  # validate against declared JSON Schemas\n")
+      "  # validate against declared JSON Schemas\n" &
+      "  remote-schemas: " & $c.validate.remoteSchemas.get() &
+      "  # may use http(s): schemas\n")
   let f = c.format
   result.add("format:\n" &
       "  style: " & $f.style.get() & "  # default, minimal, explanatory, " &

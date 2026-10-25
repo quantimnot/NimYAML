@@ -1156,6 +1156,10 @@ proc diffOf(params: JsonNode): JsonNode =
 # client sends ``nimyaml/schemaChanged`` (``{uri}``); an error or a null
 # answer makes the schema unavailable, with the error's message.
 #
+# A config with ``validate.remote-schemas: false`` keeps ``http:`` and
+# ``https:`` schemas out of the validation of its files: they are not
+# asked for, and not taken from answers given for other files either.
+#
 # The client's schemas are compiled leniently: VS Code's settings schemas
 # carry whatever the installed extensions contribute, mistakes included
 # (``"items": "string"``), and an invalid keyword would otherwise make the
@@ -1165,9 +1169,14 @@ proc serves(c: ClientSchemas, uri: string): bool =
   let colon = uri.find(':')
   colon > 0 and uri[0 ..< colon].toLowerAscii() in c.schemes
 
-proc schemaLoader(s: Server): SchemaLoader =
+proc isRemote(uri: string): bool =
+  let lower = uri.toLowerAscii()
+  lower.startsWith("http:") or lower.startsWith("https:")
+
+proc schemaLoader(s: Server, remote: bool): SchemaLoader =
   ## Reads ``file:`` schemas and takes those of the client's schemes from
-  ## its answers, noting the ones it has to be asked for.
+  ## its answers, noting the ones it has to be asked for; remote ones only
+  ## if ``remote``.
   let files = fileSchemaLoader()
   let client = s.clientSchemas
   if client.isNil or client.schemes.len == 0: return files
@@ -1175,6 +1184,9 @@ proc schemaLoader(s: Server): SchemaLoader =
   result = proc(uri: string): YamlNode {.closure, raises: [CatchableError].} =
     result = files(uri)
     if not result.isNil or not client.serves(uri): return
+    if not remote and uri.isRemote:
+      raise newException(IOError, "remote schemas are disabled " &
+          "(validate.remote-schemas: false in the config)")
     if uri in client.failures:
       raise newException(IOError, client.failures[uri])
     elif uri in client.texts:
@@ -1222,7 +1234,8 @@ proc publish(s: var Server, uri: string): JsonNode =
     if config.validateSchemas:
       # a fresh registry per publish, so that edits of schema files take
       # effect on the next change
-      let registry = newSchemaRegistry(s.schemaLoader(), lenient = s.lenient())
+      let registry = newSchemaRegistry(s.schemaLoader(config.remoteSchemas),
+          lenient = s.lenient())
       let found = validateDocuments(text, registry, sourceUri)
       let missing = not s.clientSchemas.isNil and s.clientSchemas.missing
       for d in found:

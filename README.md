@@ -1122,6 +1122,7 @@ lint:
     line-length: {max: 100}
 validate:
   schema: true          # validate against the declared JSON Schemas
+  remote-schemas: true  # may use http(s): schemas, which the editor downloads
 format:
   style: default        # minimal, explanatory, json, json-lines, block-only
   indentation: 2

@@ -97,18 +97,23 @@ suite "toolconfig":
     check defaults.lint.rules["line-length"] ==
         RuleConfig(level: some(levelWarning), max: some(defaultMaxLineLength))
     check defaults.validate.schema == some(true)
+    check defaults.validate.remoteSchemas == some(true)
+    check defaultToolConfig().remoteSchemas
     check defaults.format.style == some(fsDefault)
     check defaults.format.indentation == some(2)
     check defaults.format.maxLineLength == some(80)
     check parseToolConfig($defaultToolConfig()) == defaults
     let c = parseToolConfig("lint: {rules: {truthy: {level: off}, " &
-        "line-length: {max: 90}}}\nvalidate: {schema: false}\n" &
+        "line-length: {max: 90}}}\n" &
+        "validate: {schema: false, remote-schemas: false}\n" &
         "format: {style: json, max-line-length: 0, comment-gap: 3}\n")
     let r = c.resolved
     check r.lint.rules["truthy"].level == some(levelOff)
     check r.lint.rules["line-length"] ==
         RuleConfig(level: some(levelWarning), max: some(90))
     check r.validate.schema == some(false)
+    check r.validate.remoteSchemas == some(false)
+    check not c.remoteSchemas
     check r.format.style == some(fsJson)
     check r.format.maxLineLength == some(0)
     check r.format.commentGap == some(3)

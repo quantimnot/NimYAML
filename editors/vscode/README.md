@@ -108,8 +108,9 @@ it breaks:
 
 Schemas are read from `file:` URIs, VS Code's own from `vscode:` URIs
 (below), and `https:` ones are downloaded by the extension, like VS Code
-does for JSON, unless `json.schemaDownload.enable` is off; yamllsp itself
-never accesses the network. Other URIs (`http:`) give a
+does for JSON, unless the `.yaml` config or `json.schemaDownload.enable`
+forbids it (see [Validate Schema](#validate-schema)); yamllsp itself never
+accesses the network. Other URIs (`http:`) give a
 `schema-unavailable` warning instead of a validation. A schema file must
 load as YAML, so a `.jsonc` schema with comments cannot be used.
 
@@ -359,6 +360,13 @@ files are read again on every change, so editing a schema takes effect in
 the documents that use it. Set `validate: {schema: false}` in the `.yaml`
 config to turn validation off; `yaml validate` does the same check on the
 command line.
+
+`http:` and `https:` schemas are downloaded by the extension, not by
+yamllsp, and only if both allow it: `validate: {remote-schemas: false}` in
+the `.yaml` config keeps them out of the files it applies to (a project
+decision: opening a file then tells no server about it), and turning off
+VS Code's `json.schemaDownload.enable` stops all downloads (yours). Either
+way such a schema is a `schema-unavailable` warning that says why.
 
 ### Document Preview
 

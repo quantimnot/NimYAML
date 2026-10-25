@@ -379,6 +379,33 @@ suite "LSP schemas from the client":
     check s.handle(again[0].answer("""{"required": ["age"]}"""))
         .diagnosticsOf("untitled:a").len == 1
 
+  test "validate.remote-schemas: false keeps remote schemas from the client":
+    let dir = getTempDir() / ("yamllsp-remote-" & $getCurrentProcessId())
+    createDir(dir)
+    defer: removeDir(dir)
+    let config = dir / ".yaml"
+    writeFile(config, "validate: {remote-schemas: false}\n")
+    let uri = "file://" & dir / "x.yaml"
+    const text = "%SCHEMA https://x.example/s.json vscode://schemas/s\n" &
+        "--- {name: 1}\n"
+    var s = initialized(@["vscode", "https"])
+    let opened = s.handle(didOpen(uri, text))
+    # only the schema that is not remote is asked for
+    let asked = opened.contentRequests()
+    check asked.len == 1
+    check asked[0]["params"]["uri"].getStr() == "vscode://schemas/s"
+    let diags = s.handle(asked[0].answer("{}")).diagnosticsOf(uri)
+    check diags.len == 1
+    check diags[0]["code"].getStr() == "schema-unavailable"
+    check "remote-schemas" in diags[0]["message"].getStr()
+    # allowed again once the config says so, which asks for it
+    writeFile(config, "")
+    let saved = s.handle(notification("textDocument/didSave",
+        %*{"textDocument": {"uri": "file://" & config}}))
+    let again = saved.contentRequests()
+    check again.len == 1
+    check again[0]["params"]["uri"].getStr() == "https://x.example/s.json"
+
   test "other schemes and clients that advertise none are not asked":
     var s = initialized(@["vscode"])
     let other = s.handle(didOpen("untitled:o",
