@@ -1,4 +1,11 @@
 #!/usr/bin/env yaml as json
+# $schema: vscode://schemas/vscode-extensions
+#
+# Schema:
+# The official schema is dynamically localized at runtime:
+# https://github.com/microsoft/vscode/blob/HEAD/src/vs/workbench/services/extensions/common/extensionsRegistry.ts#L174
+#
+# See also:
 # https://code.visualstudio.com/api/references/extension-manifest
 name: yaml-plus-lsp
 displayName: yaml+lsp
@@ -10,10 +17,10 @@ publisher: nimyaml
 license: MIT
 private: true
 engines: {vscode: ^1.82.0}
-homepage: https://localhost/yaml
+homepage: https://yaml.localhost/
 repository:
   type: git
-  url: https://localhost/yaml.git
+  url: https://yaml.localhost/
 categories: [Programming Languages, Linters, Snippets, Formatters, Visualization]
 icon: icons/yaml-plus-256.png
 galleryBanner:
@@ -33,9 +40,9 @@ keywords:
   - diff
 activationEvents:
   - "onLanguage:yaml"
-  # the path at the cursor is shown for JSON too
   - "onLanguage:json"
   - "onLanguage:jsonc"
+  - "onLanguage:jsonl"
   - "workspaceContains:**/.nimyaml-lint.yaml"
   - "workspaceContains:**/.yaml"
   - "workspaceContains:**/.yaml.yaml"
@@ -55,13 +62,13 @@ scripts:
   # the placeholder grammar (the extension writes the real one on activation)
   # and the bundle
   vscode:prepublish: bun embedded/grammar.js && bun run build
-  vscode:package: vsce package --baseContentUrl . --baseImagesUrl .
-  vscode:install: code-server --force --install-extension yaml-plus-lsp-*.vsix
+  vscode:package: vsce package --allow-missing-repository --skip-license --baseContentUrl . --baseImagesUrl .
+  vscode:install: code --force --install-extension yaml-plus-lsp-*.vsix
 contributes:
   languages:
     - id: yaml
       aliases: [yaml, YAML]
-      configuration: ./languages/yaml.language-configuration.json
+      configuration: languages/yaml.language-configuration.json
       extensions: [.yaml, .yml]
       mimetypes: [application/yaml, "application/x-yaml", text/yaml, "text/x-yaml"]
       filenames: []
@@ -71,7 +78,7 @@ contributes:
         light: "icons/yaml-light.svg"
     - id: json
       aliases: [JSON, json]
-      configuration: ./languages/json.language-configuration.json
+      configuration: languages/json.language-configuration.json
       extensions: [.json, .geojson, .har, .jsonld, .webmanifest]
       mimetypes:
         - application/json
@@ -84,7 +91,7 @@ contributes:
         light: "icons/json-light.svg"
     - id: jsonc
       aliases: [JSON with Comments, jsonc]
-      configuration: ./languages/jsonc.language-configuration.json
+      configuration: languages/jsonc.language-configuration.json
       extensions: [.jsonc, ".code-workspace", ".code-profile"]
       mimetypes: [application/jsonc]
       filenames: []
@@ -93,7 +100,7 @@ contributes:
         light: "icons/jsonc-light.svg"
     - id: jsonl
       aliases: [JSON Lines, jsonl, ndjson]
-      configuration: ./languages/jsonl.language-configuration.json
+      configuration: languages/jsonl.language-configuration.json
       extensions: [.jsonl, .ndjson]
       mimetypes: [application/jsonl, "application/x-ndjson"]
       filenames: []
@@ -102,7 +109,7 @@ contributes:
         light: "icons/jsonl-light.svg"
     - id: cbor
       aliases: [CBOR, cbor]
-      configuration: ./languages/cbor.language-configuration.json
+      configuration: languages/cbor.language-configuration.json
       extensions: [.cbor, .cbordiag]
       filenames: []
       mimetypes: [application/cbor, "application/cbor-diagnostic"]
@@ -125,7 +132,6 @@ contributes:
     - scopeName: yaml+lsp.embedded.injection
       path: syntaxes/yaml-embedded.tmLanguage.json
       injectTo: [source.yaml]
-      embeddedLanguages:
   configuration:
     title: yaml+lsp
     properties:
@@ -321,7 +327,6 @@ contributes:
       title: "YAML+: Compare Semantically with HEAD"
     - command: yaml+lsp.diff.selected
       title: "YAML+: Compare Selected Semantically"
-  # the grid of greenflute/yaml-grid-viewer: offered, never the default
   customEditors:
     - viewType: yaml+lsp.grid
       displayName: YAML+ Grid
