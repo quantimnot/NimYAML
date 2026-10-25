@@ -13,8 +13,9 @@
 ## `yaml/toolconfig <../yaml/toolconfig.html>`_) found by walking up from the
 ## document's directory (defaults for documents without a ``file://`` URI),
 ## its documents are validated against the JSON Schemas they declare unless
-## the config's ``validate.schema`` is false (``file:`` schemas only; the
-## server never accesses the network), and the diagnostics are published.
+## the config's ``validate.schema`` is false (``file:`` schemas, and those
+## the client serves, see ``nimyaml/schemaContent`` below; the server never
+## accesses the network), and the diagnostics are published.
 ## Saving a config file reloads the configs and
 ## republishes the diagnostics of all open documents.
 ##
@@ -42,6 +43,8 @@
 ## node at a position as a JSON Pointer and a JSON Path, and
 ## ``nimyaml/paths`` lists every node by its paths, for navigating by them.
 ## ``nimyaml/diff`` compares two texts by meaning, for a semantic diff.
+## The server asks the client for the schemas only it has (VS Code's
+## ``vscode://schemas/...``) with ``nimyaml/schemaContent``.
 ##
 ## The directive features work on what the parser reports per document (the ``directives`` of
 ## each ``yamlStartDoc`` event) rather than on the text, so they agree with
@@ -60,9 +63,19 @@ from ../yaml/hints import guessType, TypeHint
 type
   ConfigEntry = tuple[config: ToolConfig, error: string]
 
+  ClientSchemas = ref object
+    ## Schemas the client is asked for (see `schemaLoader`).
+    schemes: seq[string]             ## the URI schemes it serves
+    texts: Table[string, string]     ## uri -> its answer; "" if it had none
+    asked: Table[string, string]     ## request id -> uri, unanswered
+    unsent: seq[string]              ## uris to ask for
+    nextId: int
+    missing: bool ## the last validation needed a schema not yet answered
+
   Server* = object
     docs: Table[string, string]        # uri -> text
     configs: Table[string, ConfigEntry] # directory -> config
+    clientSchemas: ClientSchemas
     shutdownRequested: bool
     exited*: bool
     exitCode*: int
@@ -1116,6 +1129,59 @@ proc diffOf(params: JsonNode): JsonNode =
         text.add(dumper.dump(patch))
     result["patch"] = %text
 
+# Schemas from the client
+#
+# Some schemas exist only in the client: VS Code serves the schemas of its
+# own files (`vscode://schemas/vscode-extensions` for extension manifests,
+# `vscode://schemas/settings/user`, `vscode://schemas/keybindings`, ...)
+# from a registry it builds and localizes at runtime, so there is no file to
+# read. A client lists the URI schemes it serves in the `initialize` option
+# ``schemaContentSchemes``, and the server asks it for a schema of such a
+# scheme with the request ``nimyaml/schemaContent`` (``{uri}``, answered by
+# the text of the schema). Handling a message never waits for the client:
+# a validation that needs a schema not yet answered leaves out its
+# ``schema-unavailable`` warnings, the schema is asked for, and the open
+# documents are published again when the answer comes, which may ask for
+# the schemas the answer refers to in turn. Answers are kept until the
+# client sends ``nimyaml/schemaChanged`` (``{uri}``); an error or a null
+# answer makes the schema unavailable.
+
+proc serves(c: ClientSchemas, uri: string): bool =
+  let colon = uri.find(':')
+  colon > 0 and uri[0 ..< colon].toLowerAscii() in c.schemes
+
+proc schemaLoader(s: Server): SchemaLoader =
+  ## Reads ``file:`` schemas and takes those of the client's schemes from
+  ## its answers, noting the ones it has to be asked for.
+  let files = fileSchemaLoader()
+  let client = s.clientSchemas
+  if client.isNil or client.schemes.len == 0: return files
+  client.missing = false
+  result = proc(uri: string): YamlNode {.closure, raises: [CatchableError].} =
+    result = files(uri)
+    if not result.isNil or not client.serves(uri): return
+    if uri in client.texts:
+      let text = client.texts[uri]
+      if text.len > 0: result = loadAs[YamlNode](text)
+    else:
+      client.missing = true
+      var asked = uri in client.unsent
+      for pending in client.asked.values:
+        if pending == uri: asked = true
+      if not asked: client.unsent.add(uri)
+
+proc schemaRequests(s: var Server): seq[JsonNode] =
+  ## The requests for the schemas the client has not been asked for yet.
+  let client = s.clientSchemas
+  if client.isNil: return
+  for uri in client.unsent:
+    inc(client.nextId)
+    let id = "nimyaml/schemaContent/" & $client.nextId
+    client.asked[id] = uri
+    result.add(%*{"jsonrpc": "2.0", "id": id,
+        "method": "nimyaml/schemaContent", "params": {"uri": uri}})
+  client.unsent.setLen(0)
+
 proc publish(s: var Server, uri: string): JsonNode =
   var diagnostics = newJArray()
   if uri in s.docs:
@@ -1133,11 +1199,21 @@ proc publish(s: var Server, uri: string): JsonNode =
     if config.validateSchemas:
       # a fresh registry per publish, so that edits of schema files take
       # effect on the next change
-      let registry = newSchemaRegistry(fileSchemaLoader())
-      for d in validateDocuments(text, registry, sourceUri):
+      let registry = newSchemaRegistry(s.schemaLoader())
+      let found = validateDocuments(text, registry, sourceUri)
+      let missing = not s.clientSchemas.isNil and s.clientSchemas.missing
+      for d in found:
+        # a schema the client is being asked for is not unavailable yet
+        if missing and d.rule == "schema-unavailable": continue
         diagnostics.add(d.toLsp(lines))
   %*{"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics",
      "params": {"uri": uri, "diagnostics": diagnostics}}
+
+proc publishAll(s: var Server): seq[JsonNode] =
+  ## Publishes the diagnostics of every open document.
+  var uris: seq[string]
+  for open in s.docs.keys: uris.add(open)
+  for open in uris: result.add(s.publish(open))
 
 proc respond(id, value: JsonNode): JsonNode =
   %*{"jsonrpc": "2.0", "id": id, "result": value}
@@ -1155,6 +1231,11 @@ proc handle*(s: var Server, msg: JsonNode): seq[JsonNode] =
     params = msg{"params"}
   case meth
   of "initialize":
+    s.clientSchemas = ClientSchemas()
+    let schemes = params{"initializationOptions"}{"schemaContentSchemes"}
+    if not schemes.isNil and schemes.kind == JArray:
+      for scheme in schemes:
+        s.clientSchemas.schemes.add(scheme.getStr().toLowerAscii())
     result.add(respond(id, %*{
       "capabilities": {"textDocumentSync": {"openClose": true, "change": 1,
                                             "save": {"includeText": false}},
@@ -1178,9 +1259,7 @@ proc handle*(s: var Server, msg: JsonNode): seq[JsonNode] =
     let uri = params["textDocument"]["uri"].getStr()
     if isToolConfigFile(documentPath(uri)):
       s.configs.clear()
-      var uris: seq[string]
-      for open in s.docs.keys: uris.add(open)
-      for open in uris: result.add(s.publish(open))
+      result.add(s.publishAll())
     elif uri in s.docs:
       result.add(s.publish(uri))
   of "textDocument/didClose":
@@ -1222,6 +1301,20 @@ proc handle*(s: var Server, msg: JsonNode): seq[JsonNode] =
         params{"json"}.getBool())))
   of "nimyaml/diff":
     result.add(respond(id, diffOf(params)))
+  of "nimyaml/schemaChanged":
+    if not s.clientSchemas.isNil:
+      s.clientSchemas.texts.del(params["uri"].getStr())
+      result.add(s.publishAll())
+  of "":
+    # the client's answer to a request of the server
+    let client = s.clientSchemas
+    let key = id.getStr()
+    if not client.isNil and key in client.asked:
+      let answer = msg{"result"}
+      client.texts[client.asked[key]] =
+        if answer.isNil or answer.kind != JString: "" else: answer.getStr()
+      client.asked.del(key)
+      result.add(s.publishAll())
   of "shutdown":
     s.shutdownRequested = true
     result.add(respond(id, newJNull()))
@@ -1231,6 +1324,7 @@ proc handle*(s: var Server, msg: JsonNode): seq[JsonNode] =
   else:
     if not id.isNil:
       result.add(respondError(id, methodNotFound, "method not found: " & meth))
+  result.add(s.schemaRequests())
 
 proc serve*(input: Stream, output: File): int =
   ## Serves messages from ``input`` until ``exit`` or the end of the input.

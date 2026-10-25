@@ -1,9 +1,11 @@
 #!/usr/bin/env yaml as json
-# $schema: vscode://schemas/vscode-extensions
+# yaml-language-server: $schema=vscode://schemas/vscode-extensions
 #
 # Schema:
 # The official schema is dynamically localized at runtime:
 # https://github.com/microsoft/vscode/blob/HEAD/src/vs/workbench/services/extensions/common/extensionsRegistry.ts#L174
+# This extension (schemas/) gives it to yamllsp, which validates this file
+# with it.
 #
 # See also:
 # https://code.visualstudio.com/api/references/extension-manifest

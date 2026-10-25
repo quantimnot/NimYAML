@@ -283,6 +283,84 @@ suite "LSP directive features":
     check diags[0]["code"].getStr() == "unresolvable-schema-uri"
     check diags[0]["severity"].getInt() == 1
 
+suite "LSP schemas from the client":
+  proc initialized(schemes: seq[string]): Server =
+    discard result.handle(request(1, "initialize",
+        %*{"initializationOptions": {"schemaContentSchemes": schemes}}))
+
+  proc contentRequests(replies: seq[JsonNode]): seq[JsonNode] =
+    for r in replies:
+      if r{"method"}.getStr() == "nimyaml/schemaContent": result.add(r)
+
+  proc answer(request: JsonNode, text: string): JsonNode =
+    %*{"jsonrpc": "2.0", "id": request["id"], "result": text}
+
+  const doc = "# yaml-language-server: $schema=vscode://schemas/s\nname: 1\n"
+
+  test "a schema of an advertised scheme is asked for, then validates":
+    var s = initialized(@["vscode"])
+    let opened = s.handle(didOpen("untitled:a", doc))
+    # no warning while the client is asked
+    check opened.diagnosticsOf("untitled:a").len == 0
+    let asked = opened.contentRequests()
+    check asked.len == 1
+    check asked[0]["params"] == %*{"uri": "vscode://schemas/s"}
+    let answered = s.handle(asked[0].answer(
+        """{"properties": {"name": {"type": "string"}}}"""))
+    check answered.contentRequests().len == 0
+    let diags = answered.diagnosticsOf("untitled:a")
+    check diags.len == 1
+    check diags[0]["code"].getStr() == "schema-validation"
+    # the answer is kept: other documents and changes do not ask again
+    check s.handle(didOpen("untitled:b", doc)).contentRequests().len == 0
+
+  test "references of a schema are asked for in turn":
+    var s = initialized(@["vscode"])
+    let first = s.handle(didOpen("untitled:a", doc)).contentRequests()
+    let second = s.handle(first[0].answer(
+        """{"$ref": "vscode://schemas/t"}""")).contentRequests()
+    check second.len == 1
+    check second[0]["params"]["uri"].getStr() == "vscode://schemas/t"
+    check second[0]["id"] != first[0]["id"]
+    let diags = s.handle(second[0].answer("""{"required": ["age"]}"""))
+        .diagnosticsOf("untitled:a")
+    check diags.len == 1
+    check diags[0]["code"].getStr() == "schema-validation"
+
+  test "a schema the client cannot give is unavailable":
+    var s = initialized(@["vscode"])
+    let asked = s.handle(didOpen("untitled:a", doc)).contentRequests()
+    let diags = s.handle(%*{"jsonrpc": "2.0", "id": asked[0]["id"],
+        "error": {"code": -32603, "message": "no such schema"}})
+        .diagnosticsOf("untitled:a")
+    check diags.len == 1
+    check diags[0]["code"].getStr() == "schema-unavailable"
+
+  test "a changed schema is asked for again":
+    var s = initialized(@["vscode"])
+    let asked = s.handle(didOpen("untitled:a", doc)).contentRequests()
+    discard s.handle(asked[0].answer("{}"))
+    let changed = s.handle(notification("nimyaml/schemaChanged",
+        %*{"uri": "vscode://schemas/s"}))
+    check changed.diagnosticsOf("untitled:a").len == 0
+    let again = changed.contentRequests()
+    check again.len == 1
+    check s.handle(again[0].answer("""{"required": ["age"]}"""))
+        .diagnosticsOf("untitled:a").len == 1
+
+  test "other schemes and clients that advertise none are not asked":
+    var s = initialized(@["vscode"])
+    let other = s.handle(didOpen("untitled:o",
+        "# yaml-language-server: $schema=https://x.example/s.json\na: 1\n"))
+    check other.contentRequests().len == 0
+    check other.diagnosticsOf("untitled:o")[0]["code"].getStr() ==
+        "schema-unavailable"
+    var plain: Server
+    let opened = plain.handle(didOpen("untitled:a", doc))
+    check opened.contentRequests().len == 0
+    check opened.diagnosticsOf("untitled:a")[0]["code"].getStr() ==
+        "schema-unavailable"
+
 suite "LSP semantic tokens":
   proc legend(): JsonNode =
     var s: Server

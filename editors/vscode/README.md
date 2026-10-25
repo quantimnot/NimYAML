@@ -97,8 +97,9 @@ is validated against. Relative references resolve against the YAML file.
 ---
 ```
 
-Schemas are read from `file:` URIs only; yamllsp never accesses the network,
-so `%SCHEMA https://example.com/schema.json` gives a `schema-unavailable`
+Schemas are read from `file:` URIs, and VS Code's own from `vscode:` URIs
+(below); yamllsp never accesses the network, so
+`%SCHEMA https://example.com/schema.json` gives a `schema-unavailable`
 warning instead of a validation. A schema file must load as YAML, so a
 `.jsonc` schema with comments cannot be used either.
 
@@ -164,6 +165,22 @@ and each violation is a `schema-validation` error on the offending node:
 name: Ada
 age: -1   # error: -1 is less than the minimum of 0 [schema-validation]
 ```
+
+VS Code's own schemas, which it builds at runtime from the installed
+extensions and localizes into the display language, can be named by their
+`vscode://schemas/` URI, so that a YAML source of an extension manifest, of
+settings or of keybindings is validated like its JSON:
+
+```yaml
+# yaml-language-server: $schema=vscode://schemas/vscode-extensions
+name: my-extension
+engines: {vscode: 1}   # error: not a string [schema-validation]
+```
+
+The extension gives them to yamllsp when it asks, and again when VS Code
+changes one (an extension that contributes settings is installed, say).
+Others are `vscode://schemas/settings/user`, `vscode://schemas/keybindings`,
+`vscode://schemas/tasks` and `vscode://schemas/launch`.
 
 ### [JSON Hyper Schema](../../README.md#json-hyper-schema)
 

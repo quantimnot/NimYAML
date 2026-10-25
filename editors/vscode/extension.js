@@ -30,6 +30,9 @@
 // yamllsp computes and a quick pick lists.
 //
 // And comments (comments/): Enter in a comment continues it.
+//
+// And schemas (schemas/): VS Code's own `vscode://schemas/...`, which
+// yamllsp cannot read, are given to it on request.
 
 const vscode = require("vscode");
 const { LanguageClient, TransportKind } = require("vscode-languageclient/node");
@@ -38,11 +41,13 @@ const { registerGrid } = require("./grid");
 const { registerPaths } = require("./paths");
 const { registerDiff } = require("./diff");
 const { registerComments } = require("./comments");
+const { registerSchemas, initializationOptions } = require("./schemas");
 
 let client;
 let embedded;
 let grid;
 let paths;
+let schemas;
 let traceOutputChannel;
 
 // Documents yamllsp is told about. `file` documents get their
@@ -108,8 +113,14 @@ async function start() {
     "yaml+lsp",
     "yaml+lsp",
     serverOptions(),
-    { documentSelector, traceOutputChannel, middleware: embedded.middleware },
+    {
+      documentSelector,
+      traceOutputChannel,
+      middleware: embedded.middleware,
+      initializationOptions,
+    },
   );
+  schemas.attach(client);
   try {
     await client.start();
     embedded.restarted();
@@ -158,6 +169,8 @@ async function activate(context) {
   context.subscriptions.push(paths.disposable);
   context.subscriptions.push(registerDiff(() => client));
   context.subscriptions.push(registerComments());
+  schemas = registerSchemas(() => client);
+  context.subscriptions.push(schemas.disposable);
   await start();
 }
 
