@@ -58,10 +58,12 @@ import ../yaml/[data, parser, stream, lint, jsonschema, documentschema,
     schemavalidation, toolconfig, dom, edit, jsonpath, loading, native, diff,
     dumping]
 import ../yaml/private/[lex, jsonmodel]
+import ../yaml/schemacache
 from ../yaml/hints import guessType, TypeHint
 
 type
-  ConfigEntry = tuple[config: ToolConfig, error: string]
+  ConfigEntry = tuple[config: ToolConfig, error, dir: string]
+    ## ``dir``: the config file's directory; empty for the defaults
 
   ClientSchemas = ref object
     ## Schemas the client is asked for (see `schemaLoader`).
@@ -70,6 +72,9 @@ type
     failures: Table[string, string]  ## uri -> why the client had none
     asked: Table[string, string]     ## request id -> uri, unanswered
     unsent: seq[string]              ## uris to ask for
+    requested: HashSet[string]       ## uris asked for in this session
+    targets: Table[string, seq[string]] ## uri -> caches to store it in
+    stored: HashSet[(string, string)] ## (cache, uri) stored this session
     nextId: int
     missing: bool ## the last validation needed a schema not yet answered
 
@@ -178,13 +183,15 @@ proc documentPath(uri: string): string =
 
 proc configFor(s: var Server, uri: string): ConfigEntry =
   let path = documentPath(uri)
-  if path.len == 0: return (defaultToolConfig(), "")
+  if path.len == 0: return (defaultToolConfig(), "", "")
   let dir = path.parentDir()
   if dir notin s.configs:
-    var entry: ConfigEntry = (defaultToolConfig(), "")
+    var entry: ConfigEntry = (defaultToolConfig(), "", "")
     try:
       let configPath = findToolConfig(dir)
-      if configPath.len > 0: entry.config = loadToolConfig(configPath)
+      if configPath.len > 0:
+        entry.config = loadToolConfig(configPath)
+        entry.dir = configPath.parentDir()
     except ToolConfigError as e:
       entry.error = e.msg
     s.configs[dir] = entry
@@ -1156,9 +1163,13 @@ proc diffOf(params: JsonNode): JsonNode =
 # client sends ``nimyaml/schemaChanged`` (``{uri}``); an error or a null
 # answer makes the schema unavailable, with the error's message.
 #
-# A config with ``validate.remote-schemas: false`` keeps ``http:`` and
-# ``https:`` schemas out of the validation of its files: they are not
-# asked for, and not taken from answers given for other files either.
+# Remote schemas (``http:``, ``https:``) the client gives are stored in the
+# cache the document's config chooses (``validate.schema-cache``, see
+# yaml/schemacache), and taken from the caches when there is no answer in
+# this session: a cached copy is used at once, and asked for once per
+# session to refresh it; a refresh that fails keeps the copy. A config with
+# ``validate.remote-schemas: false`` keeps remote schemas from being asked
+# for on behalf of its files; copies already at hand are still used.
 #
 # The client's schemas are compiled leniently: VS Code's settings schemas
 # carry whatever the installed extensions contribute, mistakes included
@@ -1173,31 +1184,46 @@ proc isRemote(uri: string): bool =
   let lower = uri.toLowerAscii()
   lower.startsWith("http:") or lower.startsWith("https:")
 
-proc schemaLoader(s: Server, remote: bool): SchemaLoader =
+proc ask(c: ClientSchemas, uri, cache: string) =
+  ## Asks for ``uri`` unless it was in this session; its answer is to be
+  ## stored in ``cache``.
+  if cache.len > 0:
+    let targets = addr c.targets.mgetOrPut(uri, @[])
+    if cache notin targets[]: targets[].add(cache)
+  if uri notin c.requested:
+    c.requested.incl(uri)
+    c.unsent.add(uri)
+
+proc schemaLoader(s: Server, remote: bool, caches: seq[string],
+    cache: string): SchemaLoader =
   ## Reads ``file:`` schemas and takes those of the client's schemes from
-  ## its answers, noting the ones it has to be asked for; remote ones only
-  ## if ``remote``.
+  ## its answers or the ``caches``, noting the ones it has to be asked for:
+  ## remote ones only if ``remote``. Answers are stored in ``cache``.
   let files = fileSchemaLoader()
   let client = s.clientSchemas
-  if client.isNil or client.schemes.len == 0: return files
+  if client.isNil or client.schemes.len == 0: return localSchemaLoader(caches)
   client.missing = false
   result = proc(uri: string): YamlNode {.closure, raises: [CatchableError].} =
     result = files(uri)
     if not result.isNil or not client.serves(uri): return
+    let answered = client.texts.getOrDefault(uri)
+    if answered.len > 0:
+      if cache.len > 0 and (cache, uri) notin client.stored:
+        client.stored.incl((cache, uri))
+        discard storeSchema(cache, uri, answered)
+      return loadAs[YamlNode](answered)
+    let (found, cached) = readCachedSchema(caches, uri)
+    if found:
+      if remote: client.ask(uri, cache) # to refresh it
+      return loadAs[YamlNode](cached)
     if not remote and uri.isRemote:
       raise newException(IOError, "remote schemas are disabled " &
           "(validate.remote-schemas: false in the config)")
     if uri in client.failures:
       raise newException(IOError, client.failures[uri])
-    elif uri in client.texts:
-      let text = client.texts[uri]
-      if text.len > 0: result = loadAs[YamlNode](text)
-    else:
-      client.missing = true
-      var asked = uri in client.unsent
-      for pending in client.asked.values:
-        if pending == uri: asked = true
-      if not asked: client.unsent.add(uri)
+    if uri in client.texts: return # answered with nothing
+    client.missing = true
+    client.ask(uri, cache)
 
 proc lenient(s: Server): LenientPredicate =
   ## The client's schemas, compiled leniently.
@@ -1221,7 +1247,7 @@ proc publish(s: var Server, uri: string): JsonNode =
   var diagnostics = newJArray()
   if uri in s.docs:
     let text = s.docs[uri]
-    let (config, error) = s.configFor(uri)
+    let (config, error, configDir) = s.configFor(uri)
     if error.len > 0:
       diagnostics.add(%*{"range": {"start": {"line": 0, "character": 0},
                                    "end": {"line": 0, "character": 1}},
@@ -1234,7 +1260,9 @@ proc publish(s: var Server, uri: string): JsonNode =
     if config.validateSchemas:
       # a fresh registry per publish, so that edits of schema files take
       # effect on the next change
-      let registry = newSchemaRegistry(s.schemaLoader(config.remoteSchemas),
+      let location = config.schemaCache
+      let registry = newSchemaRegistry(s.schemaLoader(config.remoteSchemas,
+          readDirs(location, configDir), schemaCacheDir(location, configDir)),
           lenient = s.lenient())
       let found = validateDocuments(text, registry, sourceUri)
       let missing = not s.clientSchemas.isNil and s.clientSchemas.missing
@@ -1339,8 +1367,10 @@ proc handle*(s: var Server, msg: JsonNode): seq[JsonNode] =
     result.add(respond(id, diffOf(params)))
   of "nimyaml/schemaChanged":
     if not s.clientSchemas.isNil:
-      s.clientSchemas.texts.del(params["uri"].getStr())
-      s.clientSchemas.failures.del(params["uri"].getStr())
+      let changed = params["uri"].getStr()
+      s.clientSchemas.texts.del(changed)
+      s.clientSchemas.failures.del(changed)
+      s.clientSchemas.requested.excl(changed)
       result.add(s.publishAll())
   of "":
     # the client's answer to a request of the server
@@ -1354,8 +1384,13 @@ proc handle*(s: var Server, msg: JsonNode): seq[JsonNode] =
       if not error.isNil and error.kind == JString:
         client.failures[uri] = error.getStr()
       else:
-        client.texts[uri] =
+        let text =
           if answer.isNil or answer.kind != JString: "" else: answer.getStr()
+        client.texts[uri] = text
+        if text.len > 0:
+          for cache in client.targets.getOrDefault(uri):
+            client.stored.incl((cache, uri))
+            discard storeSchema(cache, uri, text)
       client.asked.del(key)
       result.add(s.publishAll())
   of "shutdown":

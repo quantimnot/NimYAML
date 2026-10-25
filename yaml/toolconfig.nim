@@ -21,6 +21,8 @@
 ##   validate:
 ##     schema: true     # validate against declared JSON Schemas (default)
 ##     remote-schemas: true  # may use http(s): schemas (default)
+##     schema-cache: user    # where downloaded schemas are kept: project,
+##                           # user (default), system or off
 ##   format:
 ##     style: default   # default, minimal, explanatory, json, json-lines
 ##                      # or block-only
@@ -38,6 +40,12 @@
 ## not ask the editor to download ``http:`` and ``https:`` schemas, and
 ## reports them as unavailable.
 ##
+## ``schema-cache`` chooses the cache of downloaded schemas that is
+## written; all of them are read (see `schemacache <schemacache.html>`_).
+## A ``project`` cache is the directory ``.yaml-schemas`` next to the
+## config file. Cached schemas are used with ``remote-schemas: false``
+## too: that keeps schemas from being downloaded, not from being used.
+##
 ## The comment keys are described at ``CommentOptions`` of
 ## `yaml/presenter <presenter.html>`_. The ``minimal``, ``json`` and
 ## ``json-lines`` styles have no room for comments.
@@ -49,8 +57,8 @@
 import std/[options, os, strutils]
 when defined(nimPreviewSlimSystem):
   import std/syncio
-import annotations, presenter, dumping, loading, lint
-export options, lint
+import annotations, presenter, dumping, loading, lint, schemacache
+export options, lint, SchemaCacheLocation
 
 type
   FormatStyle* = enum
@@ -64,6 +72,8 @@ type
     schema*: Option[bool] ## none: validate
     remoteSchemas* {.yamlKey: "remote-schemas".}: Option[bool]
       ## none: allowed
+    schemaCache* {.yamlKey: "schema-cache".}: Option[SchemaCacheLocation]
+      ## none: user
 
   FormatConfig* {.sparse.} = object
     style*: Option[FormatStyle]
@@ -96,6 +106,10 @@ proc validateSchemas*(config: ToolConfig): bool =
 proc remoteSchemas*(config: ToolConfig): bool =
   ## Whether schemas from the network (``http:``, ``https:``) may be used.
   config.validate.remoteSchemas.get(true)
+
+proc schemaCache*(config: ToolConfig): SchemaCacheLocation =
+  ## The cache downloaded schemas are written to.
+  config.validate.schemaCache.get(sclUser)
 
 proc dumper*(style: FormatStyle): Dumper =
   ## The `Dumper` preset of ``style``.
@@ -130,6 +144,7 @@ proc resolved*(config: ToolConfig): ToolConfig =
   result.lint = config.lint.resolved
   result.validate.schema = some(config.validateSchemas)
   result.validate.remoteSchemas = some(config.remoteSchemas)
+  result.validate.schemaCache = some(config.schemaCache)
   let
     format = config.format
     style = format.style.get(fsDefault)
@@ -157,7 +172,9 @@ proc `$`*(config: ToolConfig): string =
   result.add("validate:\n  schema: " & $c.validate.schema.get() &
       "  # validate against declared JSON Schemas\n" &
       "  remote-schemas: " & $c.validate.remoteSchemas.get() &
-      "  # may use http(s): schemas\n")
+      "  # may use http(s): schemas\n" &
+      "  schema-cache: " & $c.validate.schemaCache.get() &
+      "  # project, user, system or off\n")
   let f = c.format
   result.add("format:\n" &
       "  style: " & $f.style.get() & "  # default, minimal, explanatory, " &

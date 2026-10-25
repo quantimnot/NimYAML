@@ -15,6 +15,8 @@ let
   dir = tmp / "files"
 
 createDir(dir)
+# the user's schema cache, which the tool reads: not the real one
+putEnv("XDG_CACHE_HOME", tmp / "xdg")
 let (compileOutput, compileCode) = execCmdEx("nim c --hints:off -o:" &
     quoteShell(bin) & " " & quoteShell(root / "tools" / "yamllint.nim"))
 doAssert compileCode == 0, compileOutput
@@ -75,6 +77,31 @@ suite "yamllint":
     check r.output.startsWith(dir / "service.yaml" & ":3:7: error: ")
     check "[schema-validation]" in r.output
     check yamllint("--no-schema", dir / "service.yaml") == ("", 0)
+
+  test "remote schemas are read from the caches":
+    let project = tmp / "cached"
+    createDir(project)
+    writeFile(project / ".yaml", "validate: {schema-cache: project}\n")
+    let cache = project / ".yaml-schemas" / "https" / "x.example"
+    createDir(cache)
+    writeFile(cache / "port.json",
+        """{"properties": {"port": {"type": "integer"}}}""")
+    writeFile(project / "s.yaml",
+        "%SCHEMA https://x.example/port.json\n---\nport: http\n")
+    let r = yamllint(project / "s.yaml")
+    check r.exitCode == 1
+    check "[schema-validation]" in r.output
+    # and from the user's, which every config reads
+    let user = tmp / "xdg" / "nimyaml" / "schemas" / "https" / "x.example"
+    createDir(user)
+    writeFile(user / "name.json", """{"required": ["name"]}""")
+    writeFile(dir / "n.yaml",
+        "%SCHEMA https://x.example/name.json\n---\nport: 1\n")
+    check "[schema-validation]" in yamllint(dir / "n.yaml").output
+    # what no cache has stays unavailable: the tool downloads nothing
+    writeFile(project / "u.yaml",
+        "%SCHEMA https://x.example/other.json\n---\nport: http\n")
+    check "[schema-unavailable]" in yamllint(project / "u.yaml").output
 
   test "directive diagnostics":
     writeFile(dir / "late.yaml", "a\n...\n%GLOBAL YAML 1.2\n--- b\n")

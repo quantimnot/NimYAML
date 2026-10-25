@@ -20,10 +20,10 @@
 ## location. Prints one line per diagnostic. Exit code: 0 without error
 ## diagnostics, 1 with, 2 for usage, I/O or config errors.
 
-import std/[os, parseopt]
+import std/[os, parseopt, tables]
 when defined(nimPreviewSlimSystem):
   import std/syncio
-import ../yaml/[lint, jsonschema, schemavalidation, toolconfig]
+import ../yaml/[lint, jsonschema, schemavalidation, toolconfig, schemacache]
 
 type
   LintMode* = enum
@@ -69,30 +69,43 @@ proc run*(args: seq[string], mode = lmLint, usage = usage,
   if files.len == 0 and not toolConfigs:
     stderr.writeLine(usage)
     return 2
-  # one registry for all files, so that a schema shared by several files is
-  # read once
-  let registry = newSchemaRegistry(fileSchemaLoader())
+  # one registry for all files that read the same caches, so that a schema
+  # shared by several files is read once
+  var registries: Table[seq[string], SchemaRegistry]
+  proc registryFor(config: ToolConfig, configDir: string): SchemaRegistry =
+    let caches = readDirs(config.schemaCache, configDir)
+    if caches notin registries:
+      registries[caches] = newSchemaRegistry(localSchemaLoader(caches))
+    registries[caches]
   try:
     let explicit =
       if configPath.len == 0: none(ToolConfig)
       elif toolConfigs: some(loadToolConfig(configPath))
       else: some(ToolConfig(lint: loadLintConfig(configPath)))
-    proc check(name, source, uri: string, config: ToolConfig): int =
+    proc check(name, source, uri: string, config: ToolConfig,
+        configDir: string): int =
       var diagnostics = lint(source, config.lint.restrict(mode), uri)
       if validate and config.validateSchemas:
-        diagnostics.add(validateDocuments(source, registry, uri))
+        diagnostics.add(validateDocuments(source,
+            registryFor(config, configDir), uri))
       for d in diagnostics:
         stdout.writeLine(name & ":" & $d)
         if d.severity == severityError: result = 1
+    proc configOf(file: string): tuple[config: ToolConfig, dir: string] =
+      ## The config of ``file`` and its directory (for a project cache).
+      if explicit.isSome:
+        return (explicit.get(), parentDir(absolutePath(configPath)))
+      let path = findToolConfig(parentDir(absolutePath(file)))
+      if path.len > 0: (loadToolConfig(path), parentDir(path))
+      else: (defaultToolConfig(), "")
     if files.len == 0:
-      let config =
-        if explicit.isSome: explicit.get()
-        else: toolConfigFor(getCurrentDir() / "-")
+      let (config, configDir) = configOf(getCurrentDir() / "-")
       result = check("<stdin>", input.readAll(), fileUri(getCurrentDir() / "-"),
-          config)
+          config, configDir)
     for file in files:
-      let config = if explicit.isSome: explicit.get() else: toolConfigFor(file)
-      result = max(result, check(file, readFile(file), fileUri(file), config))
+      let (config, configDir) = configOf(file)
+      result = max(result, check(file, readFile(file), fileUri(file), config,
+          configDir))
   except LintConfigError, ToolConfigError:
     stderr.writeLine("config error: " & getCurrentExceptionMsg())
     return 2

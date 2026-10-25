@@ -8,6 +8,12 @@ import std/[json, os, streams, strutils, unittest]
 when defined(nimPreviewSlimSystem):
   import std/[syncio, assertions]
 import ../tools/yamllsp
+import ../yaml/schemacache
+
+# downloaded schemas are cached in the user's cache by default: not in the
+# real one
+let userCache = getTempDir() / ("yamllsp-xdg-" & $getCurrentProcessId())
+putEnv("XDG_CACHE_HOME", userCache)
 
 proc request(id: int, meth: string, params = newJObject()): JsonNode =
   %*{"jsonrpc": "2.0", "id": id, "method": meth, "params": params}
@@ -405,6 +411,63 @@ suite "LSP schemas from the client":
     let again = saved.contentRequests()
     check again.len == 1
     check again[0]["params"]["uri"].getStr() == "https://x.example/s.json"
+
+  test "downloaded schemas are cached, used from the cache, refreshed":
+    let dir = getTempDir() / ("yamllsp-cache-" & $getCurrentProcessId())
+    createDir(dir)
+    defer: removeDir(dir)
+    writeFile(dir / ".yaml", "validate: {schema-cache: project}\n")
+    let uri = "file://" & dir / "x.yaml"
+    const
+      text = "%SCHEMA https://x.example/c.json\n--- {name: 1}\n"
+      strict = """{"properties": {"name": {"type": "string"}}}"""
+    let cached = dir / ".yaml-schemas" / "https" / "x.example" / "c.json"
+    block:
+      var s = initialized(@["https"])
+      let asked = s.handle(didOpen(uri, text)).contentRequests()
+      check asked.len == 1
+      discard s.handle(asked[0].answer(strict))
+      check readFile(cached) == strict
+    block:
+      # a new session validates with the cached copy at once, and asks for
+      # it once more, to refresh it
+      var s = initialized(@["https"])
+      let opened = s.handle(didOpen(uri, text))
+      check opened.diagnosticsOf(uri).len == 1
+      let refresh = opened.contentRequests()
+      check refresh.len == 1
+      check s.handle(notification("textDocument/didChange", %*{
+          "textDocument": {"uri": uri, "version": 2},
+          "contentChanges": [{"text": text}]})).contentRequests().len == 0
+      check s.handle(refresh[0].answer("{}")).diagnosticsOf(uri).len == 0
+      check readFile(cached) == "{}"
+    block:
+      # a refresh that fails keeps the cached copy
+      writeFile(cached, strict)
+      var s = initialized(@["https"])
+      let refresh = s.handle(didOpen(uri, text)).contentRequests()
+      let diags = s.handle(%*{"jsonrpc": "2.0", "id": refresh[0]["id"],
+          "error": {"code": -32603, "message": "offline"}}).diagnosticsOf(uri)
+      check diags.len == 1
+      check diags[0]["code"].getStr() == "schema-validation"
+      check readFile(cached) == strict
+    block:
+      # remote-schemas: false downloads nothing, but uses the cache
+      writeFile(dir / ".yaml",
+          "validate: {schema-cache: project, remote-schemas: false}\n")
+      var s = initialized(@["https"])
+      let opened = s.handle(didOpen(uri, text))
+      check opened.contentRequests().len == 0
+      check opened.diagnosticsOf(uri).len == 1
+
+  test "without a config, downloaded schemas go to the user's cache":
+    defer: removeDir(userCache)
+    var s = initialized(@["https"])
+    let asked = s.handle(didOpen("untitled:u",
+        "%SCHEMA https://x.example/u.json\n--- 1\n")).contentRequests()
+    discard s.handle(asked[0].answer("{}"))
+    check readFile(userCache / "nimyaml" / "schemas" / "https" / "x.example" /
+        "u.json") == "{}"
 
   test "other schemes and clients that advertise none are not asked":
     var s = initialized(@["vscode"])

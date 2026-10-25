@@ -366,7 +366,14 @@ yamllsp, and only if both allow it: `validate: {remote-schemas: false}` in
 the `.yaml` config keeps them out of the files it applies to (a project
 decision: opening a file then tells no server about it), and turning off
 VS Code's `json.schemaDownload.enable` stops all downloads (yours). Either
-way such a schema is a `schema-unavailable` warning that says why.
+way such a schema is a `schema-unavailable` warning that says why, unless a
+copy is cached.
+
+Downloaded schemas are cached, by default in your user cache; with
+`validate: {schema-cache: project}` in `.yaml-schemas/` next to the config,
+to be committed so that `yaml validate` checks the same in CI, offline.
+A cached copy validates at once and is refreshed once per session (see
+[the config](../../README.md#the-yaml-command) for the locations).
 
 ### Document Preview
 

@@ -1123,6 +1123,8 @@ lint:
 validate:
   schema: true          # validate against the declared JSON Schemas
   remote-schemas: true  # may use http(s): schemas, which the editor downloads
+  schema-cache: user    # where downloaded schemas are kept: project, user,
+                        # system or off
 format:
   style: default        # minimal, explanatory, json, json-lines, block-only
   indentation: 2
@@ -1132,6 +1134,24 @@ format:
   comment-gap: 2        # spaces between content and a comment after it
   comment-blank-lines: keep  # or drop: blank lines next to comment lines
 ```
+
+Downloaded schemas are cached, so that they validate again without a
+network, on the command line too (`yaml` itself downloads nothing). They
+are written to the cache `schema-cache` chooses and read from all of them,
+the most specific first:
+
+| `schema-cache` | where |
+|---|---|
+| `project` | `.yaml-schemas/` next to the config file; commit it, and the project validates the same everywhere, CI included |
+| `user` (default) | the user's cache: `~/Library/Caches/nimyaml/schemas` on macOS, `$XDG_CACHE_HOME/nimyaml/schemas` (`~/.cache/...`) elsewhere |
+| `system` | `/Library/Caches/nimyaml/schemas` on macOS, `/var/cache/nimyaml/schemas` elsewhere, `%ProgramData%\nimyaml\cache\schemas` on Windows: for an administrator to fill |
+| `off` | nothing is cached |
+
+A file in a cache is the schema's text at its URI's host and path:
+`https/www.schemastore.org/package.json`. The language server uses a
+cached copy at once and refreshes it once per session; a refresh that
+fails keeps the copy. `remote-schemas: false` stops downloads, not the use
+of cached copies.
 
 `yaml config` writes the config in effect for a directory (default: the
 current one) to `.yaml.yaml` in it, with every key set to its configured or
