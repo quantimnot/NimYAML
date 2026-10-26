@@ -56,7 +56,7 @@
 ## through others), raise ``YamlMergeError``.
 
 import std/[sets, streams, tables]
-import data, dom, stream, native, parser, private/internal
+import data, dom, stream, native, parser, private/internal, memory
 
 type
   YamlMergeError* = object of ValueError
@@ -245,12 +245,15 @@ proc emit(em: var Emitter, node: YamlNode) =
       em.emit(value)
     em.events.add(endMapEvent(node.endPos, node.endPos))
 
-proc mergedDocument(source: YamlStream): seq[Event] =
+proc mergedDocument(source: YamlStream, budget: MemoryBudget,
+    charged: var int): seq[Event] =
   ## Reads the content of a document from ``source`` (after its start event,
   ## up to and including its end event) and returns it with merge keys
-  ## applied.
+  ## applied. ``budget`` is charged for the document; ``charged`` gets the
+  ## bytes.
+  let counted = chargingStream(source, budget)
   var
-    ctx = initConstructionContext(source)
+    ctx = initConstructionContext(counted)
     root: YamlNode
     em: Emitter
   ctx.constructChild(root)
@@ -262,18 +265,23 @@ proc mergedDocument(source: YamlStream): seq[Event] =
   em.emit(root)
   result = move em.events
   result.add(source.next())
+  charged = counted.chargedBytes
 
 type MergingStream = ref object of YamlStream
   source: YamlStream
   pending: seq[Event] ## the rest of the current document, in order
   next: int
+  budget: MemoryBudget
+  charged: int ## for the current document
 
-proc mergeKeysApplied*(source: YamlStream): YamlStream {.raises: [].} =
+proc mergeKeysApplied*(source: YamlStream, budget: MemoryBudget = nil):
+    YamlStream {.raises: [].} =
   ## Returns a stream with the events of ``source``, but with merge keys
   ## applied in each document. Construction and merge errors are raised,
   ## wrapped in ``YamlStreamError``, when the document's start event is
-  ## read.
-  let s = MergingStream(source: source)
+  ## read. Each document is constructed as a whole, which ``budget`` is
+  ## charged for until its events have been read.
+  let s = MergingStream(source: source, budget: budget)
   s.basicInit(proc(s: YamlStream, lineContent: var string): bool
       {.raises: [], gcsafe, closure.} =
     try: MergingStream(s).source.getLastTokenContext(lineContent)
@@ -286,10 +294,12 @@ proc mergeKeysApplied*(source: YamlStream): YamlStream {.raises: [].} =
       e = ms.pending[ms.next]
       inc(ms.next)
     else:
+      ms.budget.release(ms.charged)
+      ms.charged = 0
       e = ms.source.next()
       if e.kind == yamlStartDoc:
         {.cast(gcsafe).}:
-          ms.pending = mergedDocument(ms.source)
+          ms.pending = mergedDocument(ms.source, ms.budget, ms.charged)
         ms.next = 0
     result = true
   result = s

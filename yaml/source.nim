@@ -64,7 +64,8 @@ type
     mmap*: Switch       ## ``swOff`` never maps files (forced ``mmap``
                         ## becomes ``seek``)
     mapWindow*: int     ## bytes of a mapped window; 0 for 64 MiB. At most
-                        ## half of the limit, at least two pages.
+                        ## an eighth of the limit (so that several sources
+                        ## and their parsers fit), at least two pages.
     pageCache*: int     ## bytes of cached pages of a seekable file; 0 for
                         ## an eighth of the limit, at most 1 MiB
     spool*: Switch      ## whether a stream that needs random access is
@@ -377,7 +378,7 @@ when hasFiles:
     let align = mapAlignment()
     result = if policy.mapWindow > 0: policy.mapWindow else: defaultWindow
     let limit = limitOf(budget)
-    if limit != int.high: result = min(result, limit div 2)
+    if limit != int.high: result = min(result, limit div 8)
     result = max(result, 2 * align)
     result = (result + align - 1) div align * align
 

@@ -129,6 +129,8 @@ type
     # offset of the line parsing last continued at after an error
     lastResync: int
     streamStarted, needToken: bool
+    # bytes of the budget the buffer is charged for
+    charged: int
 
 const defaultProperties = (yAnchorNone, yTagQuestionMark)
 
@@ -2173,12 +2175,15 @@ proc recover(rs: YamlRecoveringStream, ce: ref CatchableError)
   if ctx.lex.streamFailed(): raise pe
   rs.errors.add(record)
 
-proc fill(rs: YamlRecoveringStream) {.raises: [YamlParserError].} =
+proc fill(rs: YamlRecoveringStream)
+    {.raises: [YamlParserError, YamlMemoryLimitError].} =
   ## produces the events of the next complete document (or the start or end
   ## of the stream) into the buffer. May produce nothing after an error.
   rs.buffer.setLen(0)
   rs.pos = 0
   let ctx = rs.ctx
+  ctx.budget.release(rs.charged)
+  rs.charged = 0
   try:
     if rs.needToken:
       rs.needToken = false
@@ -2188,6 +2193,10 @@ proc fill(rs: YamlRecoveringStream) {.raises: [YamlParserError].} =
       ctx.lex.compact()
       while not ctx.levels[^1].state(ctx, e): discard
       let kind = e.kind
+      # the document is held until it is complete
+      let size = 64 + (if kind == yamlScalar: e.scalarContent.len else: 0)
+      ctx.budget.reserve(size, "holding a document to recover from errors")
+      rs.charged += size
       rs.buffer.add(move(e))
       case kind
       of yamlStartStream:
@@ -2195,6 +2204,9 @@ proc fill(rs: YamlRecoveringStream) {.raises: [YamlParserError].} =
         return
       of yamlEndDoc, yamlEndStream: return
       else: discard
+  except YamlMemoryLimitError as e:
+    # not an error of the YAML input; recovering would not help
+    raise e
   except CatchableError as ce:
     rs.recover(ce)
 

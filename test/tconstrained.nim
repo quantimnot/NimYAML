@@ -38,6 +38,8 @@ let
 genManyDocs(many, megabytes * MiB)
 genHugeDoc(huge, megabytes * MiB)
 genSmall(small)
+let patchFile = tmp / "patch.yaml"
+writeFile(patchFile, "[{op: add, path: /extra, value: 1}]\n")
 
 type Run = tuple[code, rss: int, errors: string]
 
@@ -62,6 +64,12 @@ proc run(args: seq[string], output: string): Run =
     if text.len > 0 and not text[0].isDigit and "\t" notin line:
       result.errors.add(line & "\n")
 
+proc baseline(args: seq[string]): Run =
+  ## The command ``args`` on the small input instead of the huge ones: its
+  ## memory without input.
+  run(args.mapIt(if it in [many, huge]: small else: it) & @[small],
+      tmp / "baseline.out")
+
 proc sameFiles(a, b: string): bool =
   getFileSize(a) == getFileSize(b) and readFile(a) == readFile(b)
 
@@ -73,7 +81,7 @@ proc within(args: seq[string], input: string): string =
   let
     expected = run(args & @["--memory-limit=unlimited", input],
         tmp / "expected.out")
-    baseline = run(args & @[small], tmp / "baseline.out")
+    baseline = baseline(args)
   for tier in ["mmap", "seek", "stream"]:
     let r = run(args & @["--memory-limit=" & $limit, "--source=" & tier,
         input], tmp / "limited.out")
@@ -89,7 +97,7 @@ proc within(args: seq[string], input: string): string =
 proc exceeds(args: seq[string], input: string, tier = "seek"): string =
   ## ``args`` on ``input`` exceeds the limit: exit code 3, without growing
   ## past the limit first. Returns what went wrong, if anything.
-  let baseline = run(args & @[small], tmp / "baseline.out")
+  let baseline = baseline(args)
   let r = run(args & @["--memory-limit=" & $limit, "--source=" & tier,
       input], tmp / "limited.out")
   let bound = baseline.rss + limit + slack
@@ -108,7 +116,7 @@ suite "many documents":
       @["convert", "jsonl"], @["merge"], @["format"],
       @["format", "--drop-comments"], @["lint"], @["validate"], @["expand"],
       @["query", "$.item.k"], @["query", "--paths", "$..name"],
-      @["canonical"]]:
+      @["canonical"], @["patch", patchFile], @["diff", many]]:
     test args.join(" "):
       expectNothing within(args, many)
 
@@ -126,5 +134,14 @@ suite "one huge document":
 
   test "format with comments exceeds the limit":
     expectNothing exceeds(@["format"], huge)
+
+  for args in [@["canonical"], @["merge"], @["patch", patchFile],
+      @["diff", huge]]:
+    test args.join(" ") & " exceeds the limit":
+      expectNothing exceeds(args, huge)
+
+  for args in [@["lint"], @["validate"]]:
+    test args.join(" ") & " exceeds the limit":
+      expectNothing exceeds(args, huge)
 
 removeDir(tmp)

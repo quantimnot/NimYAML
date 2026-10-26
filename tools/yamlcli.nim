@@ -1069,8 +1069,9 @@ iterator selected(src: YamlSource, format: DataFormat, path: JsonPath,
     discard s.next() # yamlStartStream
     while s.peek().kind == yamlStartDoc:
       var root: YamlNode
-      construct(s, root)
+      let charged = construct(s, root, src.budget)
       for found in root.queryLocated(path): yield (found.path, found.node)
+      src.budget.release(charged)
     if settings.mode != imOff:
       # the index is built from the whole text (see yaml/nodeindex)
       updateIndex(src.name, readText(src.name).content, [location], settings,
@@ -1172,8 +1173,9 @@ iterator eachDocument(input: YamlSource, format: DataFormat): YamlNode =
   discard s.next() # yamlStartStream
   while s.peek().kind == yamlStartDoc:
     var root: YamlNode
-    construct(s, root)
+    let charged = construct(s, root, input.budget)
     yield root
+    input.budget.release(charged)
 
 proc documents(input: YamlSource, format: DataFormat): seq[YamlNode] =
   ## The documents of ``input`` as graphs.
@@ -1214,13 +1216,14 @@ proc transformCommand(command: string, args: seq[string], operands: int,
       yield s.next() # yamlStartStream
       while s.peek().kind == yamlStartDoc:
         var root: YamlNode
-        construct(s, root)
+        let charged = construct(s, root, src.budget)
         # tsAll keeps every node's own tag, so "1" stays a string
         var doc: YamlStream
         {.cast(gcsafe), cast(raises: [CatchableError]).}:
           doc = represent(transform(root), SerializationOptions(tagStyle: tsAll))
         for e in doc:
           if e.kind notin {yamlStartStream, yamlEndStream}: yield e
+        src.budget.release(charged)
       yield s.next()) # yamlEndStream
   result = writeDocuments(files, source, target, inPlace, transformed)
 
@@ -1275,7 +1278,7 @@ proc mergeCommand(args: seq[string]): int =
   # The stream filter, unlike representing the merged graph, writes merged
   # values out instead of giving them anchors, and keeps scalar styles.
   proc merged(src: YamlSource, format: DataFormat): YamlStream =
-    mergeKeysApplied(events(src, format))
+    mergeKeysApplied(events(src, format), src.budget)
   writeDocuments(files, source, target, inPlace, merged)
 
 proc canonicalCommand(args: seq[string]): int =
@@ -1364,33 +1367,66 @@ proc diffCommand(args: seq[string]): int =
     files = if gitDriver: @[positional[1], positional[4]] else: positional
     # git's temporary files need not have the extension of the path
     names = if gitDriver: @[positional[0], positional[0]] else: files
+  # the documents of both files are compared pair by pair, as they are read
   var
-    sides: array[2, seq[YamlNode]]
+    inputs: array[2, YamlSource]
+    streams: array[2, YamlStream]
     formats: array[2, DataFormat]
-  for i in 0 .. 1:
-    let input = openInput(files[i])
-    defer: input.close()
-    formats[i] = source.get(if files[i] == "-": dfYaml else: formatOf(names[i]))
-    try:
-      sides[i] = documents(input, formats[i])
-    except YamlStreamError, YamlParserError, YamlConstructionError:
-      return max(2, failed(input.name, getCurrentException()))
-  let
-    (old, new) = (sides[0], sides[1])
-    count = max(old.len, new.len)
+    docs: array[2, YamlNode] # the current pair; nil after the last one
+    charged: array[2, int]
+    side = 0 # the file being read
+  proc readNext(i: int) =
+    side = i
+    docs[i] = nil
+    charged[i] = 0
+    if streams[i].peek().kind == yamlStartDoc:
+      charged[i] = construct(streams[i], docs[i], inputs[i].budget)
+  proc release() =
+    for i in 0 .. 1:
+      inputs[i].budget.release(charged[i])
+      charged[i] = 0
+  proc remaining(i: int): int =
+    ## Skips the documents of file ``i`` that are left, and counts them.
+    side = i
+    while streams[i].peek().kind == yamlStartDoc:
+      while streams[i].next().kind != yamlEndDoc: discard
+      inc result
+  try:
+    for i in 0 .. 1:
+      side = i
+      inputs[i] = openInput(files[i])
+      formats[i] = source.get(
+          if files[i] == "-": dfYaml else: formatOf(names[i]))
+      streams[i] = events(inputs[i], formats[i])
+      discard streams[i].next() # yamlStartStream
+    readNext(0)
+    readNext(1)
+  except YamlStreamError, YamlParserError, YamlConstructionError:
+    return max(2, failed(inputs[side].name, getCurrentException()))
   if patch or mergePatch:
-    if old.len != new.len:
-      stderr.writeLine("the files have " & $old.len & " and " & $new.len &
-          " documents; a patch needs the same number")
-      return 2
     let output = newStream()
-    for i in 0 ..< count:
-      if not semanticEquals(old[i], new[i]): result = 1
-      let made =
-        if patch: toJsonPatch(diff(old[i], new[i]))
-        else: createMergePatch(old[i], new[i])
-      # tsAll keeps every node's own tag, so "1" stays a string
-      output.collect(represent(made, SerializationOptions(tagStyle: tsAll)))
+    var count = 0
+    try:
+      while not docs[0].isNil and not docs[1].isNil:
+        if not semanticEquals(docs[0], docs[1]): result = 1
+        let made =
+          if patch: toJsonPatch(diff(docs[0], docs[1]))
+          else: createMergePatch(docs[0], docs[1])
+        # tsAll keeps every node's own tag, so "1" stays a string
+        output.collect(represent(made, SerializationOptions(tagStyle: tsAll)))
+        inc count
+        release()
+        readNext(0)
+        readNext(1)
+      if not docs[0].isNil or not docs[1].isNil:
+        let
+          old = count + ord(not docs[0].isNil) + remaining(0)
+          new = count + ord(not docs[1].isNil) + remaining(1)
+        stderr.writeLine("the files have " & $old & " and " & $new &
+            " documents; a patch needs the same number")
+        return 2
+    except YamlStreamError, YamlParserError, YamlConstructionError:
+      return max(2, failed(inputs[side].name, getCurrentException()))
     let yamlStyle = toolConfigFor(
         if files[1] == "-": getCurrentDir() / "-" else: files[1]).format
     try:
@@ -1398,27 +1434,37 @@ proc diffCommand(args: seq[string]): int =
     except YamlPresenterJsonError, YamlPresenterCborError, YamlStreamError:
       return max(2, failed("<output>", getCurrentException()))
     return
-  let
-    color = case colorMode
-      of cmAuto: isatty(stdout)
-      of cmAlways: true
-      of cmNever: false
-    numbered = count > 1
-  var printedHeading = false
-  for i in 0 ..< count:
-    let changes =
-      if i >= old.len: @[DiffChange(kind: dkAdded, newNode: new[i])]
-      elif i >= new.len: @[DiffChange(kind: dkRemoved, oldNode: old[i])]
-      else: diff(old[i], new[i])
-    if changes.len == 0: continue
-    result = 1
-    if quiet: break
-    if gitDriver and not printedHeading:
-      let heading = "semantic diff " & positional[0]
-      stdout.writeLine(if color: "\e[1m" & heading & "\e[0m" else: heading)
-      printedHeading = true
-    for change in changes:
-      stdout.writeLine(change.diffLine(i, numbered, asJsonPath, color))
+  let color = case colorMode
+    of cmAuto: isatty(stdout)
+    of cmAlways: true
+    of cmNever: false
+  var
+    printedHeading = false
+    numbered = false # either file has more than one document
+    i = 0
+  try:
+    numbered = streams[0].peek().kind == yamlStartDoc or
+        streams[1].peek().kind == yamlStartDoc
+    while not docs[0].isNil or not docs[1].isNil:
+      let changes =
+        if docs[0].isNil: @[DiffChange(kind: dkAdded, newNode: docs[1])]
+        elif docs[1].isNil: @[DiffChange(kind: dkRemoved, oldNode: docs[0])]
+        else: diff(docs[0], docs[1])
+      if changes.len > 0:
+        result = 1
+        if quiet: break
+        if gitDriver and not printedHeading:
+          let heading = "semantic diff " & positional[0]
+          stdout.writeLine(if color: "\e[1m" & heading & "\e[0m" else: heading)
+          printedHeading = true
+        for change in changes:
+          stdout.writeLine(change.diffLine(i, numbered, asJsonPath, color))
+      release()
+      readNext(0)
+      readNext(1)
+      inc i
+  except YamlStreamError, YamlParserError, YamlConstructionError:
+    return max(2, failed(inputs[side].name, getCurrentException()))
   if gitDriver: result = 0
 
 proc configCommand(args: seq[string]): int =

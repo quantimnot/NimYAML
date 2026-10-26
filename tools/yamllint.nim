@@ -103,8 +103,11 @@ proc run*(args: seq[string], mode = lmLint, usage = usage,
         if validate and config.validateSchemas:
           diagnostics.add(validateDocuments(src,
               registryFor(config, configDir), uri))
-      except YamlMemoryLimitError as e:
-        stderr.writeLine(name & ": " & e.describe &
+      except CatchableError as e:
+        # the limit may be exceeded by the parser, inside a stream error
+        let limit = memoryLimitError(e)
+        if limit.isNil: raise
+        stderr.writeLine(name & ": " & limit.describe &
             ". Raise memory.limit or use --memory-limit")
         return 3
       for d in diagnostics:

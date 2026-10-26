@@ -171,3 +171,52 @@ suite "microcontroller build":
     check "=VAL :2" in output
 
 removeDir(parseTmp)
+
+# construction within a budget
+
+import ../yaml/[native, dom]
+import std/tables
+
+proc mappingEvents(entries: int): YamlStream =
+  var text = ""
+  for i in 0 ..< entries: text.add("key" & $i & ": value number " & $i & "\n")
+  initYamlParser().parse(text)
+
+suite "construction within a budget":
+  test "the DOM is charged about what it takes":
+    var s = mappingEvents(10_000)
+    discard s.next() # yamlStartStream
+    let b = newMemoryBudget()
+    let before = getOccupiedMem()
+    var root: YamlNode
+    let charged = construct(s, root, b)
+    let taken = getOccupiedMem() - before
+    check charged == b.used
+    check charged.float >= taken.float * 0.5
+    check charged.float <= taken.float * 1.25
+    check root.fields.len == 10_000
+
+  test "a document larger than the limit fails early":
+    var s = mappingEvents(100_000)
+    discard s.next()
+    let b = newMemoryBudget(1 shl 20)
+    let before = getOccupiedMem()
+    var root: YamlNode
+    try:
+      discard construct(s, root, b)
+      check false
+    except YamlStreamError as e:
+      check not memoryLimitError(e).isNil
+    check getOccupiedMem() - before < 4 shl 20
+
+  test "typed values are charged too":
+    type Item = object
+      key, value: string
+    var text = ""
+    for i in 0 ..< 1000: text.add("- {key: k" & $i & ", value: v" & $i & "}\n")
+    var s = initYamlParser().parse(text)
+    discard s.next()
+    let b = newMemoryBudget()
+    var items: seq[Item]
+    check construct(s, items, b) > 1000 * 64
+    check items.len == 1000

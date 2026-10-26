@@ -89,7 +89,7 @@ proc rangeOf(root: YamlNode, instanceLocation: string,
 proc validated(doc: DocumentSchema, buffer: BufferYamlStream,
     compiled: var Table[string, JsonSchema],
     unavailable: var Table[string, string], registry: SchemaRegistry,
-    options: ValidationOptions): seq[Diagnostic]
+    options: ValidationOptions, budget: MemoryBudget): seq[Diagnostic]
 
 proc validateWith(recovering: YamlRecoveringStream, lines: Stream,
     sourceUri: string, registry: SchemaRegistry, options: ValidationOptions,
@@ -118,7 +118,7 @@ proc validateWith(recovering: YamlRecoveringStream, lines: Stream,
     charged = 0
     if doc.schema.len > 0:
       diagnostics.add(validated(doc, buffer, compiled, unavailable,
-          registry, options))
+          registry, options, budget))
   discard readSchemas(recovering, lines, sourceUri, onEvent,
       proc (line: int, text: string) = discard, onDocument)
   diagnostics
@@ -126,16 +126,26 @@ proc validateWith(recovering: YamlRecoveringStream, lines: Stream,
 proc validated(doc: DocumentSchema, buffer: BufferYamlStream,
     compiled: var Table[string, JsonSchema],
     unavailable: var Table[string, string], registry: SchemaRegistry,
-    options: ValidationOptions): seq[Diagnostic] =
+    options: ValidationOptions, budget: MemoryBudget): seq[Diagnostic] =
   ## The diagnostics of the document ``doc`` whose events are in
-  ## ``buffer``.
+  ## ``buffer``. ``budget`` is charged for its DOM while it is validated.
   let index = doc.index
+  var charged = 0
+  defer: budget.release(charged)
   block:
     let applied = doc.schemas
     var root: YamlNode
     try:
       var docEvents = YamlStream(buffer)
-      construct(docEvents, root)
+      charged = construct(docEvents, root, budget)
+    except YamlStreamError as e:
+      # a document that does not fit is an error of the input, not of it
+      if not memoryLimitError(e).isNil: raise memoryLimitError(e)
+      result.add(Diagnostic(rule: "schema-unavailable",
+          severity: severityWarning, startPos: applied[0].startPos,
+          endPos: applied[0].endPos,
+          message: "cannot validate document " & $(index + 1) & ": " & e.msg))
+      return
     except CatchableError as e:
       result.add(Diagnostic(rule: "schema-unavailable",
           severity: severityWarning, startPos: applied[0].startPos,
