@@ -2,6 +2,23 @@
 
 Features:
 
+ * input of any size within a memory limit: new module `yaml/memory`
+   (`MemoryBudget`, sizes, host memory detection, `YamlMemoryLimitError`)
+   and `yaml/source` (`YamlSource` read in memory, through an mmap window,
+   by seeking or as a stream, spooled when a stream must be read again;
+   callback sources for `--os:any`). The parser, `construct`, `transform`,
+   `lint`, `validateDocuments`, `documentSchemas`, `expandDirectives`,
+   `buildIndex`, `assign`, `parseCbor`, `mergeKeysApplied` and
+   `parseRecovering` charge a budget; most read a `YamlSource` one document
+   at a time. New `queryStream` applies a JSONPath to events, constructing
+   only the selected nodes. The `yaml` command reads every input through
+   sources and writes output as it goes; it takes `--memory-limit`,
+   `--source` and `--verbose`, a `memory` section in `.yaml`, and exits with
+   3 when the limit is exceeded.
+ * `newJsonCommentStripStream` and `newJsonLinesStream` read JSONC and JSON
+   Lines as streams; `parseCbor` of a `Stream` reads it in chunks;
+   `presentCbor` writes each document when it is complete.
+
  * new module `yaml/spans` gives the byte range of every node of a source
    that a Normalized Path names, the spans of keys, the anchored node of
    each alias and a digest of each node's meaning; `yaml/edit` is built on
@@ -201,6 +218,14 @@ Changes:
 
 Bugfixes:
 
+ * `represent` with tidy anchors took time quadratic in the number of
+   nodes (an anchored node looked up whether it was referenced among all
+   references); large DOMs are represented in linear time now.
+ * `writeIndex` represented the whole index at once; an index is written
+   one document at a time now, with the same bytes.
+ * the presenter looked ahead over a whole flow collection to decide
+   whether it fits a line; it stops at the line length (or 64 KiB without
+   one, then writing block style).
  * `==` on `YamlNode` compared nested nodes by identity, so equal graphs
    loaded twice were unequal and collection keys could not be looked up;
    `hash` of a mapping depended on the order of its table, so equal mappings

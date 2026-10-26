@@ -681,6 +681,72 @@ let node = nodeOfSlice(source[entry.start ..< entry.stop], entry)
    (`.NAME.index.cbor`), in the project (`.yaml-index/`) or in the user's
    cache.
 
+## Memory Limits
+
+Input of any size can be processed within a memory limit, from a
+microcontroller to a server. `yaml/memory` has the budget: a
+`MemoryBudget` is charged where memory grows with the input (the parser's
+buffer, buffered events, constructed nodes, held documents), and a
+reservation that would exceed its limit raises `YamlMemoryLimitError`
+before the memory is taken. `yaml/source` reads input by the best means the
+host has:
+
+ * **memory**: the whole input in a string, for input that takes at most a
+   quarter of the limit (and always without a budget, as before);
+ * **mmap**: a window of the file mapped into memory, at most an eighth of
+   the limit, moved as reading goes on;
+ * **seek**: a file read at offsets, with a small cache of pages;
+ * **stream**: a pipe, standard input or a callback, read forward only. A
+   command that needs to read it again gets it spooled to a temporary file.
+
+```nim
+import yaml/[memory, source, parser, stream]
+
+let budget = newMemoryBudget(parseSize("1MiB"))
+let src = openSource("huge.yaml", budget)       # tier chosen by size
+var p = initYamlParser(budget = budget)
+for e in p.parse(src): discard                  # within 1 MiB
+src.close()
+```
+
+The parser keeps a sliding window of the input, so the events of a huge
+file are read within a small budget; `construct` with a budget, `transform`,
+`lint`, `validateDocuments`, `expandDirectives`, `buildIndex`, `assign` and
+`queryStream` of a `YamlSource` keep to it too, one document at a time.
+`queryStream` applies a JSONPath to the events of a document and constructs
+only the nodes it selects, for queries that select in document order
+(`$.items[*].id`, `$[?@.k > 1].name`).
+
+On a microcontroller (`--os:any`), the budget, sources from a callback, the
+lexer and the parser build without files: `openSource(readProc, size,
+budget = budget)` reads input from flash, an SD card or a network.
+
+The `yaml` command takes `--memory-limit:SIZE` and `--source:TIER` on every
+command, or the `memory` section of `.yaml`; `auto`, the default limit, is
+half of the memory of the host (the Linux control group limit, the available
+memory, or the compile-time default `-d:yamlMemoryLimit=BYTES`). A command
+that would exceed the limit fails with exit code 3.
+
+### Caveats
+
+ * **A document must fit where it is constructed.** Commands that take a
+   document as a whole (`canonical`, `merge`, `patch`, `diff`, an
+   assignment, `format` keeping comments, CBOR output) hold one document
+   (two for `diff` and for comments) and fail with the limit on a larger
+   one; converting, formatting without comments, linting, validating a
+   document without a schema, and streaming queries do not.
+ * **A scalar or line must fit.** The parser holds the token it reads.
+ * **Indexes grow with their source.** An index has a record of every
+   document (and an `all` index of every node) and is read back whole, so
+   the index of a huge input does not fit a small limit; queries then parse
+   the file instead.
+ * **Output on stdout may end early.** Output is written as the input is
+   read; when an input turns out to be invalid, what was written stays and
+   the exit code says so. Files written in place are replaced only once
+   they are complete.
+ * **The budget counts what grows with the input**, by estimates checked
+   against the allocator in the tests, not every byte the process takes.
+
 ## JSON Schema
 
 `yaml/jsonschema` validates `YamlNode` graphs against [JSON Schema][11],

@@ -1,8 +1,7 @@
 # Memory-constrained hosts — design
 
 Date: 2026-10-25
-Status: draft, awaiting approval (todo.yml `memory-constrained-host`);
-builder-check questions answered 2026-10-25
+Status: approved and implemented 2026-10-25 (todo.yml `memory-constrained-host`)
 
 ## Intent
 
@@ -184,7 +183,8 @@ Tier selection for a file of size `S` with limit `L`, policy `auto`:
 1. `S <= L div 4` (builder may tune the ratio) → `stInMemory`. This keeps
    the fast path for small files on big hosts.
 2. else, mmap available and allowed → `stMapped`. The mapping is always a
-   sliding window (default 64 MiB, capped by `L div 2`), remapped on access
+   sliding window (default 64 MiB, capped by `L div 8` so that several
+   sources and their parsers fit — implementation finding), remapped on access
    outside it, on 32-bit and 64-bit alike. *(Builder-check call: mapping
    the whole file on 64-bit would leave every touched page resident in
    RSS with no memory pressure, breaking the peak-RSS bound.)* Windows

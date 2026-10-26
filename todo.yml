@@ -49,16 +49,48 @@
   - compliance tests
   - cross-implementation consensus analysis
 
-- id: memory-constrained-host
+- id: streaming-json-schema
   status: todo
+  why:
+  - validate documents larger than the memory limit
   feature:
-  - configurable memory limits
-  - use host APIs like mmap
+  - evaluate keywords on events where possible; hold subtrees only for
+    keywords that need them (uniqueItems, unevaluated*)
+
+- id: chunked-scalar-events
+  status: todo
+  why:
+  - a single scalar larger than the memory limit fails today
+  feature:
+  - opt-in scalar events in chunks for pass-through commands (convert,
+    format without comments)
+
+- id: seekable-index
+  status: todo
+  why:
+  - an index is read back whole, so huge inputs get no index on small hosts
+  info:
+  - yaml/nodeindex documents a considered memory-mapped fixed-record layout
+  feature:
+  - index entries and documents looked up on disk, not loaded
 
 
 # ⬆⬆⬆ TODO ⬆⬆⬆
 # -----------
 # ⬇⬇⬇ DONE ⬇⬇⬇
+
+- id: memory-constrained-host
+  status: done
+  info:
+  - docs/superpowers/specs/2026-10-25-memory-constrained-host-design.md
+  feature:
+  - configurable memory limits  # memory section, --memory-limit, auto
+  - use host APIs like mmap  # yaml/source: memory, mmap window, seek, stream
+  - microcontrollers: budget, callback sources, lexer and parser build with
+    --os:any
+  - every yaml command reads inputs through sources and writes as it goes;
+    exit code 3 when the limit is exceeded
+  - queryStream constructs only the selected nodes
 
 - id: binary-index
   status: done
