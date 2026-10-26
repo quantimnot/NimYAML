@@ -719,6 +719,34 @@ suite "memory cli":
       check same
       if not same: echo args, ": ", limited.output[0 ..< min(300, limited.output.len)]
 
+  test "expand exceeding the limit is exit code 3":
+    let (output, code) = cli("expand", "--memory-limit=100",
+        "--source=memory", "a.yaml")
+    check code == 3
+    check "memory limit exceeded" in output
+
+  test "files after --":
+    writeFile(dir / "dash.yaml", "a: [\n")
+    # as before: the commands take no "--"; it is not taken as the end
+    # of the options with the arguments after it dropped
+    check cli("lint", "--", "dash.yaml").exitCode == 2
+
+  test "in place keeps symlinks and permissions":
+    writeFile(dir / "real.yaml", "a:   1\n")
+    setFilePermissions(dir / "real.yaml", {fpUserRead, fpUserWrite,
+        fpUserExec})
+    createSymlink(dir / "real.yaml", dir / "link.yaml")
+    check cli("format", "-i", "link.yaml") == ("", 0)
+    check symlinkExists(dir / "link.yaml")
+    check readFile(dir / "real.yaml") == "a: 1\n"
+    check getFilePermissions(dir / "real.yaml") ==
+        {fpUserRead, fpUserWrite, fpUserExec}
+    check cli("$.a = 2", "-i", "link.yaml") == ("", 0)
+    check symlinkExists(dir / "link.yaml")
+    check readFile(dir / "real.yaml") == "a: 2\n"
+    check getFilePermissions(dir / "real.yaml") ==
+        {fpUserRead, fpUserWrite, fpUserExec}
+
   test "every tier reads every format":
     let expected = cli("as", "jsonl", "a.yaml", "b.jsonc", "c.jsonl")
     for tier in ["memory", "mmap", "seek", "stream"]:

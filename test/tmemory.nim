@@ -151,6 +151,28 @@ suite "parsing within a budget":
     check eventsOf(p.parse("a: [1, 2]")).len > 0
     check b.peak == 0
 
+suite "budget balance":
+  test "parsing many inputs through one budget leaves nothing reserved":
+    let b = newMemoryBudget(32 * 1024)
+    let small = parseTmp / "small.yaml"
+    writeFile(small, "a: [1, 2]\nb: {c: d}\n")
+    for i in 0 ..< 200:
+      let src = openSource(small, b, SourcePolicy(choice: tcSeek))
+      var p = initYamlParser(budget = b)
+      discard eventsOf(p.parse(src))
+      src.close()
+    check b.used == 0
+
+  test "an abandoned parse releases its buffer":
+    let b = newMemoryBudget(32 * 1024)
+    for i in 0 ..< 200:
+      var p = initYamlParser(budget = b)
+      var s = p.parse(newStringStream("a: [1, 2]\nb: c\n"))
+      discard s.next()
+      discard s.next()
+    GC_fullCollect()
+    check b.used == 0
+
 suite "microcontroller build":
   test "parser compiles with --os:any":
     let dir = currentSourcePath.parentDir

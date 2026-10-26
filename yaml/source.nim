@@ -38,7 +38,7 @@ import std/streams
 import memory
 const hasFiles = defined(posix) or defined(windows)
 when hasFiles:
-  import std/[memfiles, os]
+  import std/[memfiles, os, strutils, times]
   when defined(nimPreviewSlimSystem):
     import std/syncio
   when defined(posix):
@@ -104,6 +104,7 @@ type
     pages: seq[Page]    # cache of a seekable file
     pageLimit, tick: int
     when hasFiles:
+      path: string # of a file read by seeking or mapping
       file: File
       ownsFile: bool
       mem: MemFile
@@ -153,6 +154,16 @@ when hasFiles:
       done += n
     done
 
+  proc checkSize(src: YamlSource, last: int64) {.raises: [IOError].} =
+    ## Raises an ``IOError`` if the file is shorter than ``last`` now:
+    ## mapped pages past its end would crash the process.
+    var size = 0'i64
+    try: size = getFileSize(src.path)
+    except OSError as e: raise newException(IOError, src.name & ": " & e.msg)
+    if size < last:
+      raise newException(IOError, src.name & ": the file shrank while " &
+          "it was read")
+
   proc moveWindow(src: YamlSource, offset: int64) {.raises: [IOError].} =
     ## Maps the window that holds ``offset``.
     let
@@ -174,6 +185,7 @@ when hasFiles:
     src.winOffset = start
 
   proc readMapped(src: YamlSource, offset: int64, dest: var openArray[char]) =
+    src.checkSize(offset + dest.len)
     var done = 0
     while done < dest.len:
       let at = offset + done
@@ -220,6 +232,10 @@ proc readPage(src: YamlSource, index: int64): int {.raises: [IOError].} =
           src.pages[slot].data.toOpenArray(n, pageSize - 1))
       if got <= 0: break
       n += got
+  if n < pageSize and offset + n < src.size:
+    src.pages[slot].index = -1
+    raise newException(IOError, src.name & ": the file shrank while it " &
+        "was read")
   src.pages[slot].data.setLen(n)
   src.pages[slot].data.setLen(pageSize)
   slot
@@ -251,7 +267,12 @@ proc read*(src: YamlSource, offset: int64, dest: var openArray[char]): int
       src.readMapped(offset, dest.toOpenArray(0, n - 1))
       result = n
   of stSeekable:
-    if n >= pageSize: return src.readDirect(offset, dest.toOpenArray(0, n - 1))
+    if n >= pageSize:
+      result = src.readDirect(offset, dest.toOpenArray(0, n - 1))
+      if result < n and src.size >= 0:
+        raise newException(IOError, src.name & ": the file shrank while " &
+            "it was read")
+      return
     var done = 0
     while done < n:
       let
@@ -339,19 +360,18 @@ proc openSource*(read: ReadProc, size = -1'i64, name = "<callback>",
       random: randomAccess, pageLimit: 16 * pageSize)
 
 proc inMemory(src: YamlSource, operation: string) =
-  ## Reads the rest of a sequential source into memory.
-  var content = ""
-  var offset = src.pos
+  ## Reads the rest of a sequential source into memory; the budget is
+  ## charged for what was read.
+  var
+    content = ""
+    chunk = newString(copyChunk)
+    offset = src.pos
   while true:
-    src.charge(copyChunk, operation)
-    let old = content.len
-    content.setLen(old + copyChunk)
-    let n = src.read(offset, content.toOpenArray(old, old + copyChunk - 1))
-    content.setLen(old + n)
-    offset += n
+    let n = src.read(offset, chunk.toOpenArray(0, chunk.high))
     if n == 0: break
-  src.budget.release(src.charged - content.len)
-  src.charged = content.len
+    src.charge(n, operation)
+    content.add(chunk[0 ..< n])
+    offset += n
   src.content = move content
   src.tier = stInMemory
   src.size = src.content.len
@@ -404,20 +424,47 @@ when hasFiles:
       result.mapped = true
       result.initial = result.mem.mem
       result.initialLen = first
+      result.path = path
     of stSeekable, stSequential:
       result.file = syncio.open(path, fmRead)
       result.ownsFile = true
+      result.path = path
       let limit = limitOf(budget)
       result.pageLimit =
         if policy.pageCache > 0: policy.pageCache
         elif limit == int.high: 1 shl 20
         else: max(pageSize, min(limit div 8, 1 shl 20))
 
-  proc spoolName(dir: string): string =
-    var n {.global.} = 0
-    inc n
-    (if dir.len > 0: dir else: getTempDir()) /
-        ("yaml-spool-" & $getCurrentProcessId() & "-" & $n)
+  proc createPrivate*(dir, prefix: string): tuple[path: string, file: File]
+      {.raises: [IOError].} =
+    ## A new file in ``dir`` (the temporary directory for "") that only the
+    ## user can read, with an unpredictable name; never one that exists.
+    let base = if dir.len > 0: dir else: getTempDir()
+    var state {.global.} = 0'u64
+    for attempt in 0 ..< 100:
+      state = state * 6364136223846793005'u64 + 1442695040888963407'u64 +
+          uint64(getCurrentProcessId()) + uint64(getTime().toUnix) * 1_000_000_007'u64 +
+          uint64(getTime().nanosecond)
+      let path = base / (prefix & $getCurrentProcessId() & "-" &
+          toHex(state shr 16))
+      when defined(posix):
+        let fd = posix.open(path.cstring, O_WRONLY or O_CREAT or O_EXCL,
+            Mode(0o600))
+        if fd < 0:
+          if errno == EEXIST: continue
+          raise newException(IOError, path & ": cannot create")
+        var f: File
+        if not syncio.open(f, FileHandle(fd), fmWrite):
+          discard posix.close(fd)
+          raise newException(IOError, path & ": cannot open")
+        return (path, f)
+      else:
+        if fileExists(path): continue
+        var f: File
+        if not syncio.open(f, path, fmWrite):
+          raise newException(IOError, path & ": cannot create")
+        return (path, f)
+    raise newException(IOError, base & ": cannot create a temporary file")
 
   proc openSource*(path: string, budget: MemoryBudget = nil,
       policy = SourcePolicy(), randomAccess = false): YamlSource
@@ -432,23 +479,31 @@ when hasFiles:
       src.inMemory(operation & (if policy.spool == swOff:
           " and memory.spool is off" else: ""))
       return src
-    let path = spoolName(policy.spoolDir)
-    var f: File
-    if not syncio.open(f, path, fmWrite):
-      src.inMemory(operation & " and cannot be spooled to " & path)
+    var
+      path: string
+      f: File
+    try: (path, f) = createPrivate(policy.spoolDir, "yaml-spool-")
+    except IOError:
+      src.inMemory(operation & " and cannot be spooled")
       return src
     try:
-      var buf = newString(copyChunk)
-      while true:
-        let n = src.read(src.pos, buf.toOpenArray(0, buf.high))
-        if n == 0: break
-        if f.writeBuffer(addr buf[0], n) != n:
-          raise newException(IOError, path & ": cannot spool " & src.name)
-    finally:
-      f.close()
-    var inner = policy
-    inner.choice = tcAuto
-    result = openSource(path, src.budget, inner)
+      try:
+        var buf = newString(copyChunk)
+        while true:
+          let n = src.read(src.pos, buf.toOpenArray(0, buf.high))
+          if n == 0: break
+          if f.writeBuffer(addr buf[0], n) != n:
+            raise newException(IOError, src.name & ": cannot spool it")
+      finally:
+        f.close()
+      var inner = policy
+      inner.choice = tcAuto
+      result = openSource(path, src.budget, inner)
+    except CatchableError as e:
+      # the spooled source never was: nothing else removes its file
+      try: removeFile(path)
+      except OSError: discard
+      raise e
     result.name = src.name
     result.spoolPath = path
     src.closeFiles()
@@ -462,12 +517,26 @@ when hasFiles:
     ## any other: forced memory for a file that does not fit raises
     ## `YamlMemoryLimitError`. With ``randomAccess``, a forced stream is
     ## spooled like a pipe (see `openSource` of a ``File``).
+    when defined(posix):
+      # a named pipe, a device or process substitution has no size and
+      # no offsets: it is a stream
+      var st: Stat
+      if stat(path.cstring, st) == 0 and not S_ISREG(st.st_mode):
+        let f = syncio.open(path, fmRead)
+        result = YamlSource(tier: stSequential, size: -1, name: path,
+            budget: budget, file: f, ownsFile: true)
+        if policy.choice == tcMemory:
+          result.inMemory("reading " & path & " into memory")
+        elif randomAccess:
+          result = result.spooled(policy)
+        return
     let size = getFileSize(path)
     let limit = limitOf(budget)
     var tier = case policy.choice
       of tcAuto:
         if size <= limit div 4: stInMemory
-        elif policy.mmap != swOff: stMapped
+        elif policy.mmap != swOff and (limit == int.high or
+            windowSize(policy, budget) <= limit div 8): stMapped
         else: stSeekable
       of tcMemory: stInMemory
       of tcMmap: (if policy.mmap == swOff: stSeekable else: stMapped)

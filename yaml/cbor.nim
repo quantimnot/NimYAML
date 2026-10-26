@@ -212,18 +212,18 @@ proc fill(c: CborYamlStream, n: int): bool =
   if consumed > 0:
     c.input.delete(0 ..< consumed)
     c.base = c.pos
-  let want = max(n - c.input.len, cborChunk)
-  if c.input.len + want > c.charged:
-    c.budget.reserve(c.input.len + want - c.charged, "reading CBOR input")
-    c.charged = c.input.len + want
-  let old = c.input.len
-  c.input.setLen(old + want)
-  var got = 0
-  while got < want:
-    let r = c.stream.readDataStr(c.input, old + got ..< old + want)
-    if r <= 0: break
-    got += r
-  c.input.setLen(old + got)
+  # read in chunks: a declared length is not trusted before the bytes are
+  # there
+  while c.input.len < n:
+    let want = cborChunk
+    if c.input.len + want > c.charged:
+      c.budget.reserve(c.input.len + want - c.charged, "reading CBOR input")
+      c.charged = c.input.len + want
+    let old = c.input.len
+    c.input.setLen(old + want)
+    let r = max(0, c.stream.readDataStr(c.input, old ..< old + want))
+    c.input.setLen(old + r)
+    if r == 0: break
   if c.charged > c.input.len + cborChunk:
     c.budget.release(c.charged - c.input.len - cborChunk)
     c.charged = c.input.len + cborChunk

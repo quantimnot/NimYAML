@@ -410,8 +410,6 @@ proc readText(file: string, randomAccess = false): Input =
 
 proc takeMemoryOptions(args: seq[string]): seq[string] =
   ## ``args`` without the options every command takes, which are applied.
-  for arg in args:
-    if arg == "--": return
   for i, arg in args:
     if arg == "--":
       return result & args[i .. ^1]
@@ -744,9 +742,13 @@ proc failedInput(name: string, e: ref Exception): int =
 
 proc commitFiles(temps: seq[tuple[temp, file: string]]) =
   ## Replaces each file by its temporary file, and builds its index if
-  ## files there are indexed.
+  ## files there are indexed. A symbolic link stays: the file it leads to
+  ## is replaced, keeping its permissions.
   for (temp, file) in temps:
-    moveFile(temp, file)
+    let target = if symlinkExists(file): expandFilename(file) else: file
+    if fileExists(target):
+      setFilePermissions(temp, getFilePermissions(target))
+    moveFile(temp, target)
     let format = formatOf(file)
     let settings = indexSettingsFor(file)
     if format.indexable:
@@ -948,7 +950,10 @@ proc formatCommand(args: seq[string]): int =
         if output.isNil: raise newException(IOError, temp & ": cannot write")
         try: dumper.transform(src, output)
         finally: output.close()
-        if sameContent(temp, src): removeFile(temp)
+        let same = sameContent(temp, src)
+        # an open file cannot be replaced everywhere
+        src.close()
+        if same: removeFile(temp)
         else: commitFiles(@[(temp, file)])
       else:
         let output = newFileStream(stdout)
@@ -1190,6 +1195,8 @@ proc queryCommand(args: seq[string]): int =
           try: count = assignTo(src, format, path, valueText,
               styleOf(src.name), output)
           finally: output.close()
+          # an open file cannot be replaced everywhere
+          src.close()
           if count > 0: commitFiles(@[(temp, name)])
           else: removeFile(temp)
         else:
@@ -1209,11 +1216,9 @@ proc queryCommand(args: seq[string]): int =
   # several inputs, or another format: the edited documents are written as
   # by convert, each input edited into a temporary file that is then read
   proc edited(src: YamlSource, format: DataFormat): YamlStream =
-    let temp = getTempDir() / ("yaml-edited-" & $getCurrentProcessId() &
-        "-" & $temporaries.len)
+    let (temp, file) = createPrivate("", "yaml-edited-")
     temporaries.add(temp)
-    let output = newFileStream(temp, fmWrite)
-    if output.isNil: raise newException(IOError, temp & ": cannot write")
+    let output = newFileStream(file)
     try: discard assignTo(src, format, path, valueText, styleOf(src.name),
         output)
     finally: output.close()

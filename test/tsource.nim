@@ -6,6 +6,11 @@
 
 import ../yaml/[memory, source]
 import std/[os, osproc, streams, strutils, unittest]
+when defined(posix):
+  import std/posix
+proc setFileSize(path: string, size: int) =
+  when defined(posix):
+    discard truncate(path.cstring, Off(size))
 when defined(nimPreviewSlimSystem):
   import std/syncio
 
@@ -205,5 +210,66 @@ suite "string source":
     check newSourceStream(src, 3).readAll() == "1\n"
     src.close()
     check b.used == 0
+
+suite "review findings":
+  test "a named pipe is read as a stream":
+    when defined(posix):
+      let fifo = tmp / "fifo"
+      discard execShellCmd("mkfifo " & quoteShell(fifo))
+      let writer = startProcess("/bin/sh", args = ["-c",
+          "sleep 0.2; printf 'a: [1]\\n' > " & quoteShell(fifo)], options = {})
+      let src = openSource(fifo, newMemoryBudget(1 shl 20))
+      check src.tier == stSequential
+      check newSourceStream(src).readAll() == "a: [1]\n"
+      src.close()
+      discard writer.waitForExit()
+      writer.close()
+
+  test "auto reads by seeking when an mmap window does not fit":
+    # the window has a floor of two pages, more than an eighth of 64 KiB
+    let src = openSource(path, newMemoryBudget(64 * 1024))
+    check src.tier == stSeekable
+    check newSourceStream(src).readAll() == content
+    src.close()
+
+  test "a file that shrinks while it is read":
+    for choice in [tcMmap, tcSeek]:
+      let shrinking = tmp / "shrinking.yaml"
+      writeFile(shrinking, content)
+      let src = openSource(shrinking, newMemoryBudget(1 shl 20),
+          SourcePolicy(choice: choice, mapWindow: 4096, pageCache: 8192))
+      let f = open(shrinking, fmReadWrite)
+      f.setFilePos(0)
+      setFileSize(shrinking, 1000)
+      f.close()
+      expect IOError: discard newSourceStream(src).readAll()
+      src.close()
+
+  test "a small pipe fits a small limit without spooling":
+    let small = tmp / "five.yaml"
+    writeFile(small, "a: 1\n")
+    let (p, f) = pipeFrom(small)
+    let src = openSource(f, "<pipe>", newMemoryBudget(32 * 1024),
+        SourcePolicy(spool: swOff), randomAccess = true)
+    check src.readAll("test") == "a: 1\n"
+    src.close()
+    p.close()
+
+  test "spool files are private and removed":
+    when defined(posix):
+      let (p, f) = pipeFrom(path)
+      let spoolDir = tmp / "spool"
+      createDir(spoolDir)
+      let src = openSource(f, "<pipe>", newMemoryBudget(256 * 1024),
+          SourcePolicy(spoolDir: spoolDir), randomAccess = true)
+      var spools: seq[string]
+      for file in walkDir(spoolDir): spools.add(file.path)
+      check spools.len == 1
+      check getFilePermissions(spools[0]) == {fpUserRead, fpUserWrite}
+      src.close()
+      p.close()
+      spools.setLen(0)
+      for file in walkDir(spoolDir): spools.add(file.path)
+      check spools.len == 0
 
 removeDir(tmp)

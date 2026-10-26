@@ -75,11 +75,21 @@ proc run*(args: seq[string], input: File, output: File,
     stderr.writeLine(getCurrentExceptionMsg())
     return 2
   except YamlParserError as e:
+    let limit = memoryLimitError(e)
+    if not limit.isNil:
+      stderr.writeLine(src.name & ": " & limit.describe &
+          ". Raise memory.limit or use --memory-limit")
+      return 3
     let name = if files.len == 1: files[0] else: "<stdin>"
     stderr.writeLine(name & ":" & $e.mark.line & ":" & $e.mark.column & ": " &
         e.msg)
     return 1
   except YamlStreamError as e:
+    let limit = memoryLimitError(e)
+    if not limit.isNil:
+      stderr.writeLine(src.name & ": " & limit.describe &
+          ". Raise memory.limit or use --memory-limit")
+      return 3
     stderr.writeLine(e.msg)
     return 1
 

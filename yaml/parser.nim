@@ -1037,6 +1037,7 @@ proc atStreamStart(ctx: Context, e: var Event): bool =
 proc atStreamEnd(ctx: Context, e : var Event): bool =
   e = Event(startPos: ctx.lex.curStartPos,
             endPos: ctx.lex.curStartPos, kind: yamlEndStream)
+  ctx.lex.releaseBuffer()
   return true
 
 # Directives

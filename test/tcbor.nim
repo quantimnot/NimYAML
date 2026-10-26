@@ -119,6 +119,18 @@ suite "CBOR streaming":
     check budget.peak < 256 * 1024
     check budget.used == 0
 
+  test "A declared length is not trusted before the bytes are there":
+    # a byte string of 64 GiB, in 11 bytes
+    let data = parseHexStr("5B0000001000000000414243")
+    let before = max(getMaxMem(), getOccupiedMem())
+    try:
+      for e in parseCbor(newStringStream(data)): discard
+      check false
+    except YamlStreamError as e:
+      check e.parent of YamlCborError
+      check "unexpected end" in e.parent.msg
+    check getMaxMem() - before < 1 shl 20
+
   test "A string larger than the budget":
     let data = yamlToCbor("\"" & repeat('x', 100_000) & "\"")
     try:

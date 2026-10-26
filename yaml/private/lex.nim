@@ -42,6 +42,12 @@ type
     atLineStart, prevSpace: bool
     col: int
 
+  BufferCharge = object
+    ## What the budget is charged for the buffer; released when the buffer
+    ## is (with destructors) or when the input has been read.
+    budget: MemoryBudget
+    amount: int
+
   SourceBuffer = ref object
     ## Input characters. Data is only ever appended to the buffer, except by
     ## ``compact`` which drops consumed input between parser events.
@@ -65,7 +71,7 @@ type
     gateDisabled: bool
     # memory budget of the buffer, and the buffer length it is charged for
     budget: MemoryBudget
-    charged: int
+    charge: BufferCharge
     # bytes read from ``stream`` at a time
     chunk: int
 
@@ -169,13 +175,26 @@ const
 
 # source buffer
 
+proc `=destroy`(c: BufferCharge) =
+  if not c.budget.isNil and c.amount > 0: c.budget.release(c.amount)
+  `=destroy`(c.budget)
+
+proc `=copy`(dest: var BufferCharge, src: BufferCharge) {.error.}
+
+proc release(b: SourceBuffer, length: int) {.raises: [].} =
+  ## Releases the charge for the buffer beyond ``length``.
+  if b.charge.amount > length:
+    b.budget.release(b.charge.amount - length)
+    b.charge.amount = length
+
 proc charge(b: SourceBuffer, length: int): bool {.raises: [].} =
   ## Charges the budget for a buffer of ``length``. On failure, the limit
   ## error becomes the buffer's stream error and the input ends here.
-  if b.budget.isNil or length <= b.charged: return true
+  if b.budget.isNil or length <= b.charge.amount: return true
   try:
-    b.budget.reserve(length - b.charged, "buffering a line or token")
-    b.charged = length
+    b.budget.reserve(length - b.charge.amount, "buffering a line or token")
+    b.charge.budget = b.budget
+    b.charge.amount = length
     result = true
   except YamlMemoryLimitError as e:
     if b.error.isNil: b.error = e
@@ -1079,9 +1098,10 @@ proc feed*(lex: var Lexer, data: openArray[char]) {.raises: [ValueError].} =
     raise newException(ValueError, "cannot feed input after finish")
   let b = lex.source.buf
   let oldLen = b.data.len
-  if not b.budget.isNil and oldLen + data.len > b.charged:
-    b.budget.reserve(oldLen + data.len - b.charged, "buffering fed input")
-    b.charged = oldLen + data.len
+  if not b.budget.isNil and oldLen + data.len > b.charge.amount:
+    b.budget.reserve(oldLen + data.len - b.charge.amount, "buffering fed input")
+    b.charge.budget = b.budget
+    b.charge.amount = oldLen + data.len
   lex.source.buf.data.setLen(oldLen + data.len)
   if data.len > 0:
     copyMem(addr lex.source.buf.data[oldLen], unsafeAddr data[0], data.len)
@@ -1119,9 +1139,7 @@ proc compactBuffer(lex: var Lexer) {.noinline, raises: [].} =
   let rest = b.data.len - keep
   if rest > 0: moveMem(addr b.data[0], addr b.data[keep], rest)
   b.data.setLen(rest)
-  if b.charged > rest:
-    b.budget.release(b.charged - rest)
-    b.charged = rest
+  b.release(rest)
   b.base += keep
   lex.source.bufpos -= keep
   lex.source.lineStart -= keep
@@ -1138,6 +1156,11 @@ proc compact*(lex: var Lexer, allowFeed = false) {.inline, raises: [].} =
   if lex.source.bufpos >= lex.source.compactAt and
       (allowFeed or lex.source.buf.final or not lex.source.buf.stream.isNil):
     lex.compactBuffer()
+
+proc releaseBuffer*(lex: var Lexer) {.raises: [].} =
+  ## Gives the budget back what it was charged for the buffer, once the
+  ## input has been read to its end.
+  lex.source.buf.release(0)
 
 proc bufferedLen*(lex: Lexer): int {.raises: [].} =
   ## Number of input characters currently held in the buffer.
