@@ -62,8 +62,8 @@
 ## Results are the nodes of the graph themselves, not copies, so they keep
 ## their tags, styles and positions.
 
-import std/[strutils, unicode, sets]
-import dom, private/[jsonmodel, iregexp]
+import std/[strutils, unicode, sets, tables]
+import dom, data, stream, native, memory, private/[jsonmodel, iregexp]
 
 when defined(nimPreviewSlimSystem):
   import std/assertions
@@ -996,6 +996,218 @@ proc queryLocated*(root: YamlNode, path: JsonPath): seq[LocatedNode]
   ## (except that mapping members come in no particular order).
   let ctx = Context(root: root, withPaths: true)
   result = ctx.evaluate(path.query, LocatedNode(path: "$", node: root))
+
+# ============================================================================
+# Streaming
+#
+# A query whose segments each have one selector that picks children in
+# document order (a name, the wildcard, a non-negative index, a forward
+# slice without negative bounds, or a filter that does not look at the
+# root) selects nodes in the order of the events. Such a query is applied to
+# the events of a document as they are read: a node is constructed only if
+# it is selected, if a filter tests it, or if it has an anchor (an alias may
+# need it later); everything else is skipped.
+# ============================================================================
+
+proc usesRoot(e: Expression): bool =
+  ## Whether ``e`` holds a query that starts at the root ``$``.
+  if e.isNil: return false
+  case e.kind
+  of ekOr, ekAnd:
+    for o in e.operands:
+      if o.usesRoot: return true
+  of ekNot: return e.operand.usesRoot
+  of ekComparison: return e.left.usesRoot or e.right.usesRoot
+  of ekQuery:
+    if not e.query.relative: return true
+    for segment in e.query.segments:
+      for s in segment.selectors:
+        if s.kind == skFilter and s.filter.usesRoot: return true
+  of ekFunction:
+    for a in e.arguments:
+      if a.usesRoot: return true
+  of ekLiteral: discard
+  false
+
+proc streamable*(path: JsonPath): bool {.raises: [].} =
+  ## Whether `queryStream` takes ``path``: each of its segments selects
+  ## children in document order with a single selector, and no filter looks
+  ## at the root.
+  for segment in path.query.segments:
+    if segment.descendant or segment.selectors.len != 1: return false
+    let s = segment.selectors[0]
+    case s.kind
+    of skName, skWildcard: discard
+    of skIndex:
+      if s.index < 0: return false
+    of skSlice:
+      if s.step <= 0 or (s.hasStart and s.start < 0) or
+          (s.hasStop and s.stop < 0): return false
+    of skFilter:
+      if s.filter.usesRoot: return false
+  true
+
+type StreamFrame = object
+  isMap: bool
+  state: int    # the segment the children are selected by; -1: none
+  path: string
+  count: int    # the children seen
+
+proc picks(s: Selector, name: string, named: bool, index: int): bool =
+  ## Whether ``s`` (not a filter) selects the child ``name`` of a mapping
+  ## (``index < 0``) or the item ``index`` of a sequence.
+  case s.kind
+  of skName: index < 0 and named and name == s.name
+  of skWildcard: index >= 0 or named
+  of skIndex: index >= 0 and int64(index) == s.index
+  of skSlice:
+    let start = if s.hasStart: s.start else: 0'i64
+    index >= 0 and int64(index) >= start and
+        (not s.hasStop or int64(index) < s.stop) and
+        (int64(index) - start) mod s.step == 0
+  of skFilter: false
+
+proc rest(segments: seq[Segment], state: int): Query =
+  ## The query of ``segments`` from ``state`` on.
+  Query(relative: false, segments: segments[state .. ^1])
+
+proc anchorOf(e: Event): Anchor =
+  case e.kind
+  of yamlScalar: e.scalarProperties.anchor
+  of yamlStartMap: e.mapProperties.anchor
+  of yamlStartSeq: e.seqProperties.anchor
+  else: yAnchorNone
+
+proc skipNode(s: YamlStream) {.raises: [YamlStreamError].} =
+  ## Reads the events of the next node.
+  var depth = 0
+  while true:
+    let e = s.next()
+    case e.kind
+    of yamlStartMap, yamlStartSeq: inc(depth)
+    of yamlEndMap, yamlEndSeq: dec(depth)
+    else: discard
+    if depth == 0: return
+
+proc holdsAnchors(s: YamlStream): bool {.raises: [YamlStreamError].} =
+  ## Whether the next node has an anchor; only its first event is looked
+  ## at, so anchors deeper inside are found when it is walked.
+  s.peek().anchorOf != yAnchorNone
+
+iterator queryStream*(s: YamlStream, path: JsonPath,
+    budget: MemoryBudget = nil): LocatedNode
+    {.raises: [YamlStreamError, YamlConstructionError].} =
+  ## The nodes ``path``, which must be `streamable`, selects in the document
+  ## whose root node starts with the next event of ``s``; reads up to the
+  ## last event of the root node. Mapping members come in document order.
+  ## ``budget`` is charged for the nodes constructed: a selected node until
+  ## the iterator goes on, a node with an anchor until the document ends.
+  let segments = path.query.segments
+  var
+    cctx = initConstructionContext(chargingStream(s, budget))
+    released = 0
+    # the nodes with anchors: the construction context refers to them by
+    # pointer only, so they are kept alive here
+    anchored: seq[YamlNode]
+    stack: seq[StreamFrame]
+    state = 0
+    nodePath = "$"
+  let ctx = Context(root: nil, withPaths: true)
+  template construct(node: var YamlNode): int =
+    ## constructs the next node; the bytes it took, 0 if it registered
+    ## anchors (an alias may need it)
+    let anchors = cctx.refs.len
+    let before = cctx.input.chargedBytes
+    try: cctx.constructChild(node)
+    except YamlStreamError as e: raise e
+    except YamlConstructionError as e: raise e
+    except CatchableError as e:
+      raise (ref YamlStreamError)(msg: e.msg, parent: e)
+    if cctx.refs.len != anchors:
+      anchored.add(node)
+      0
+    else: cctx.input.chargedBytes - before
+  try:
+    while true:
+      # the node at the current position, selected by ``state``
+      let e = s.peek()
+      if e.kind == yamlAlias:
+        discard s.next()
+        if state >= 0:
+          let target = cctx.refs.getOrDefault(e.aliasTarget).p
+          if not target.isNil:
+            for found in ctx.evaluate(segments.rest(state),
+                LocatedNode(path: nodePath, node: cast[YamlNode](target))):
+              yield found
+      elif state == segments.len or s.holdsAnchors:
+        var node: YamlNode
+        let size = construct(node)
+        if state >= 0:
+          for found in ctx.evaluate(segments.rest(state),
+              LocatedNode(path: nodePath, node: node)):
+            yield found
+        budget.release(size)
+        released += size
+      elif state < 0 or e.kind == yamlScalar: s.skipNode()
+      else:
+        discard s.next()
+        stack.add(StreamFrame(isMap: e.kind == yamlStartMap, state: state,
+            path: nodePath))
+      # the next child, or the end of the collections around it
+      var found = false
+      while stack.len > 0 and not found:
+        let next = s.peek()
+        if next.kind in {yamlEndMap, yamlEndSeq}:
+          discard s.next()
+          discard stack.pop()
+          continue
+        let frame = stack[^1]
+        var
+          name = ""
+          named = false
+          index = -1
+        if frame.isMap:
+          # the key, constructed if it has an anchor
+          if next.kind == yamlScalar and next.anchorOf == yAnchorNone:
+            named = YamlNode(kind: yScalar, tag: next.scalarProperties.tag,
+                content: next.scalarContent).isStringKey
+            name = next.scalarContent
+            discard s.next()
+          elif next.anchorOf != yAnchorNone:
+            var key: YamlNode
+            discard construct(key)
+            named = key.kind == yScalar and key.isStringKey
+            name = key.content
+          else: s.skipNode()
+          nodePath = frame.path
+          nodePath.addNameSegment(name)
+        else:
+          index = frame.count
+          nodePath = frame.path & "[" & $index & "]"
+        inc(stack[^1].count)
+        if frame.state < 0 or (frame.isMap and not named):
+          state = -1
+          found = true
+          continue
+        let selector = segments[frame.state].selectors[0]
+        if selector.kind == skFilter:
+          # the child is tested as a graph, and queried further if it passes
+          var child: YamlNode
+          let size = construct(child)
+          if ctx.test(selector.filter, child):
+            for f in ctx.evaluate(segments.rest(frame.state + 1),
+                LocatedNode(path: nodePath, node: child)):
+              yield f
+          budget.release(size)
+          released += size
+          continue
+        state =
+          if selector.picks(name, named, index): frame.state + 1 else: -1
+        found = true
+      if stack.len == 0 and not found: break
+  finally:
+    # nodes with anchors, held for aliases, are released with the document
+    budget.release(cctx.input.chargedBytes - released)
 
 proc queryLocated*(root: YamlNode, path: string): seq[LocatedNode]
     {.raises: [YamlJsonPathError].} =

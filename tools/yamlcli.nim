@@ -1093,11 +1093,19 @@ iterator selected(src: YamlSource, format: DataFormat, path: JsonPath,
   else:
     var s = events(src, format)
     discard s.next() # yamlStartStream
+    let streaming = path.streamable
     while s.peek().kind == yamlStartDoc:
-      var root: YamlNode
-      let charged = construct(s, root, src.budget)
-      for found in root.queryLocated(path): yield (found.path, found.node)
-      src.budget.release(charged)
+      if streaming:
+        # only the selected nodes are constructed
+        discard s.next() # yamlStartDoc
+        for found in queryStream(s, path, src.budget):
+          yield (found.path, found.node)
+        discard s.next() # yamlEndDoc
+      else:
+        var root: YamlNode
+        let charged = construct(s, root, src.budget)
+        for found in root.queryLocated(path): yield (found.path, found.node)
+        src.budget.release(charged)
     updateIndex(src.name, [location], settings, json = format != dfYaml,
         budget = src.budget)
 

@@ -8,5 +8,5 @@
 import tlex, tjson, tnative, tparser, tfeed, tcheckpoint, tdocuments, tinternal, tquickstart, tannotations, thints, tpresenter, tlint, tlsp, tyamllint, tschemainternals, tdirectives, tportable, tcbor, tcomments, tmemory, tsource
 
 when not defined(gcArc) or defined(gcOrc):
-  import tdom, tfragment, tjsonpath, tjsonschema, thyperschema, turitemplate,
+  import tdom, tfragment, tjsonpath, tjsonpathstream, tjsonschema, thyperschema, turitemplate,
       tdocumentschema, tedit, tdiff, tschemacache, tnodeindex

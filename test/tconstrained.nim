@@ -134,7 +134,8 @@ suite "many documents":
 
 suite "one huge document":
   for args in [@["convert", "json"], @["convert", "yaml"],
-      @["format", "--drop-comments"]]:
+      @["format", "--drop-comments"], @["query", "$.items[*].k"],
+      @["query", "--paths", "$.items[?@.k > 5].name"]]:
     test args.join(" "):
       expectNothing within(args, huge)
 
