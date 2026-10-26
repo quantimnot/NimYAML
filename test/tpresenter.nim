@@ -27,6 +27,29 @@ proc assertOutput(
   var output = present(input, options)
   assertStringEqual expected, output
 
+proc flatFlowSeq(count: int): BufferYamlStream =
+  result = newBufferYamlStream()
+  result.put(startStreamEvent())
+  result.put(startDocEvent())
+  result.put(startSeqEvent())
+  for i in 0 ..< count: result.put(scalarEvent("item" & $i))
+  result.put(endSeqEvent())
+  result.put(endDocEvent())
+  result.put(endStreamEvent())
+
+suite "Presenter lookahead":
+  test "A long flow sequence is written in block style":
+    var options = minimalOptions
+    options.maxLineLength = some(80)
+    let output = present(flatFlowSeq(100_000), options)
+    check output.startsWith("- item0\n- item1\n")
+
+  test "Without a line length limit, lookahead stops at 64 KiB":
+    var options = minimalOptions
+    options.maxLineLength = none(int)
+    check present(flatFlowSeq(100), options).startsWith("[item0, item1")
+    check present(flatFlowSeq(20_000), options).startsWith("- item0\n")
+
 suite "Presenter":
   test "Scalar with tag":
     var input = inputSingle(scalarEvent("droggeljug", yTagString))

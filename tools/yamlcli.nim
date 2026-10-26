@@ -365,6 +365,7 @@ var
   memoryOverride: tuple[limit: Option[int], source: Option[TierChoice]]
   verbose = false
   runBudget: MemoryBudget
+  opened: seq[YamlSource] # closed when the run ends
 
 proc configFile(file: string): string =
   ## The path a config is looked up for: the file, or for standard input a
@@ -390,6 +391,7 @@ proc openInput(file: string, randomAccess = false): YamlSource =
     if file.len == 0 or file == "-":
       openSource(stdin, "<stdin>", budget, policy, randomAccess)
     else: openSource(file, budget, policy, randomAccess)
+  opened.add(result)
   if verbose:
     stderr.writeLine(result.name & ": tier " & $result.tier & ", limit " &
         formatSize(budget.limit))
@@ -542,83 +544,272 @@ proc newStream(): BufferYamlStream =
   result.put(startStreamEvent())
 
 # outputs
+#
+# Output is written as the events are pulled from the inputs, so that a
+# command holds at most what one document needs. Output on stdout may thus
+# end early when a later input fails (the exit code says so); files written
+# in place are written to a temporary file first, and replaced only once
+# every file has been written.
 
-proc normalize(events: BufferYamlStream, resolveTags: bool) =
-  ## Drops the styles of the input, so that the output's options decide
-  ## them. With ``resolveTags``, non-specific tags are resolved by the core
-  ## schema, so that JSON gets numbers, booleans and nulls.
-  for e in events.mitems:
-    case e.kind
-    of yamlStartDoc: e.explicitDirectivesEnd = false
-    of yamlEndDoc: e.explicitDocumentEnd = false
-    of yamlStartMap:
-      e.mapStyle = csAny
-      if resolveTags and e.mapProperties.tag in
-          [yTagQuestionMark, yTagExclamationMark]:
-        e.mapProperties.tag = yTagMapping
-    of yamlStartSeq:
-      e.seqStyle = csAny
-      if resolveTags and e.seqProperties.tag in
-          [yTagQuestionMark, yTagExclamationMark]:
-        e.seqProperties.tag = yTagSequence
-    of yamlScalar:
-      # A quoted scalar that would read as another type when plain keeps
-      # quotes, or "80" would come out as the number 80.
-      e.scalarStyle =
-        if e.scalarProperties.tag == yTagExclamationMark and
-            guessType(e.scalarContent) != yTypeUnknown: ssDoubleQuoted
-        else: ssAny
-      if resolveTags:
-        if e.scalarProperties.tag == yTagQuestionMark:
-          e.scalarProperties.tag = case guessType(e.scalarContent)
-            of yTypeInteger: yTagInteger
-            of yTypeFloat, yTypeFloatInf, yTypeFloatNaN: yTagFloat
-            of yTypeBoolTrue, yTypeBoolFalse: yTagBoolean
-            of yTypeNull: yTagNull
-            of yTypeTimestamp: yTagTimestamp
-            of yTypeUnknown: yTagString
-        elif e.scalarProperties.tag == yTagExclamationMark:
-          e.scalarProperties.tag = yTagString
-    else: discard
+proc normalize(e: var Event, resolveTags: bool) =
+  ## Drops the style of the input, so that the output's options decide it.
+  ## With ``resolveTags``, a non-specific tag is resolved by the core schema,
+  ## so that JSON gets numbers, booleans and nulls.
+  case e.kind
+  of yamlStartDoc: e.explicitDirectivesEnd = false
+  of yamlEndDoc: e.explicitDocumentEnd = false
+  of yamlStartMap:
+    e.mapStyle = csAny
+    if resolveTags and e.mapProperties.tag in
+        [yTagQuestionMark, yTagExclamationMark]:
+      e.mapProperties.tag = yTagMapping
+  of yamlStartSeq:
+    e.seqStyle = csAny
+    if resolveTags and e.seqProperties.tag in
+        [yTagQuestionMark, yTagExclamationMark]:
+      e.seqProperties.tag = yTagSequence
+  of yamlScalar:
+    # A quoted scalar that would read as another type when plain keeps
+    # quotes, or "80" would come out as the number 80.
+    e.scalarStyle =
+      if e.scalarProperties.tag == yTagExclamationMark and
+          guessType(e.scalarContent) != yTypeUnknown: ssDoubleQuoted
+      else: ssAny
+    if resolveTags:
+      if e.scalarProperties.tag == yTagQuestionMark:
+        e.scalarProperties.tag = case guessType(e.scalarContent)
+          of yTypeInteger: yTagInteger
+          of yTypeFloat, yTypeFloatInf, yTypeFloatNaN: yTagFloat
+          of yTypeBoolTrue, yTypeBoolFalse: yTagBoolean
+          of yTypeNull: yTagNull
+          of yTypeTimestamp: yTagTimestamp
+          of yTypeUnknown: yTagString
+      elif e.scalarProperties.tag == yTagExclamationMark:
+        e.scalarProperties.tag = yTagString
+  else: discard
 
-proc renderEach(output: var string, events: BufferYamlStream,
-    options: PresentationOptions) =
-  ## Renders each document of ``events`` as a stream of its own, ending
-  ## with a line break.
-  var doc: BufferYamlStream
-  for e in events:
-    case e.kind
-    of yamlStartDoc:
-      doc = newStream()
-      doc.put(e)
-    of yamlEndDoc:
-      doc.put(e)
-      doc.put(endStreamEvent())
-      output.add(present(doc, options).strip(leading = false) & "\n")
-    of yamlStartStream, yamlEndStream: discard
-    else: doc.put(e)
+type DocumentBuffer = ref object of StreamObj
+  ## Holds the output of the document being written, so that an error in
+  ## the input does not leave a partial document on ``target``; a document
+  ## whose output exceeds ``documentBufferSize`` is written out as it goes.
+  target: Stream
+  data: string
+
+const documentBufferSize = 65536
+
+proc commit(b: DocumentBuffer) =
+  ## Writes the output held.
+  if b.data.len > 0:
+    b.target.write(b.data)
+    b.data.setLen(0)
+
+proc documentBufferWrite(s: Stream, buffer: pointer, bufLen: int) =
+  let b = DocumentBuffer(s)
+  let old = b.data.len
+  b.data.setLen(old + bufLen)
+  if bufLen > 0: copyMem(addr b.data[old], buffer, bufLen)
+  if b.data.len > documentBufferSize: b.commit()
+
+proc normalizing(s: YamlStream, resolveTags: bool,
+    buffer: DocumentBuffer): YamlStream =
+  ## The events of ``s``, normalized as they are pulled. The output of a
+  ## document is in ``buffer`` once the event after it is pulled, so it is
+  ## committed then, before more input is read.
+  initYamlStream(iterator(): Event {.gcsafe, raises: [CatchableError].} =
+    while true:
+      var e = s.next()
+      {.cast(gcsafe).}: e.normalize(resolveTags)
+      yield e
+      if e.kind == yamlEndStream: break
+      if e.kind == yamlEndDoc: buffer.commit())
+
+proc nextDocument(s: YamlStream): YamlStream =
+  ## The document of ``s`` that starts with its next event, as a stream of
+  ## its own.
+  initYamlStream(iterator(): Event {.gcsafe, raises: [CatchableError].} =
+    yield startStreamEvent()
+    while true:
+      let e = s.next()
+      yield e
+      if e.kind == yamlEndDoc: break
+    yield endStreamEvent())
+
+type TrimmingStream = ref object of StreamObj
+  ## Writes to ``target`` all but the whitespace at the end.
+  target: Stream
+  held: string
+
+proc trimmingWrite(s: Stream, buffer: pointer, bufLen: int) =
+  let t = TrimmingStream(s)
+  let data = cast[ptr UncheckedArray[char]](buffer)
+  var last = bufLen - 1
+  while last >= 0 and data[last] in Whitespace: dec last
+  if last >= 0:
+    if t.held.len > 0:
+      t.target.write(t.held)
+      t.held.setLen(0)
+    t.target.writeData(buffer, last + 1)
+  for i in last + 1 ..< bufLen: t.held.add(data[i])
+
+proc writeStream(target: Stream, events: YamlStream, format: DataFormat,
+    yamlStyle: FormatConfig, budget: MemoryBudget) =
+  ## Writes the stream ``events`` in ``format``, as it is pulled, each
+  ## document once it is complete (or, if its output is large, as it goes).
+  ## JSON gets one value per document, like JSON Lines but not limited to
+  ## one line each.
+  let output = DocumentBuffer(target: target,
+      writeDataImpl: documentBufferWrite)
+  let s = normalizing(events,
+      resolveTags = format in {dfJson, dfJsonc, dfJsonLines}, output)
+  case format
+  of dfYaml: present(s, output, yamlStyle.dumper.presentation)
+  of dfCbor: presentCbor(s, output, budget)
+  of dfJson, dfJsonc, dfJsonLines:
+    var options = jsonDumper().presentation
+    if format == dfJsonLines:
+      options = jsonLinesDumper().presentation
+      options.newlines = nlNone
+      options.maxLineLength = none(int)
+    discard s.next() # yamlStartStream
+    while s.peek().kind == yamlStartDoc:
+      # each document is a stream of its own, ending with a line break
+      let trimmed = TrimmingStream(target: output, writeDataImpl: trimmingWrite)
+      present(nextDocument(s), trimmed, options)
+      output.write("\n")
+    discard s.next() # yamlEndStream
+  output.commit()
+  target.flush()
 
 proc render(events: BufferYamlStream, format: DataFormat,
     yamlStyle: FormatConfig): string =
-  ## Renders the stream ``events``, which has no end event yet. JSON gets
-  ## one value per document, like JSON Lines but not limited to one line
-  ## each.
+  ## Renders the stream ``events``, which has no end event yet; see
+  ## `writeStream`.
   events.put(endStreamEvent())
-  events.normalize(resolveTags = format in {dfJson, dfJsonc, dfJsonLines})
-  case format
-  of dfYaml: result = present(events, yamlStyle.dumper.presentation)
-  of dfJson, dfJsonc: result.renderEach(events, jsonDumper().presentation)
-  of dfCbor: result = presentCbor(events)
-  of dfJsonLines:
-    var options = jsonLinesDumper().presentation
-    options.newlines = nlNone
-    options.maxLineLength = none(int)
-    result.renderEach(events, options)
+  let output = newStringStream()
+  writeStream(output, events, format, yamlStyle, nil)
+  output.data
 
 proc write(output: File, events: BufferYamlStream, format: DataFormat,
     yamlStyle: FormatConfig) =
-  ## Writes the stream ``events``, which has no end event yet; see `render`.
-  output.write(render(events, format, yamlStyle))
+  ## Writes the stream ``events``, which has no end event yet; see
+  ## `writeStream`.
+  events.put(endStreamEvent())
+  writeStream(newFileStream(output), events, format, yamlStyle, budgetFor(""))
+
+type DocumentsOf = proc (src: YamlSource, format: DataFormat): YamlStream
+  ## the documents a command makes of an input, as a stream
+
+proc inputFormat(files: seq[string], name: string,
+    source: Option[DataFormat]): DataFormat =
+  ## The format of the input ``name``: ``source`` if given, else by its
+  ## extension; standard input is YAML.
+  source.get(if files.len == 0: dfYaml else: formatOf(name))
+
+proc concatenated(files: seq[string], source: Option[DataFormat],
+    each: DocumentsOf, current: ref string): YamlStream =
+  ## One stream of the documents ``each`` makes of every input, opened one
+  ## after the other; ``current`` is the name of the input being read.
+  let names = if files.len == 0: @[""] else: files
+  initYamlStream(iterator(): Event {.gcsafe, raises: [CatchableError].} =
+    yield startStreamEvent()
+    for name in names:
+      var
+        src: YamlSource
+        s: YamlStream
+      {.cast(gcsafe), cast(raises: [CatchableError]).}:
+        src = openInput(name)
+        current[] = src.name
+        s = each(src, inputFormat(files, name, source))
+      try:
+        while true:
+          let e = s.next()
+          if e.kind == yamlEndStream: break
+          if e.kind != yamlStartStream: yield e
+      finally: src.close()
+    yield endStreamEvent())
+
+proc failedInput(name: string, e: ref Exception): int =
+  ## Reports the error ``e`` of reading the input ``name``; see `failed`.
+  ## An input that cannot be read is an I/O error, exit code 2.
+  let cause = rootCause(e)
+  if cause of IOError or cause of OSError:
+    stderr.writeLine(cause.msg)
+    return 2
+  if cause of YamlMergeError:
+    let m = (ref YamlMergeError)(cause).mark
+    stderr.writeLine(name & ":" & $m.line & ":" & $m.column & ": " & cause.msg)
+    return 1
+  failed(name, e)
+
+proc commitFiles(temps: seq[tuple[temp, file: string]]) =
+  ## Replaces each file by its temporary file, and builds its index if
+  ## files there are indexed.
+  for (temp, file) in temps:
+    moveFile(temp, file)
+    let format = formatOf(file)
+    let settings = indexSettingsFor(file)
+    if format.indexable and settings.mode != imOff:
+      refreshIndex(file, readText(file).content, settings,
+          json = format != dfYaml)
+
+proc writeDocuments(files: seq[string], source, target: Option[DataFormat],
+    inPlace: bool, each: DocumentsOf): int =
+  ## Writes the documents ``each`` makes of all inputs: as one stream on
+  ## stdout, in the format ``target`` or else that of the first input, or
+  ## with ``inPlace``, each into its file, in its own format. Files are
+  ## replaced only once all of them have been written, so that an error
+  ## leaves every file as it was.
+  if inPlace:
+    var temps: seq[tuple[temp, file: string]]
+    proc removeTemps() =
+      for (temp, _) in temps:
+        try: removeFile(temp)
+        except OSError: discard
+    var name = ""
+    try:
+      for file in files:
+        let
+          src = openInput(file)
+          format = inputFormat(files, file, source)
+          temp = file & ".yaml-tmp-" & $getCurrentProcessId()
+        name = src.name
+        temps.add((temp, file))
+        let output = newFileStream(temp, fmWrite)
+        if output.isNil:
+          src.close()
+          raise newException(IOError, temp & ": cannot write")
+        try:
+          writeStream(output, each(src, format), format,
+              toolConfigFor(file).format, src.budget)
+        finally:
+          output.close()
+          src.close()
+    except YamlStreamError, YamlParserError, YamlConstructionError,
+        YamlPresenterJsonError, YamlPresenterCborError,
+        YamlPresenterOutputError, YamlMemoryLimitError:
+      removeTemps()
+      return failedInput(name, getCurrentException())
+    except IOError, OSError:
+      removeTemps()
+      raise
+    commitFiles(temps)
+    return 0
+  let
+    names = if files.len == 0: @[""] else: files
+    format = target.get(inputFormat(files, names[0], source))
+    yamlStyle = toolConfigFor(configFile(names[0])).format
+    current = new string
+    output = newFileStream(stdout)
+  try:
+    writeStream(output, concatenated(files, source, each, current), format,
+        yamlStyle, budgetFor(names[0]))
+  except YamlStreamError:
+    output.flush()
+    return failedInput(current[], getCurrentException())
+  except YamlPresenterJsonError, YamlPresenterCborError,
+      YamlPresenterOutputError, YamlMemoryLimitError:
+    output.flush()
+    return failed("<output>", getCurrentException())
 
 # commands
 
@@ -732,20 +923,7 @@ proc convertCommand(command: string, args: seq[string]): int =
   let
     target = parseFormat(command, positional[0])
     files = positional[1 .. ^1]
-    yamlStyle = toolConfigFor(
-        if files.len > 0: files[0] else: getCurrentDir() / "-").format
-    stream = newStream()
-  for input in inputSources(files):
-    let format = source.get(
-        if files.len == 0: dfYaml else: formatOf(input.name))
-    try:
-      stream.collect(events(input, format))
-    except YamlStreamError, YamlParserError:
-      return failed(input.name, getCurrentException())
-  try:
-    stdout.write(stream, target, yamlStyle)
-  except YamlPresenterJsonError, YamlPresenterCborError, YamlStreamError:
-    return failed("<output>", getCurrentException())
+  writeDocuments(files, source, some(target), false, events)
 
 proc splitAssignment(expr: string):
     tuple[path, value: string, assigns: bool] =
@@ -954,38 +1132,21 @@ proc transformCommand(command: string, args: seq[string], operands: int,
   if inPlace and (files.len == 0 or target.isSome): fail(command)
   result = prepare(positional[0 ..< operands])
   if result != 0: return
-  let yamlStyle = toolConfigFor(
-      if files.len > 0: files[0] else: getCurrentDir() / "-").format
-  var
-    output = newStream()
-    outputFormat = target
-    rewritten: seq[tuple[file, text: string]]
-  for input in inputSources(files):
-    let format = source.get(
-        if files.len == 0: dfYaml else: formatOf(input.name))
-    if outputFormat.isNone: outputFormat = some(format)
-    let transformed = if inPlace: newStream() else: output
-    try:
-      for root in documents(input, format):
+  proc transformed(src: YamlSource, format: DataFormat): YamlStream =
+    initYamlStream(iterator(): Event {.gcsafe, raises: [CatchableError].} =
+      var s = events(src, format)
+      yield s.next() # yamlStartStream
+      while s.peek().kind == yamlStartDoc:
+        var root: YamlNode
+        construct(s, root)
         # tsAll keeps every node's own tag, so "1" stays a string
-        transformed.collect(represent(transform(root),
-            SerializationOptions(tagStyle: tsAll)))
-      if inPlace:
-        rewritten.add((input.name, render(transformed, format,
-            toolConfigFor(input.name).format)))
-    except YamlStreamError, YamlParserError, YamlConstructionError,
-        YamlPresenterJsonError, YamlPresenterCborError:
-      return failed(input.name, getCurrentException())
-    except YamlJsonPatchError:
-      stderr.writeLine(input.name & ": " & getCurrentExceptionMsg())
-      return 1
-  if inPlace:
-    for (file, text) in rewritten: writeSource(file, text)
-    return 0
-  try:
-    stdout.write(output, outputFormat.get(dfYaml), yamlStyle)
-  except YamlPresenterJsonError, YamlPresenterCborError, YamlStreamError:
-    return failed("<output>", getCurrentException())
+        var doc: YamlStream
+        {.cast(gcsafe), cast(raises: [CatchableError]).}:
+          doc = represent(transform(root), SerializationOptions(tagStyle: tsAll))
+        for e in doc:
+          if e.kind notin {yamlStartStream, yamlEndStream}: yield e
+      yield s.next()) # yamlEndStream
+  result = writeDocuments(files, source, target, inPlace, transformed)
 
 proc patchCommand(args: seq[string]): int =
   var mergePatch = false
@@ -1037,39 +1198,9 @@ proc mergeCommand(args: seq[string]): int =
   if inPlace and (files.len == 0 or target.isSome): fail("merge")
   # The stream filter, unlike representing the merged graph, writes merged
   # values out instead of giving them anchors, and keeps scalar styles.
-  let yamlStyle = toolConfigFor(
-      if files.len > 0: files[0] else: getCurrentDir() / "-").format
-  var
-    output = newStream()
-    outputFormat = target
-    rewritten: seq[tuple[file, text: string]]
-  for input in inputSources(files):
-    let format = source.get(
-        if files.len == 0: dfYaml else: formatOf(input.name))
-    if outputFormat.isNone: outputFormat = some(format)
-    try:
-      if inPlace:
-        let merged = newStream()
-        merged.collect(mergeKeysApplied(events(input, format)))
-        rewritten.add((input.name, render(merged, format,
-            toolConfigFor(input.name).format)))
-      else: output.collect(mergeKeysApplied(events(input, format)))
-    except YamlStreamError, YamlParserError, YamlPresenterJsonError,
-        YamlPresenterCborError:
-      let cause = rootCause(getCurrentException())
-      if cause of YamlMergeError:
-        let m = (ref YamlMergeError)(cause).mark
-        stderr.writeLine(input.name & ":" & $m.line & ":" & $m.column & ": " &
-            cause.msg)
-        return 1
-      return failed(input.name, getCurrentException())
-  if inPlace:
-    for (file, text) in rewritten: writeSource(file, text)
-    return 0
-  try:
-    stdout.write(output, outputFormat.get(dfYaml), yamlStyle)
-  except YamlPresenterJsonError, YamlPresenterCborError, YamlStreamError:
-    return failed("<output>", getCurrentException())
+  proc merged(src: YamlSource, format: DataFormat): YamlStream =
+    mergeKeysApplied(events(src, format))
+  writeDocuments(files, source, target, inPlace, merged)
 
 proc canonicalCommand(args: seq[string]): int =
   var
@@ -1392,6 +1523,10 @@ proc run*(args: seq[string]): int =
   except IOError, OSError:
     stderr.writeLine(getCurrentExceptionMsg())
     2
+  finally:
+    # sources whose reading an error abandoned, and their spool files
+    for src in opened: src.close()
+    opened.setLen(0)
 
 when isMainModule:
   quit(run(commandLineParams()))

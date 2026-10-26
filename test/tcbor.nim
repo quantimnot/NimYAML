@@ -93,6 +93,20 @@ proc decodeError(hex: string): YamlCborError =
   raise newException(AssertionDefect, "no error for " & hex)
 
 suite "CBOR streaming":
+  test "Each document is written when it is complete":
+    proc breaking(): YamlStream =
+      ## two documents, then an error instead of the end of the stream
+      let events = newBufferYamlStream()
+      for e in parser.parse(initYamlParser(), "--- 1\n--- 2\n"): events.put(e)
+      initYamlStream(iterator(): Event {.closure, gcsafe.} =
+        for e in events:
+          if e.kind == yamlEndStream:
+            raise newException(IOError, "the input broke")
+          yield e)
+    let target = newStringStream()
+    expect YamlStreamError: presentCbor(breaking(), target)
+    check target.data.hex == "0102"
+
   test "A large document within a budget":
     var items: seq[string]
     for i in 0 ..< 60_000:

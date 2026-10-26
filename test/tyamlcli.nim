@@ -687,6 +687,24 @@ suite "memory cli":
       check cli("as", "jsonl", "--source=" & tier, "a.yaml", "b.jsonc",
           "c.jsonl") == expected
 
+  test "documents before an error are written":
+    writeFile(dir / "third.yaml", "a: 1\n---\nb: 2\n---\nc: [\n")
+    let (output, code) = cli("as", "jsonl", "third.yaml")
+    check code == 1
+    check output.startsWith("{\"a\": 1}\n{\"b\": 2}\nthird.yaml:")
+
+  test "in place: an error leaves every file as it was":
+    writeFile(dir / "m1.yaml", "a: &x {b: 1}\nc: {<<: *x}\n")
+    writeFile(dir / "m2.yaml", "a: [\n")
+    check cli("merge", "-i", "m1.yaml", "m2.yaml").exitCode == 1
+    check readFile(dir / "m1.yaml") == "a: &x {b: 1}\nc: {<<: *x}\n"
+    var temps = 0
+    for f in walkDir(dir):
+      if "yaml-tmp" in f.path: inc temps
+    check temps == 0
+    check cli("merge", "-i", "m1.yaml") == ("", 0)
+    check readFile(dir / "m1.yaml") == "a: {b: 1}\nc: {b: 1}\n"
+
   test "an unclosed block comment":
     writeFile(dir / "u.jsonc", "[1,\n  2 /* three\n]")
     check cli("as", "json", "u.jsonc") ==

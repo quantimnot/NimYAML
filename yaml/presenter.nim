@@ -842,6 +842,10 @@ proc nextItem(
   else:
     result = s.next()
 
+const maxSingleLineLookahead = 65536
+  ## characters of a collection the presenter looks at to decide whether it
+  ## fits into a single line; a longer one is written in block style
+
 proc checkSingleLine(
   ctx    : var Context,
   s      : YamlStream,
@@ -854,7 +858,9 @@ proc checkSingleLine(
   if (ctx.levels.len > 0 and ctx.state.isFlow) or style == csFlow or
        (style == csAny and ctx.options.containers != cBlock):
     result[1] = mpInitial
-    var length = 0
+    var
+      length = 0
+      tooLong = false
     while not mapping or result[1] != mpNeedBlock:
       let next = s.next()
       ctx.cached.addLast(next)
@@ -880,7 +886,20 @@ proc checkSingleLine(
         length = high(int)
         result[1] = mpNeedBlock
         break
-    result[0] = (not mapping or result[1] != mpNeedBlock) and
+      # The events looked at are held until written; a collection too long
+      # for a line is not looked at further. A sequence is too long once it
+      # exceeds the line; a mapping needs its parse state, so it is looked
+      # at up to maxSingleLineLookahead characters, then written in block
+      # style.
+      if length > maxSingleLineLookahead:
+        tooLong = true
+        result[1] = mpNeedBlock
+        break
+      if not mapping and ctx.options.maxLineLength.isSome and
+          length >= ctx.options.maxLineLength.get() - ctx.indentation - 2:
+        tooLong = true
+        break
+    result[0] = not tooLong and (not mapping or result[1] != mpNeedBlock) and
       (ctx.options.maxLineLength.isNone or
       length < ctx.options.maxLineLength.get() - ctx.indentation - 2)
   else: result = (false, mpNeedBlock)

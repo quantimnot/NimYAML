@@ -695,10 +695,14 @@ proc collectionPrefix(buf: var string, tag: Tag) =
     except ValueError:
       raise cborWriteError("invalid CBOR tag: " & $tag)
 
-proc presentCbor*(s: YamlStream): string
-    {.raises: [YamlPresenterCborError, YamlStreamError].} =
-  ## Writes the documents of ``s`` as CBOR sequence: each document is a
-  ## CBOR data item.
+proc presentCbor*(s: YamlStream, output: Stream, budget: MemoryBudget = nil)
+    {.raises: [YamlPresenterCborError, YamlPresenterOutputError,
+    YamlStreamError, YamlMemoryLimitError].} =
+  ## Writes the documents of ``s`` as CBOR sequence into ``output``: each
+  ## document is a CBOR data item, written when it is complete. Since a
+  ## collection's head holds the number of its items, a document is built in
+  ## memory before it is written; ``budget`` is charged for it, and a
+  ## document that does not fit raises `YamlMemoryLimitError`.
   type Open = object
     kind: FrameKind
     count: uint64
@@ -708,6 +712,7 @@ proc presentCbor*(s: YamlStream): string
     stack = @[Open()]
     shared = initTable[Anchor, uint64]()
     sharedCount = 0'u64
+    charged = 0
   template target: var string = stack[^1].content
   template share(anchor: Anchor, buf: var string) =
     if anchor != yAnchorNone:
@@ -717,8 +722,22 @@ proc presentCbor*(s: YamlStream): string
   for e in s:
     if e.kind in {yamlStartMap, yamlStartSeq, yamlScalar, yamlAlias}:
       inc stack[^1].count
+      # what the item adds to the document, roughly
+      let size = 16 + (if e.kind == yamlScalar: e.scalarContent.len else: 0)
+      budget.reserve(size, "building a CBOR document")
+      charged += size
     case e.kind
-    of yamlStartStream, yamlEndStream, yamlEndDoc: discard
+    of yamlStartStream, yamlEndStream: discard
+    of yamlEndDoc:
+      try: output.write(stack[0].content)
+      except CatchableError as ce:
+        var e = newException(YamlPresenterOutputError,
+            "Error while writing to output stream")
+        e.parent = ce
+        raise e
+      stack[0].content.setLen(0)
+      budget.release(charged)
+      charged = 0
     of yamlStartDoc:
       shared.clear()
       sharedCount = 0
@@ -744,17 +763,16 @@ proc presentCbor*(s: YamlStream): string
         raise cborWriteError("alias to unknown anchor: " & $e.aliasTarget)
       target.addHead(6, 29)
       target.addHead(0, index)
-  result = move(stack[0].content)
 
-proc presentCbor*(s: YamlStream, target: Stream) {.raises: [
-    YamlPresenterCborError, YamlPresenterOutputError, YamlStreamError].} =
-  ## Writes the documents of ``s`` as CBOR sequence into ``target``.
-  let data = presentCbor(s)
-  try: target.write(data)
-  except CatchableError as ce:
-    var e = newException(YamlPresenterOutputError, "Error while writing to output stream")
-    e.parent = ce
-    raise e
+proc presentCbor*(s: YamlStream): string
+    {.raises: [YamlPresenterCborError, YamlStreamError].} =
+  ## Writes the documents of ``s`` as CBOR sequence: each document is a
+  ## CBOR data item.
+  let target = newStringStream()
+  try: presentCbor(s, target)
+  except YamlPresenterOutputError, YamlMemoryLimitError:
+    internalError("a string stream without a budget cannot fail")
+  result = move(target.data)
 
 # High-level API
 # --------------
