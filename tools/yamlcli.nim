@@ -430,10 +430,6 @@ proc takeMemoryOptions(args: seq[string]): seq[string] =
 
 # inputs
 
-proc readInputs(files: seq[string]): seq[Input] =
-  if files.len == 0: result.add(readText(""))
-  for file in files: result.add(readText(file))
-
 proc formatOf(file: string): DataFormat =
   case file.splitFile.ext.toLowerAscii()
   of ".json": dfJson
@@ -813,13 +809,46 @@ proc writeDocuments(files: seq[string], source, target: Option[DataFormat],
 
 # commands
 
-proc hasComments(text: string): bool =
-  ## Whether ``text`` has a comment. False if the lexer fails, which
+type ComparingStream = ref object of StreamObj
+  ## Compares what is written to it with ``expected``.
+  expected: Stream
+  buffer: string
+  differs: bool
+
+proc comparingWrite(s: Stream, buffer: pointer, bufLen: int) =
+  let c = ComparingStream(s)
+  if c.differs or bufLen == 0: return
+  c.buffer.setLen(bufLen)
+  var n: int
+  {.cast(tags: []).}: n = c.expected.readData(addr c.buffer[0], bufLen)
+  if n != bufLen or not equalMem(addr c.buffer[0], buffer, bufLen):
+    c.differs = true
+
+proc differs(c: ComparingStream): bool =
+  ## Whether what was written differs from all of ``expected``.
+  c.differs or not c.expected.atEnd
+
+proc sameContent(a: string, b: YamlSource): bool =
+  ## Whether the file ``a`` has the content of ``b``.
+  if getFileSize(a) != b.size: return false
+  let
+    fa = newFileStream(a, fmRead)
+    fb = newSourceStream(b)
+  defer: fa.close()
+  var x, y = newString(65536)
+  while true:
+    let n = fa.readData(addr x[0], x.len)
+    if fb.readData(addr y[0], y.len) != n: return false
+    if n == 0: return true
+    if not equalMem(addr x[0], addr y[0], n): return false
+
+proc hasComments(src: YamlSource): bool =
+  ## Whether ``src`` has a comment. False if the lexer fails, which
   ## formatting then reports.
   var lex: Lexer
   lex.directiveExtensions = true
   lex.keepComments = true
-  lex.init(text)
+  lex.init(newSourceStream(src))
   while true:
     try: lex.next()
     except LexerError: return false
@@ -871,11 +900,14 @@ proc formatCommand(args: seq[string]): int =
   let explicit =
     if configPath.len > 0: some(loadToolConfig(configPath))
     else: none(ToolConfig)
-  for (name, content) in readInputs(files):
+  for file in (if files.len == 0: @[""] else: files):
+    # comments need random access to the lines next to the events
+    let src = openInput(file, randomAccess = true)
+    defer: src.close()
+    let name = src.name
     var style =
       if explicit.isSome: explicit.get().format
-      elif files.len == 0: toolConfigFor(getCurrentDir() / "-").format
-      else: toolConfigFor(name).format
+      else: toolConfigFor(configFile(file)).format
     if overrides.style.isSome: style.style = overrides.style
     if overrides.indentation.isSome: style.indentation = overrides.indentation
     if overrides.maxLineLength.isSome:
@@ -888,25 +920,39 @@ proc formatCommand(args: seq[string]): int =
     if dropComments: style.comments = some(kDrop)
     let dumper = style.dumper
     if style.comments.get(kKeep) == kKeep and
-        not dumper.presentation.keepsComments and hasComments(content):
+        not dumper.presentation.keepsComments and hasComments(src):
       stderr.writeLine(name & ": has comments, which the " &
           $style.style.get(fsDefault) & " style cannot keep; " &
           "use --drop-comments to format it anyway")
       result = 1
       continue
-    var formatted: string
+    # the output is written as the input is read: compared with the input,
+    # into a temporary file that replaces the file if it differs, or on
+    # standard output
+    let temp = file & ".yaml-tmp-" & $getCurrentProcessId()
     try:
-      formatted = dumper.transform(content)
-    except YamlParserError, YamlPresenterJsonError:
+      if checkOnly:
+        let compared = ComparingStream(expected: newSourceStream(src),
+            writeDataImpl: comparingWrite)
+        dumper.transform(src, compared)
+        if compared.differs:
+          stdout.writeLine(name)
+          result = 1
+      elif write:
+        let output = newFileStream(temp, fmWrite)
+        if output.isNil: raise newException(IOError, temp & ": cannot write")
+        try: dumper.transform(src, output)
+        finally: output.close()
+        if sameContent(temp, src): removeFile(temp)
+        else: commitFiles(@[(temp, file)])
+      else:
+        let output = newFileStream(stdout)
+        try: dumper.transform(src, output)
+        finally: output.flush()
+    except YamlParserError, YamlPresenterJsonError, YamlPresenterOutputError,
+        YamlMemoryLimitError:
+      if fileExists(temp): removeFile(temp)
       result = max(result, failed(name, getCurrentException()))
-      continue
-    if checkOnly:
-      if formatted != content:
-        stdout.writeLine(name)
-        result = 1
-    elif write:
-      if formatted != content: writeSource(name, formatted)
-    else: stdout.write(formatted)
 
 proc convertCommand(command: string, args: seq[string]): int =
   var

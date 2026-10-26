@@ -11,7 +11,8 @@
 ## This is the presenter API, used for generating YAML character streams.
 
 import std / [streams, deques, strutils, options]
-import data, taglib, stream, private/internal, hints, parser
+import data, taglib, stream, private/internal, hints, parser, memory, source
+import private/lex
 
 type
 
@@ -160,7 +161,7 @@ type
     # with the comments before it, at its end and after it.
     commenting: bool
     output: Stream
-    attached: seq[EventComments] # by index of the event in the stream
+    attached: CommentTable
     eventIndex: int
     before, trailing: seq[KeptComment]
     # with the range of indentations that keep a comment where it is
@@ -181,6 +182,14 @@ type
 
   EventComments = object
     before, trailing, after: seq[KeptComment]
+
+  CommentTable = ref object
+    ## The comments attached to the events, by the index of the event in
+    ## the stream: ``items[0]`` belongs to event ``base``. When a transform
+    ## reads its input one document at a time, the events already presented
+    ## are dropped.
+    base, presented: int
+    items: seq[EventComments]
 
   ItemKind = enum
     ikCompactScalar, ikMultilineFlowScalar, ikBlockScalar, ikCollection
@@ -436,6 +445,10 @@ proc ownLine(c: KeptComment): KeptComment =
   ## A comment that followed content, to write on a line of its own.
   result = c
   result.column = 1
+
+template attachedHere(ctx: Context): EventComments =
+  ## the comments attached to the event being presented
+  ctx.attached.items[ctx.eventIndex - ctx.attached.base]
 
 proc flushLine(ctx: var Context, final = false) =
   ## Writes the current line and the comments around it. A line inside a
@@ -813,18 +826,18 @@ proc takeBefore(ctx: var Context, trailing = true) =
   ## Takes the comments to write before the line of the current event and
   ## at its end. Called once the event's line has been started.
   if ctx.commenting:
-    ctx.before.add(ctx.attached[ctx.eventIndex].before)
-    if trailing: ctx.trailing.add(ctx.attached[ctx.eventIndex].trailing)
+    ctx.before.add(ctx.attachedHere.before)
+    if trailing: ctx.trailing.add(ctx.attachedHere.trailing)
 
 proc takeTrailing(ctx: var Context) =
-  if ctx.commenting: ctx.trailing.add(ctx.attached[ctx.eventIndex].trailing)
+  if ctx.commenting: ctx.trailing.add(ctx.attachedHere.trailing)
 
 proc takeAfter(ctx: var Context, indentation: int, trailing = true) =
   ## Takes the comments that end the collection or document the current
   ## event ends, to write at ``indentation`` after the current line.
   if ctx.commenting:
-    if trailing: ctx.trailing.add(ctx.attached[ctx.eventIndex].trailing)
-    for c in ctx.attached[ctx.eventIndex].after:
+    if trailing: ctx.trailing.add(ctx.attachedHere.trailing)
+    for c in ctx.attachedHere.after:
       ctx.after.add((c, indentation, ctx.lastClosed))
 
 proc endIndentation(ctx: Context, level: DumperLevel): int =
@@ -918,6 +931,7 @@ proc doPresent(
   while true:
     let item = nextItem(ctx.cached, s)
     inc(ctx.eventIndex)
+    if not ctx.attached.isNil: ctx.attached.presented = ctx.eventIndex
     if item.kind notin {yamlEndMap, yamlEndSeq}: ctx.lastClosed = int.high
     case item.kind
     of yamlStartStream: discard
@@ -1005,7 +1019,7 @@ proc doPresent(
         words = @[]
         lines = @[]
         if ctx.levels.len > 0 and ctx.state == dBlockImplicitMapKey:
-          if ctx.commenting and ctx.attached[ctx.eventIndex].before.len > 0:
+          if ctx.commenting and ctx.attachedHere.before.len > 0:
             # the comments before a value go between it and its key
             needsNextLine = true
           elif ctx.options.maxLineLength.isNone or
@@ -1317,13 +1331,83 @@ proc normalized*(event: Event, resolveToCoreYamlTags: bool): Event =
 #   is written before the line of that node. A node that starts a block
 #   collection hands it to the first node in it.
 
+type LineWindow = ref object
+  ## Lines of the input by number, from ``first`` on: all of a string, or
+  ## read from a stream as they are asked for (and dropped once they are no
+  ## longer needed). Lines are split like `splitLines` splits them.
+  first: int
+  items: seq[string]
+  input: Stream # nil once all lines are in ``items``
+  buffer: string
+  pos: int
+  current: string
+  skipLF: bool
+  budget: MemoryBudget
+  charged: int
+
+proc linesOf(text: string): LineWindow =
+  result = LineWindow(first: 1)
+  for line in text.splitLines: result.items.add(line)
+
+proc add(w: LineWindow, line: string) =
+  w.budget.reserve(line.len + 32, "holding lines of the input for comments")
+  w.charged += line.len + 32
+  w.items.add(line)
+
+proc readLine(w: LineWindow): bool =
+  ## Reads the next line from ``input``; false if there is none.
+  if w.input.isNil: return false
+  while true:
+    if w.pos >= w.buffer.len:
+      w.buffer.setLen(8192)
+      let n = w.input.readDataStr(w.buffer, 0 ..< w.buffer.len)
+      w.buffer.setLen(max(n, 0))
+      w.pos = 0
+      if n <= 0:
+        # the text after the last line break is a line, even when empty
+        w.add(move w.current)
+        w.input = nil
+        return true
+    let c = w.buffer[w.pos]
+    inc w.pos
+    if w.skipLF:
+      w.skipLF = false
+      if c == '\l': continue
+    case c
+    of '\l', '\c':
+      w.skipLF = c == '\c'
+      w.add(move w.current)
+      w.current = ""
+      return true
+    else: w.current.add(c)
+
+proc has(w: LineWindow, n: int): bool =
+  ## Whether line ``n`` is there, reading up to it if needed.
+  if n < w.first: return false
+  while n >= w.first + w.items.len:
+    if not w.readLine(): return false
+  true
+
+proc `[]`(w: LineWindow, n: int): string = w.items[n - w.first]
+
+proc dropBefore(w: LineWindow, n: int) =
+  ## Drops the lines before line ``n``.
+  let count = min(n - w.first, w.items.len)
+  if count <= 0: return
+  var bytes = 0
+  for i in 0 ..< count: bytes += w.items[i].len + 32
+  w.items = w.items[count .. ^1]
+  w.first += count
+  w.budget.release(min(bytes, w.charged))
+  w.charged = max(0, w.charged - bytes)
+
 proc precedes(a, b: Mark): bool =
   a.line < b.line or a.line == b.line and a.column < b.column
 
 proc isBlock(event: Event): bool =
   event.kind in {yamlStartMap, yamlStartSeq} and event.collectionStyle != csFlow
 
-proc blockIndentations(events: seq[Event], lines: seq[string]): seq[int] =
+proc blockIndentations(events: seq[Event], lines: LineWindow): seq[int] =
   ## For each event that ends a collection, the indentation of that
   ## collection; -1 for one that every comment until its end is in: a flow
   ## collection, a document, the stream.
@@ -1342,15 +1426,15 @@ proc blockIndentations(events: seq[Event], lines: seq[string]): seq[int] =
       return int(event.startPos.column)
     let first = column(i + 1)
     let indicator = if event.kind == yamlStartSeq: '-' else: '?'
-    if (ownKey or indicator == '-') and events[i + 1].startPos.line <= lines.len:
-      let line = lines[events[i + 1].startPos.line - 1]
+    if (ownKey or indicator == '-') and lines.has(events[i + 1].startPos.line):
+      let line = lines[events[i + 1].startPos.line]
       var c = min(first - 2, line.len - 1)
       while c >= 0 and line[c] in {' ', '\t'}: dec(c)
       if c >= 0 and line[c] == indicator: return c + 1
     if event.kind == yamlStartMap: return first
     # an item on a line after its `-`
-    if event.startPos.line <= lines.len:
-      for c, ch in lines[event.startPos.line - 1]:
+    if lines.has(event.startPos.line):
+      for c, ch in lines[event.startPos.line]:
         if ch notin {' ', '\t'}: return c + 1
     int(event.startPos.column)
   for i, event in events:
@@ -1372,13 +1456,16 @@ proc blockIndentations(events: seq[Event], lines: seq[string]): seq[int] =
     of yamlEndDoc, yamlEndStream: result[i] = -1
     else: discard
 
-proc attachComments(events: seq[Event], comments: seq[Comment],
-    source: string): seq[EventComments] =
-  result = newSeq[EventComments](events.len)
-  var lines: seq[string]
-  for line in source.splitLines: lines.add(line)
+proc attachRound(events: seq[Event], comments: seq[Comment],
+    lines: LineWindow, result: var seq[EventComments],
+    deferred: var seq[Comment], final = true) =
+  ## Attaches ``comments`` to ``events``, adding to ``result``, which has an
+  ## item for each event. Unless ``final``, a comment that comes after all
+  ## of ``events`` is added to ``deferred``, to be attached once the events
+  ## after it are known (the events need not be complete documents, see
+  ## `transform` of a `YamlSource`).
   proc blank(line: int): bool =
-    line >= 1 and line <= lines.len and lines[line - 1].strip.len == 0
+    line >= 1 and lines.has(line) and lines[line].strip.len == 0
   let indentations = blockIndentations(events, lines)
   # the start of a block collection is not where its first node is, and an
   # empty node is where the next content is, not after its key or `-`
@@ -1398,6 +1485,9 @@ proc attachComments(events: seq[Event], comments: seq[Comment],
   for c in comments:
     while next < events.len and not c.startPos.precedes(positions[next]):
       inc(next)
+    if not final and next >= events.len:
+      deferred.add(c)
+      continue
     var kept = KeptComment(content: c.content.strip(leading = false),
         column: int(c.startPos.column))
     if c.trailing:
@@ -1420,14 +1510,68 @@ proc attachComments(events: seq[Event], comments: seq[Comment],
     if events[target].kind in {yamlEndMap, yamlEndSeq, yamlEndDoc, yamlEndStream}:
       result[target].after.add(kept)
     else: result[target].before.add(kept)
+
+proc moveIntoBlocks(events: seq[Event], attached: var seq[EventComments]) =
+  ## A node that starts a block collection hands the comments before it to
+  ## the first node in it.
   for i in 0 ..< events.len - 1:
-    if events[i].isBlock and result[i].before.len > 0 and
+    if events[i].isBlock and attached[i].before.len > 0 and
         events[i + 1].kind notin {yamlEndMap, yamlEndSeq}:
-      result[i + 1].before = result[i].before & result[i + 1].before
-      result[i].before.setLen(0)
+      attached[i + 1].before = attached[i].before & attached[i + 1].before
+      attached[i].before.setLen(0)
+
+proc attachComments(events: seq[Event], comments: seq[Comment],
+    source: string): seq[EventComments] =
+  result = newSeq[EventComments](events.len)
+  var deferred: seq[Comment]
+  attachRound(events, comments, linesOf(source), result, deferred)
+  moveIntoBlocks(events, result)
 
 proc hasComments(comments: EventComments): bool =
   comments.before.len + comments.trailing.len + comments.after.len > 0
+
+proc commentedCollections(events: seq[Event],
+    attached: seq[EventComments]): seq[bool] =
+  ## For each event that starts a collection, whether the collection holds
+  ## a comment; it then cannot be written in a single line. ``events`` must
+  ## be balanced.
+  result = newSeq[bool](events.len)
+  var starts: seq[int]
+  for i, e in events:
+    let here = attached[i].hasComments
+    case e.kind
+    of yamlEndMap, yamlEndSeq:
+      # a comment at the end of the line of the end is outside
+      let start = starts.pop()
+      if here and attached[i].after.len > 0: result[start] = true
+      if result[start] or here:
+        if starts.len > 0: result[starts[^1]] = true
+    else:
+      if here and starts.len > 0: result[starts[^1]] = true
+      if e.kind in {yamlStartMap, yamlStartSeq}: starts.add(i)
+
+proc normalizedStream(events: YamlStream, resolveToCoreYamlTags: bool):
+    YamlStream =
+  ## The events of ``events``, normalized as they are pulled.
+  initYamlStream(iterator(): Event {.gcsafe, raises: [CatchableError].} =
+    while true:
+      let e = events.next()
+      yield e.normalized(resolveToCoreYamlTags)
+      if e.kind == yamlEndStream: break)
+
+template unwrapStreamErrors(body: untyped) =
+  ## Raises the errors of the input and of the budget that ``body`` gets
+  ## wrapped in ``YamlStreamError``s as themselves.
+  try: body
+  except YamlStreamError as e:
+    var curE: ref Exception = e
+    while curE.parent of YamlStreamError: curE = curE.parent
+    if curE.parent of IOError: raise (ref IOError)(curE.parent)
+    elif curE.parent of OSError: raise (ref OSError)(curE.parent)
+    elif curE.parent of YamlParserError: raise (ref YamlParserError)(curE.parent)
+    elif curE.parent of YamlMemoryLimitError:
+      raise (ref YamlMemoryLimitError)(curE.parent)
+    else: internalError("Unexpected exception: " & curE.parent.repr)
 
 proc keepsComments*(options: PresentationOptions): bool =
   ## Whether `transform` keeps comments with ``options``: if they ask for it
@@ -1443,62 +1587,173 @@ proc doTransform(
   let keepComments = ctx.options.keepsComments
   var parser: YamlParser
   parser.init(keepComments = keepComments)
-  var source: string
-  if keepComments: source = input.readAll()
-  var events =
-    if keepComments: parser.parse(source)
-    else: parser.parse(input)
-  try:
-    var bys: YamlStream = newBufferYamlStream()
-    if keepComments:
-      var buffered: seq[Event]
-      for e in events: buffered.add(e)
-      var comments: seq[Comment]
-      # internalError is empty in release builds, so it cannot end a
-      # try expression
-      try: comments = events.comments
-      except ValueError: internalError("transform parses its own input")
-      if comments.len > 0:
-        ctx.attached = attachComments(buffered, comments, source)
-        ctx.commenting = true
-        ctx.output = ctx.target
-        ctx.target = newStringStream()
+  if not keepComments:
+    # written as it is read
+    let events = parser.parse(input)
+    unwrapStreamErrors:
+      doPresent(ctx, normalizedStream(events, resolveToCoreYamlTags))
+    return
+  let source = input.readAll()
+  var events = parser.parse(source)
+  unwrapStreamErrors:
+    var buffered: seq[Event]
+    for e in events: buffered.add(e)
+    var comments: seq[Comment]
+    # internalError is empty in release builds, so it cannot end a
+    # try expression
+    try: comments = events.comments
+    except ValueError: internalError("transform parses its own input")
+    var commented = newSeq[bool](buffered.len)
+    if comments.len > 0:
+      let attached = attachComments(buffered, comments, source)
+      ctx.attached = CommentTable(items: attached)
+      ctx.commenting = true
+      ctx.output = ctx.target
+      ctx.target = newStringStream()
       # a collection that holds a comment cannot be written in a single line
-      var
-        starts: seq[int]
-        commented = newSeq[bool](buffered.len)
-      for i, e in buffered:
-        let here = ctx.commenting and ctx.attached[i].hasComments
-        case e.kind
-        of yamlEndMap, yamlEndSeq:
-          # a comment at the end of the line of the end is outside
-          let start = starts.pop()
-          if here and ctx.attached[i].after.len > 0: commented[start] = true
-          if commented[start] or here:
-            if starts.len > 0: commented[starts[^1]] = true
-        else:
-          if here and starts.len > 0: commented[starts[^1]] = true
-          if e.kind in {yamlStartMap, yamlStartSeq}: starts.add(i)
-      for i, e in buffered:
+      commented = commentedCollections(buffered, attached)
+    let bys = newBufferYamlStream()
+    for i, e in buffered:
+      var event = e.normalized(resolveToCoreYamlTags)
+      if commented[i]:
+        if event.kind == yamlStartMap: event.mapStyle = csBlock
+        else: event.seqStyle = csBlock
+      bys.put(event)
+    doPresent(ctx, bys)
+
+proc hasComment(input: Stream): bool =
+  ## Whether ``input`` has a comment. False if the lexer fails, which
+  ## parsing then reports.
+  var lex: Lexer
+  lex.directiveExtensions = true
+  lex.keepComments = true
+  try: lex.init(input)
+  except CatchableError: return false
+  while true:
+    try: lex.next()
+    except LexerError: return false
+    if lex.comments.len > 0: return true
+    if lex.cur == Token.StreamEnd: return false
+
+const eventCharge = 64
+  ## bytes charged for a buffered event, besides its content
+
+proc transformDocuments(ctx: var Context, input: YamlSource,
+    resolveToCoreYamlTags: bool) =
+  ## Transforms ``input`` with its comments, one document at a time. The
+  ## comments of a document are attached once the events up to the next
+  ## document are known (a comment at the end of a document may go with an
+  ## event of it or of the next), so two documents are held at once, and
+  ## the lines of the input they span.
+  var parser: YamlParser
+  parser.init(keepComments = true, budget = input.budget)
+  let
+    events = parser.parse(input)
+    lines = LineWindow(first: 1, input: newSourceStream(input),
+        budget: input.budget)
+    table = CommentTable()
+    budget = input.budget
+  ctx.attached = table
+  ctx.commenting = true
+  ctx.output = ctx.target
+  ctx.target = newStringStream()
+  let documents = initYamlStream(iterator(): Event
+      {.gcsafe, raises: [CatchableError].} =
+    var
+      # the document before, whose comments may still get more
+      held: seq[Event]
+      heldAttached: seq[EventComments]
+      heldCharged = 0
+      deferred: seq[Comment]
+    template emit(group: seq[Event], groupAttached: seq[EventComments],
+        groupCharged: int) =
+      var attached = groupAttached
+      {.cast(gcsafe).}:
+        moveIntoBlocks(group, attached)
+      # a collection that holds a comment cannot be written in a single line
+      let commented = commentedCollections(group, attached)
+      # the presenter needs the comments of the events it has not presented
+      # yet only
+      let drop = min(table.presented - table.base, table.items.len)
+      if drop > 0:
+        table.items = table.items[drop .. ^1]
+        table.base += drop
+      table.items.add(attached)
+      budget.release(groupCharged)
+      for i, e in group:
         var event = e.normalized(resolveToCoreYamlTags)
         if commented[i]:
           if event.kind == yamlStartMap: event.mapStyle = csBlock
           else: event.seqStyle = csBlock
-        BufferYamlStream(bys).put(event)
-    else:
-      for e in events:
-        BufferYamlStream(bys).put(e.normalized(resolveToCoreYamlTags))
-    doPresent(ctx, bys)
-  except YamlStreamError as e:
-    var curE: ref Exception = e
-    while curE.parent of YamlStreamError: curE = curE.parent
-    if curE.parent of IOError: raise (ref IOError)(curE.parent)
-    elif curE.parent of OSError: raise (ref OSError)(curE.parent)
-    elif curE.parent of YamlParserError: raise (ref YamlParserError)(curE.parent)
-    else: internalError("Unexpected exception: " & curE.parent.repr)
+        yield event
+    while true:
+      # the events of the next document, and the comments read with them
+      var
+        current: seq[Event]
+        charged = 0
+      while true:
+        let e = events.next()
+        let size = eventCharge +
+            (if e.kind == yamlScalar: e.scalarContent.len else: 0)
+        budget.reserve(size, "holding a document to attach its comments")
+        charged += size
+        current.add(e)
+        if e.kind in {yamlEndDoc, yamlEndStream}: break
+      let ended = current[^1].kind == yamlEndStream
+      var comments = move deferred
+      {.cast(gcsafe).}:
+        comments.add(events.takeComments())
+      let combined = held & current
+      var attached = heldAttached & newSeq[EventComments](current.len)
+      {.cast(gcsafe).}:
+        attachRound(combined, comments, lines, attached, deferred,
+            final = ended)
+      let heldLen = held.len
+      # the comments of the held document are all attached now
+      if heldLen > 0: emit(held, attached[0 ..< heldLen], heldCharged)
+      held = current
+      heldAttached = attached[heldLen .. ^1]
+      heldCharged = charged
+      lines.dropBefore(held[0].startPos.line - 1)
+      if ended:
+        emit(held, heldAttached, heldCharged)
+        break)
+  try:
+    unwrapStreamErrors:
+      doPresent(ctx, documents)
+  finally:
+    budget.release(lines.charged)
 
 proc genInput(input: Stream): Stream = input
 proc genInput(input: string): Stream = newStringStream(input)
+
+proc transform*(
+  input  : YamlSource,
+  output : Stream,
+  options: PresentationOptions = PresentationOptions(),
+  resolveToCoreYamlTags: bool = false,
+) {.raises: [
+  IOError, OSError, YamlParserError, YamlPresenterJsonError,
+  YamlPresenterOutputError, YamlMemoryLimitError
+].} =
+  ## Like the `Stream` variant, for input of any size: ``input`` is parsed
+  ## as it is written, within the budget of ``input``. Comments are kept
+  ## one document at a time, which needs a random access source; the input
+  ## of a stream is read into memory for them. Since output is written as
+  ## the input is read, ``output`` holds the documents before an invalid
+  ## one when `YamlParserError` is raised.
+  var c = Context(target: output, options: options)
+  if options.keepsComments and not input.randomAccess:
+    let text = input.readAll("keeping the comments of " & input.name)
+    doTransform(c, newStringStream(text), resolveToCoreYamlTags)
+  elif options.keepsComments and hasComment(newSourceStream(input)):
+    transformDocuments(c, input, resolveToCoreYamlTags)
+  else:
+    var parser: YamlParser
+    parser.init(budget = input.budget)
+    let events = parser.parse(input)
+    unwrapStreamErrors:
+      doPresent(c, normalizedStream(events, resolveToCoreYamlTags))
 
 proc transform*(
   input  : Stream | string,
@@ -1516,7 +1771,8 @@ proc transform*(
   ## The comments of ``input`` are kept if ``options.comments`` says so,
   ## see `CommentOptions`.
   var c = Context(target: output, options: options)
-  doTransform(c, genInput(input), resolveToCoreYamlTags)
+  try: doTransform(c, genInput(input), resolveToCoreYamlTags)
+  except YamlMemoryLimitError: internalError("transform without a budget")
 
 proc transform*(
   input  : Stream | string,
@@ -1535,5 +1791,6 @@ proc transform*(
   var
     ss = newStringStream()
     c = Context(target: ss, options: options)
-  doTransform(c, genInput(input), resolveToCoreYamlTags)
+  try: doTransform(c, genInput(input), resolveToCoreYamlTags)
+  except YamlMemoryLimitError: internalError("transform without a budget")
   return ss.data

@@ -681,6 +681,27 @@ suite "memory cli":
       check same
       if code != 0: echo output[0 ..< min(output.len, 300)]
 
+  test "format within the limit":
+    var text = ""
+    for i in 0 ..< 3000:
+      text.add("# item " & $i & "\n---\nid:   " & $i & "  # the id\n" &
+          "tags: [a,   b]\n")
+    let file = dir / "fmt.yaml"
+    writeFile(file, text)
+    check getFileSize(file) > 128 * 1024
+    let expected = cli("format", file)
+    check expected.exitCode == 0
+    let limited = cli("format", "--memory-limit=128KiB", "--source=seek", file)
+    check limited.exitCode == 0
+    let same = limited.output == expected.output
+    check same
+    check cli("format", "--check", "--memory-limit=128KiB", file) ==
+        (file & "\n", 1)
+    check cli("format", "-i", "--memory-limit=128KiB", file) == ("", 0)
+    let written = readFile(file) == expected.output
+    check written
+    check cli("format", "--check", "--memory-limit=128KiB", file) == ("", 0)
+
   test "every tier reads every format":
     let expected = cli("as", "jsonl", "a.yaml", "b.jsonc", "c.jsonl")
     for tier in ["memory", "mmap", "seek", "stream"]:

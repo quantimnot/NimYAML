@@ -13,7 +13,7 @@
 ## forms the highest-level API of NimYAML.
 
 import std/[streams, options]
-import parser, presenter, native, private/internal, taglib
+import parser, presenter, native, private/internal, taglib, source, memory
 export native
 
 type
@@ -231,6 +231,20 @@ proc dumpJsonLines*[K](
   let target = newStringStream()
   dumper.dumpJsonLines(values, target)
   result = target.data
+
+proc transform*(
+  dumper : Dumper,
+  input  : YamlSource,
+  output : Stream,
+  resolveToCoreYamlTags: bool = false,
+) {.raises: [
+  IOError, OSError, YamlParserError, YamlPresenterJsonError,
+  YamlPresenterOutputError, YamlMemoryLimitError
+].} =
+  ## Like the `Stream` variant, for input of any size; see `transform
+  ## <presenter.html#transform,YamlSource,Stream,PresentationOptions,bool>`_
+  ## of a `YamlSource`.
+  transform(input, output, dumper.presentation, resolveToCoreYamlTags)
 
 proc transform*(
   dumper : Dumper,

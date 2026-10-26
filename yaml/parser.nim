@@ -334,6 +334,16 @@ proc comments*(s: YamlStream): seq[Comment] {.raises: [ValueError].} =
     raise newException(ValueError, "comments requires a YamlStream from parse")
   Context(s).lex.comments
 
+proc takeComments*(s: YamlStream): seq[Comment] {.raises: [ValueError].} =
+  ## Like `comments <#comments,YamlStream>`_, but hands the comments over:
+  ## a later call returns only the comments read since, so that a stream of
+  ## any length need not keep all of its comments.
+  if s of YamlRecoveringStream:
+    return move YamlRecoveringStream(s).ctx.lex.comments
+  if not (s of Context):
+    raise newException(ValueError, "comments requires a YamlStream from parse")
+  move Context(s).lex.comments
+
 type
   YamlFeedParser* = ref object
     ## A push-style parser for input that arrives in chunks, e.g. from a

@@ -7,7 +7,29 @@
 import std/[algorithm, os, strutils, unittest]
 when defined(nimPreviewSlimSystem):
   import std/syncio
-import ../yaml/[data, parser, presenter, stream]
+import ../yaml/[data, parser, presenter, stream, source, memory]
+import std/streams
+
+let sourceTmp = getTempDir() / ("yaml-comments-test-" & $getCurrentProcessId())
+createDir(sourceTmp)
+var sourceCount = 0
+
+proc transformedSources(input: string, options: PresentationOptions):
+    seq[string] =
+  ## ``input`` transformed through a `YamlSource`: in memory, and as a file
+  ## read by seeking, with a small budget so that pages and windows move.
+  let s = newStringStream()
+  transform(sourceOf(input), s, options)
+  result.add(s.data)
+  inc sourceCount
+  let path = sourceTmp / ($sourceCount & ".yaml")
+  writeFile(path, input)
+  let src = openSource(path, newMemoryBudget(1 shl 20),
+      SourcePolicy(choice: tcSeek, pageCache: 8192))
+  let f = newStringStream()
+  transform(src, f, options)
+  src.close()
+  result.add(f.data)
 
 proc collected(input: string): seq[Comment] =
   let s = initYamlParser(keepComments = true).parse(input)
@@ -55,6 +77,9 @@ proc formatted(input: string, options = keeping()): string =
   result = transform(input, options)
   # formatting is stable
   check transform(result, options) == result
+  # documents one at a time from a source give the same result
+  for output in transformedSources(input, options):
+    check output == result
 
 suite "Comments: parser":
   test "collects comments with their position":
@@ -88,6 +113,30 @@ suite "Comments: parser":
         if fed(input, size) != expected:
           checkpoint(path & " [chunk " & $size & "]")
           fail()
+
+suite "Comments: transform from a source":
+  test "the yaml-test-suite, one document at a time":
+    let inputs = suiteInputs()
+    check inputs.len > 300
+    for path in inputs:
+      let input = readFile(path)
+      var expected, error = ""
+      try: expected = transform(input, keeping())
+      except CatchableError as e: error = $e.name
+      var outputs: seq[string]
+      try: outputs = transformedSources(input, keeping())
+      except CatchableError as e: outputs = @[$e.name]
+      for output in outputs:
+        if output != (if error.len > 0: error else: expected):
+          checkpoint(path)
+          fail()
+
+  test "several documents with comments":
+    let input = "# head\n--- # one\na: 1 # a\n# end of one\n...\n" &
+        "# before two\n--- \nb:\n  # lead\n  - x # x\n...  # after two\n" &
+        "--- 3 # three\n# tail\n"
+    for output in transformedSources(input, keeping()):
+      check output == transform(input, keeping())
 
 suite "Comments: transform":
   test "dropped unless kept":
