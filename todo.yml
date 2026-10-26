@@ -86,8 +86,8 @@
   feature:
   - configurable memory limits  # memory section, --memory-limit, auto
   - use host APIs like mmap  # yaml/source: memory, mmap window, seek, stream
-  - microcontrollers: budget, callback sources, lexer and parser build with
-    --os:any
+  - "microcontrollers: budget, callback sources, lexer and parser build with
+    --os:any"
   - every yaml command reads inputs through sources and writes as it goes;
     exit code 3 when the limit is exceeded
   - queryStream constructs only the selected nodes
