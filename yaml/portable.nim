@@ -42,8 +42,8 @@
 ## references are kept as written: relative ones stay relative to the
 ## document's location, which the output presumably shares.
 
-import std/strutils
-import data, parser, stream
+import std/[streams, strutils]
+import data, parser, stream, source, memory
 
 type
   SchemaOutput* = enum
@@ -62,12 +62,7 @@ type
 
 const modelinePrefix* = "# yaml-language-server: $schema="
 
-proc documentsOf(source: string, sourceUri: string): seq[DocumentInfo] =
-  # References are only copied, never resolved, so a placeholder base keeps
-  # relative ones from being reported as unresolvable when the source has
-  # no URI.
-  let base = if sourceUri.len > 0: sourceUri else: "file:///"
-  let events = initYamlParser(sourceUri = base).parse(source)
+proc documentsOf(events: YamlStream): seq[DocumentInfo] =
   try:
     for e in events:
       case e.kind
@@ -110,14 +105,16 @@ proc isDirective(text, name: string): bool =
   text.startsWith("%" & name) and
       (text.len == name.len + 1 or text[name.len + 1] in {' ', '\t', '#'})
 
-proc expandDirectives*(source: string, options = ExpandOptions(),
-    sourceUri = ""): string {.raises: [YamlParserError, YamlStreamError].} =
-  ## Returns ``source`` with its global directives expanded into every
-  ## document, as described in the module documentation. Raises
-  ## `YamlParserError` if ``source`` is not valid YAML.
-  let docs = documentsOf(source, sourceUri)
-  let newline = if "\r\n" in source: "\r\n" else: "\n"
-  # the directives each document gains, and whether it needs markers
+proc baseOf(sourceUri: string): string =
+  # References are only copied, never resolved, so a placeholder base keeps
+  # relative ones from being reported as unresolvable when the source has
+  # no URI.
+  if sourceUri.len > 0: sourceUri else: "file:///"
+
+proc expandLines(docs: seq[DocumentInfo], newline: string, input: Stream,
+    output: Stream, options: ExpandOptions) =
+  ## Writes the lines of ``input`` to ``output``, with the directives each
+  ## document of ``docs`` gains.
   var inserted = newSeq[seq[string]](docs.len)
   for i, doc in docs:
     if doc.directives.isNil: continue
@@ -125,28 +122,49 @@ proc expandDirectives*(source: string, options = ExpandOptions(),
     for d in doc.directives.declarations:
       if d.origin == doGlobal and not d.overridden: globals.add(d)
     inserted[i] = globals.directiveLines(options.schemas)
-  var line = 0
-  var pos = 0
-  var current = -1 # index of the document whose directive block we are in
-  while pos < source.len:
+  var
+    line = 0
+    current = -1 # index of the document whose directive block we are in
+    following = 0 # index of the next document to start
+    raw, text = ""
+    buffer = newString(65536)
+    pos, filled = 0
+  while true:
+    # the next line, with its line break (``raw``) and without (``text``)
+    raw.setLen(0)
+    while true:
+      if pos >= filled:
+        filled = max(0, input.readDataStr(buffer, 0 ..< buffer.len))
+        pos = 0
+        if filled == 0: break
+      let stop = buffer.find('\n', pos, filled - 1)
+      if stop < 0:
+        raw.add(buffer[pos ..< filled])
+        pos = filled
+      else:
+        raw.add(buffer[pos .. stop])
+        pos = stop + 1
+        break
+    if raw.len == 0: break
     inc(line)
-    var stop = source.find('\n', pos)
-    let next = if stop < 0: source.len else: stop + 1
-    if stop < 0: stop = source.len
-    var text = source[pos ..< stop]
+    text = raw
+    if text.endsWith('\n'): text.setLen(text.len - 1)
     if text.endsWith('\r'): text.setLen(text.len - 1)
     # the start of a document: write what it gains
-    for i, doc in docs:
-      if doc.start.line == line:
-        current = i
-        if inserted[i].len > 0:
-          # a document that already has directives already follows a
-          # `...`; one that only had `---` may not
-          let hasOwnDirectives = doc.marker > doc.start.line
-          if i > 0 and not docs[i - 1].ended and not hasOwnDirectives:
-            result.add("..." & newline)
-          for directive in inserted[i]: result.add(directive & newline)
-          if doc.marker == 0: result.add("---" & newline)
+    while following < docs.len and docs[following].start.line <= line:
+      let i = following
+      inc(following)
+      if docs[i].start.line != line: continue
+      let doc = docs[i]
+      current = i
+      if inserted[i].len > 0:
+        # a document that already has directives already follows a
+        # `...`; one that only had `---` may not
+        let hasOwnDirectives = doc.marker > doc.start.line
+        if i > 0 and not docs[i - 1].ended and not hasOwnDirectives:
+          output.write("..." & newline)
+        for directive in inserted[i]: output.write(directive & newline)
+        if doc.marker == 0: output.write("---" & newline)
     let inBlock = current >= 0 and docs[current].marker > 0 and
         line < docs[current].marker
     if inBlock and text.isDirective("GLOBAL"):
@@ -158,8 +176,48 @@ proc expandDirectives*(source: string, options = ExpandOptions(),
         if p.startsWith('#'):
           params.setLen(j)
           break
-      if params.len == 1: result.add(modelinePrefix & params[0] & newline)
-      elif params.len > 1: result.add(source[pos ..< next])
+      if params.len == 1: output.write(modelinePrefix & params[0] & newline)
+      elif params.len > 1: output.write(raw)
     else:
-      result.add(source[pos ..< next])
-    pos = next
+      output.write(raw)
+
+proc expandDirectives*(source: string, options = ExpandOptions(),
+    sourceUri = ""): string {.raises: [YamlParserError, YamlStreamError].} =
+  ## Returns ``source`` with its global directives expanded into every
+  ## document, as described in the module documentation. Raises
+  ## `YamlParserError` if ``source`` is not valid YAML.
+  let docs = documentsOf(initYamlParser(sourceUri = baseOf(sourceUri)).
+      parse(source))
+  let newline = if "\r\n" in source: "\r\n" else: "\n"
+  let output = newStringStream()
+  try: expandLines(docs, newline, newStringStream(source), output, options)
+  except IOError, OSError:
+    raise newException(YamlStreamError, "cannot write to a string")
+  result = move(output.data)
+
+proc hasCrLf(input: Stream): bool =
+  var
+    buffer = newString(65536)
+    lastCr = false
+  while true:
+    let n = input.readDataStr(buffer, 0 ..< buffer.len)
+    if n <= 0: return false
+    for i in 0 ..< n:
+      if buffer[i] == '\n' and lastCr: return true
+      lastCr = buffer[i] == '\r'
+
+proc expandDirectives*(src: YamlSource, output: Stream,
+    options = ExpandOptions(), sourceUri = "")
+    {.raises: [YamlParserError, YamlStreamError, IOError, OSError,
+    YamlMemoryLimitError].} =
+  ## Like the `string` variant, for input of any size, written to
+  ## ``output``. ``src`` is read more than once, so it must have random
+  ## access; a stream is read into memory.
+  if not src.randomAccess:
+    output.write(expandDirectives(src.readAll("expanding " & src.name),
+        options, sourceUri))
+    return
+  let docs = documentsOf(initYamlParser(sourceUri = baseOf(sourceUri),
+      budget = src.budget).parse(src))
+  let newline = if hasCrLf(newSourceStream(src)): "\r\n" else: "\n"
+  expandLines(docs, newline, newSourceStream(src), output, options)

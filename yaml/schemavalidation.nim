@@ -39,7 +39,8 @@ import std/[os, strutils, tables, uri]
 when defined(nimPreviewSlimSystem):
   import std/syncio
 import data, dom, loading, native, parser, stream, diagnostics, fragment,
-    jsonschema, documentschema
+    jsonschema, documentschema, source
+import std/streams
 
 proc fileUri*(path: string): string =
   ## The ``file:`` URI of the local file ``path``, which is made absolute,
@@ -85,16 +86,13 @@ proc rangeOf(root: YamlNode, instanceLocation: string,
   except YamlFragmentError: discard
   result = (fallback, Mark(line: fallback.line, column: fallback.column + 1))
 
-proc validateDocuments*(source: string, registry: SchemaRegistry,
-    sourceUri = "", options = ValidationOptions()): seq[Diagnostic] =
-  ## Validates every valid document of ``source`` that declares a schema.
-  ## ``sourceUri`` resolves relative schema references.
-  let schemas = documentSchemas(source, sourceUri)
+proc validateWith(schemas: seq[DocumentSchema],
+    recovering: YamlRecoveringStream, registry: SchemaRegistry,
+    options: ValidationOptions): seq[Diagnostic] =
   var byIndex = initTable[int, DocumentSchema]()
   for s in schemas: byIndex[s.index] = s
   var compiled = initTable[string, JsonSchema]()
   var unavailable = initTable[string, string]()
-  let recovering = initYamlParser(sourceUri = sourceUri).parseRecovering(source)
   var events = YamlStream(recovering)
   discard events.next() # yamlStartStream
   while true:
@@ -153,3 +151,24 @@ proc validateDocuments*(source: string, registry: SchemaRegistry,
             severity: severityError, startPos: startPos, endPos: endPos,
             message: unit.error & " (" & unit.keywordLocation & " in " &
                 uri & ")"))
+
+proc validateDocuments*(source: string, registry: SchemaRegistry,
+    sourceUri = "", options = ValidationOptions()): seq[Diagnostic] =
+  ## Validates every valid document of ``source`` that declares a schema.
+  ## ``sourceUri`` resolves relative schema references.
+  validateWith(documentSchemas(source, sourceUri),
+      initYamlParser(sourceUri = sourceUri).parseRecovering(source),
+      registry, options)
+
+proc validateDocuments*(src: YamlSource, registry: SchemaRegistry,
+    sourceUri = "", options = ValidationOptions()): seq[Diagnostic] =
+  ## Like the `string` variant, for input of any size: one document is held
+  ## at a time. ``src`` is read twice, so it must have random access; a
+  ## stream is read into memory.
+  if not src.randomAccess:
+    return validateDocuments(src.readAll("validating " & src.name), registry,
+        sourceUri, options)
+  validateWith(documentSchemas(src, sourceUri),
+      initYamlParser(sourceUri = sourceUri, budget = src.budget).
+        parseRecovering(newSourceStream(src)),
+      registry, options)

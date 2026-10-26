@@ -14,7 +14,17 @@ import std/[os, strutils, unittest]
 when defined(nimPreviewSlimSystem):
   import std/syncio
 import "../yaml", "../yaml/dom", "../yaml/data", "../yaml/diagnostics",
-    "../yaml/documentschema", "../yaml/jsonschema", "../yaml/schemavalidation"
+    "../yaml/documentschema", "../yaml/jsonschema", "../yaml/schemavalidation",
+    "../yaml/source"
+
+proc validated(source: string, registry: SchemaRegistry, sourceUri = ""):
+    seq[Diagnostic] =
+  ## `validateDocuments` of ``source``, which must give the same result
+  ## when it reads ``source`` from a `YamlSource`
+  result = validateDocuments(source, registry, sourceUri)
+  check validateDocuments(sourceOf(source), registry, sourceUri) == result
+  check documentSchemas(sourceOf(source), sourceUri) ==
+      documentSchemas(source, sourceUri)
 
 proc winners(source: string, sourceUri = ""): seq[string] =
   for doc in documentSchemas(source, sourceUri): result.add(doc.schema)
@@ -158,7 +168,7 @@ properties:
 ...
 --- {port: 1}
 """
-    let d = validateDocuments(source, registry)
+    let d = validated(source, registry)
     check d.rules == @["schema-validation", "schema-validation"]
     check d[0].startPos == Mark(line: 4, column: 21)
     check "maximum" in d[0].message
@@ -168,23 +178,23 @@ properties:
   test "a document is validated against all its schemas":
     registry.addSchema(loadAs[YamlNode](
         "{properties: {port: {maximum: 100}}}"), "https://x.example/small")
-    let d = validateDocuments("%SCHEMA https://x.example/service " &
+    let d = validated("%SCHEMA https://x.example/service " &
         "https://x.example/small\n--- {port: 200}\n", registry)
     check d.rules == @["schema-validation", "schema-validation"]
     check "name" in d[0].message and "x.example/service" in d[0].message
     check "maximum" in d[1].message and "x.example/small" in d[1].message
 
   test "one unavailable schema among several":
-    let d = validateDocuments("%SCHEMA https://x.example/service " &
+    let d = validated("%SCHEMA https://x.example/service " &
         "https://x.example/missing\n--- {port: 1}\n", registry)
     check d.rules == @["schema-validation", "schema-unavailable"]
     check d[1].startPos == Mark(line: 1, column: 35)
 
   test "documents without schema are not validated":
-    check validateDocuments("{port: x}\n", registry).len == 0
+    check validated("{port: x}\n", registry).len == 0
 
   test "an unknown schema is reported once per document":
-    let d = validateDocuments(
+    let d = validated(
         "%SCHEMA https://x.example/missing\n--- a\n", registry)
     check d.rules == @["schema-unavailable"]
     check d[0].startPos == Mark(line: 1, column: 9)
@@ -195,7 +205,7 @@ properties:
     writeFile(dir / "s.yaml", "{type: array}\n")
     let files = newSchemaRegistry(fileSchemaLoader())
     let uri = "file://" & dir / "data.yaml"
-    check validateDocuments("%SCHEMA s.yaml\n--- []\n", files, uri).len == 0
-    check validateDocuments("%SCHEMA s.yaml\n--- {}\n", files, uri).rules ==
+    check validated("%SCHEMA s.yaml\n--- []\n", files, uri).len == 0
+    check validated("%SCHEMA s.yaml\n--- {}\n", files, uri).rules ==
         @["schema-validation"]
     removeDir(dir)

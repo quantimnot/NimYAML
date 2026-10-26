@@ -37,7 +37,9 @@ import std/[algorithm, options, os, sets, strutils, tables]
 from std/unicode import runeLen, runeOffset
 when defined(nimPreviewSlimSystem):
   import std/syncio
-import data, parser, stream, loading, annotations, diagnostics, documentschema
+import data, parser, stream, loading, annotations, diagnostics, documentschema,
+    source
+import std/streams
 export options, tables, diagnostics
 
 type
@@ -58,6 +60,13 @@ type
   LintContext* = object
     ## State of one `lint` call, passed to the rules.
     source*: string
+      ## the linted input; empty when it was read from a `YamlSource`
+    finalLineBreak*: bool
+      ## whether the input is empty or ends with a line break; known when
+      ## ``onEnd`` is called
+    lastLine*: tuple[number, length: int]
+      ## the number and length of the last line of the input; known when
+      ## ``onEnd`` is called
     sourceUri*: string ## where ``source`` was retrieved from; may be empty
     diagnostics*: seq[Diagnostic]
     documentStart*: YamlDocumentStart
@@ -144,14 +153,9 @@ method onLine(r: TabsRule, ctx: var LintContext, line: int, text: string) =
     else: return
 
 method onEnd(r: FinalNewlineRule, ctx: var LintContext) =
-  if ctx.source.len > 0 and ctx.source[^1] != '\n':
-    var
-      line = 1
-      last = ""
-    for n, text in ctx.source.sourceLines:
-      line = n
-      last = text
-    ctx.report(r, mark(line, last.len + 1), mark(line, last.len + 2),
+  if not ctx.finalLineBreak:
+    let (line, length) = ctx.lastLine
+    ctx.report(r, mark(line, length + 1), mark(line, length + 2),
         "no line break at end of file")
 
 type
@@ -349,14 +353,12 @@ proc cmpDiagnostics(a, b: Diagnostic): int =
   if result == 0: result = cmp(a.startPos.column, b.startPos.column)
   if result == 0: result = cmp(a.rule, b.rule)
 
-proc lint*(source: string, config = defaultConfig(), sourceUri = ""):
-    seq[Diagnostic] =
-  ## Lints ``source`` with the rules enabled by ``config``. ``sourceUri`` is
-  ## the URI ``source`` was retrieved from; relative schema references
-  ## resolve against it. Returns the diagnostics sorted by start position,
-  ## then rule id.
+proc lintWith(ctx: var LintContext, config: LintConfig,
+    events: YamlRecoveringStream, lines: Stream): seq[Diagnostic] =
+  ## Lints the input whose events are ``events`` and whose text ``lines``
+  ## reads.
+  let sourceUri = ctx.sourceUri
   var
-    ctx = LintContext(source: source, sourceUri: sourceUri)
     rules: seq[LintRule]
     syntax: LintRule = nil
     reported = initTable[string, LintRule]()
@@ -373,7 +375,6 @@ proc lint*(source: string, config = defaultConfig(), sourceUri = ""):
       var found = d
       found.severity = reported[d.rule].level.severity
       ctx.diagnostics.add(found)
-  let events = initYamlParser(sourceUri = sourceUri).parseRecovering(source)
   for e in events:
     if e.kind == yamlStartDoc:
       ctx.documentStart = events.documentStart
@@ -384,16 +385,49 @@ proc lint*(source: string, config = defaultConfig(), sourceUri = ""):
               endPos: i.endPos, message: i.message))
     else: schemas.onEvent(e)
     for r in rules: r.onEvent(ctx, e)
-  if not syntax.isNil:
-    for err in events.errors:
-      var d = err.toDiagnostic(source)
-      d.severity = syntax.level.severity
-      ctx.diagnostics.add(d)
+  # the range of a syntax error ends with its line
+  var lineLengths = initTable[int, int]()
+  for err in events.errors: lineLengths[err.error.mark.line] = 0
   for err in events.errors: schemas.onDocumentDropped(err)
-  for n, text in source.sourceLines:
+  var
+    reader = initLineReader(lines)
+    text: string
+  while reader.readLine(text):
+    let n = reader.number
+    if n in lineLengths: lineLengths[n] = text.len
+    ctx.lastLine = (n, text.len)
     schemas.onLine(n, text)
     for r in rules: r.onLine(ctx, n, text)
+  ctx.finalLineBreak = reader.length == 0 or reader.lastChar == '\n'
+  if not syntax.isNil:
+    for err in events.errors:
+      var d = err.syntaxDiagnostic(lineLengths[err.error.mark.line])
+      d.severity = syntax.level.severity
+      ctx.diagnostics.add(d)
   for d in schemas.finish().diagnostics: report(d)
   for r in rules: r.onEnd(ctx)
   result = move(ctx.diagnostics)
   result.sort(cmpDiagnostics)
+
+proc lint*(source: string, config = defaultConfig(), sourceUri = ""):
+    seq[Diagnostic] =
+  ## Lints ``source`` with the rules enabled by ``config``. ``sourceUri`` is
+  ## the URI ``source`` was retrieved from; relative schema references
+  ## resolve against it. Returns the diagnostics sorted by start position,
+  ## then rule id.
+  var ctx = LintContext(source: source, sourceUri: sourceUri)
+  let events = initYamlParser(sourceUri = sourceUri).parseRecovering(source)
+  lintWith(ctx, config, events, newStringStream(source))
+
+proc lint*(src: YamlSource, config = defaultConfig(), sourceUri = ""):
+    seq[Diagnostic] =
+  ## Like the `string` variant, for input of any size: ``src`` is read as a
+  ## stream, twice (for its events and for its lines), so it must have
+  ## random access; a stream is read into memory. Its budget is charged for
+  ## the parser's buffer.
+  if not src.randomAccess:
+    return lint(src.readAll("linting " & src.name), config, sourceUri)
+  var ctx = LintContext(sourceUri: sourceUri)
+  let events = initYamlParser(sourceUri = sourceUri, budget = src.budget).
+      parseRecovering(newSourceStream(src))
+  lintWith(ctx, config, events, newSourceStream(src))

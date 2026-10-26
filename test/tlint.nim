@@ -7,7 +7,7 @@
 import std/[os, strutils, unittest, algorithm, options, tables]
 when defined(nimPreviewSlimSystem):
   import std/[syncio, assertions]
-import ../yaml/[data, parser, stream, diagnostics, lint]
+import ../yaml/[data, parser, stream, diagnostics, lint, source, memory]
 
 proc span(d: Diagnostic): string =
   d.rule & " " & $d.startPos.line & ":" & $d.startPos.column & "-" &
@@ -66,6 +66,23 @@ proc parses(input: string): bool =
     for e in initYamlParser().parse(input): discard
     result = true
   except CatchableError: result = false
+
+suite "Lint: from a source":
+  test "the yaml-test-suite, read in memory and by seeking":
+    let inputs = suiteInputs()
+    check inputs.len > 300
+    for path in inputs:
+      let expected = lint(readFile(path))
+      let src = openSource(path, newMemoryBudget(1 shl 20),
+          SourcePolicy(choice: tcSeek, pageCache: 8192))
+      if lint(src) != expected or lint(sourceOf(readFile(path))) != expected:
+        checkpoint(path)
+        fail()
+      src.close()
+
+  test "no line break at the end":
+    for text in ["a: 1", "a: 1\n", "", "a: 1\r\nb: [\n", "\n\n# c"]:
+      check lint(sourceOf(text)) == lint(text)
 
 suite "Lint: syntax":
   test "valid input":

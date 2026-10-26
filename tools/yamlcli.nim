@@ -396,6 +396,10 @@ proc openInput(file: string, randomAccess = false): YamlSource =
     stderr.writeLine(result.name & ": tier " & $result.tier & ", limit " &
         formatSize(budget.limit))
 
+proc randomInput(file: string): YamlSource =
+  ## The source of ``file`` for commands that read it more than once.
+  openInput(file, randomAccess = true)
+
 proc readText(file: string, randomAccess = false): Input =
   ## The whole text of ``file`` (standard input for "" or "-"), which must
   ## fit into the budget.
@@ -1043,6 +1047,58 @@ proc assigned(input: Input, format: DataFormat, path: JsonPath,
         style.dumper.presentation,
         json = format in {dfJson, dfJsonc})
 
+iterator selected(src: YamlSource, format: DataFormat, path: JsonPath,
+    indexed: bool): tuple[path: string, node: YamlNode] =
+  ## The nodes ``path`` selects in ``src``, document by document. With
+  ## ``indexed`` (``src`` is a file that may be indexed), a path that names
+  ## a single location is read through the index, and the index is brought
+  ## up to date otherwise.
+  let
+    location = path.normalizedPath
+    settings =
+      if indexed and format.indexable: indexSettingsFor(src.name)
+      else: IndexSettings(mode: imOff)
+    nodes =
+      if location.len > 0 and settings.mode != imOff:
+        indexedNodes(src.name, location, settings)
+      else: none(seq[YamlNode])
+  if nodes.isSome:
+    for node in nodes.get(): yield (location, node)
+  else:
+    var s = events(src, format)
+    discard s.next() # yamlStartStream
+    while s.peek().kind == yamlStartDoc:
+      var root: YamlNode
+      construct(s, root)
+      for found in root.queryLocated(path): yield (found.path, found.node)
+    if settings.mode != imOff:
+      # the index is built from the whole text (see yaml/nodeindex)
+      updateIndex(src.name, readText(src.name).content, [location], settings,
+          json = format != dfYaml)
+
+proc selectCommand(path: JsonPath, files: seq[string],
+    source, target: Option[DataFormat], paths: bool): int =
+  ## ``yaml query`` without an assignment: the selected nodes are written as
+  ## they are found, or with ``paths``, their Normalized Paths.
+  if paths:
+    for input in inputSources(files):
+      try:
+        for found in selected(input, inputFormat(files, input.name, source),
+            path, indexed = files.len > 0):
+          stdout.writeLine(found.path)
+      except YamlStreamError, YamlParserError, YamlConstructionError:
+        return failedInput(input.name, getCurrentException())
+    return 0
+  proc nodes(src: YamlSource, format: DataFormat): YamlStream =
+    initYamlStream(iterator(): Event {.gcsafe, raises: [CatchableError].} =
+      yield startStreamEvent()
+      {.cast(gcsafe), cast(raises: [CatchableError]).}:
+        for found in selected(src, format, path, indexed = files.len > 0):
+          for e in represent(found.node):
+            if e.kind notin {yamlStartStream, yamlEndStream}: yield e
+      yield endStreamEvent())
+  writeDocuments(files, source, some(target.get(dfYaml)), false, nodes)
+
 proc queryCommand(args: seq[string]): int =
   var
     positional: seq[string]
@@ -1078,44 +1134,14 @@ proc queryCommand(args: seq[string]): int =
     except YamlParserError, YamlConstructionError:
       stderr.writeLine("invalid value: " & getCurrentExceptionMsg())
       return 2
+  if not assigns: return selectCommand(path, files, source, target, paths)
   let
     yamlStyle = toolConfigFor(
         if files.len > 0: files[0] else: getCurrentDir() / "-").format
     selected = newStream()
   var asText = false # the edited text of a single input is written as is
-  let location = if assigns: "" else: path.normalizedPath
   for name in (if files.len == 0: @[""] else: files):
     let format = source.get(if files.len == 0: dfYaml else: formatOf(name))
-    var settings = IndexSettings(mode: imOff)
-    if name.len > 0 and not assigns and format.indexable:
-      settings = indexSettingsFor(name)
-      if location.len > 0:
-        let nodes = indexedNodes(name, location, settings)
-        if nodes.isSome:
-          for node in nodes.get():
-            if paths: stdout.writeLine(location)
-            else: selected.collect(represent(node))
-          continue
-    if not assigns:
-      let src = openInput(name)
-      try:
-        var s = events(src, format)
-        discard s.next() # yamlStartStream
-        while s.peek().kind == yamlStartDoc:
-          var root: YamlNode
-          construct(s, root)
-          for found in root.queryLocated(path):
-            if paths: stdout.writeLine(found.path)
-            else: selected.collect(represent(found.node))
-      except YamlStreamError, YamlParserError, YamlConstructionError,
-          YamlPresenterCborError:
-        return failed(src.name, getCurrentException())
-      finally: src.close()
-      if settings.mode != imOff:
-        # the index is built from the whole text (see yaml/nodeindex)
-        updateIndex(name, readText(name).content, [location], settings,
-            json = format != dfYaml)
-      continue
     let input = readText(name, randomAccess = assigns)
     try:
       if assigns:
@@ -1537,9 +1563,12 @@ proc run*(args: seq[string]): int =
     return helpCommand(@[command])
   try:
     case command
-    of "lint": yamllint.run(rest, lmLint, lintUsage, toolConfigs = true)
+    of "lint":
+      yamllint.run(rest, lmLint, lintUsage, toolConfigs = true,
+          openInput = randomInput)
     of "validate":
-      yamllint.run(rest, lmValidate, validateUsage, toolConfigs = true)
+      yamllint.run(rest, lmValidate, validateUsage, toolConfigs = true,
+          openInput = randomInput)
     of "format": formatCommand(rest)
     of "convert", "as", "to": convertCommand(command, rest)
     of "query": queryCommand(rest)
@@ -1547,7 +1576,7 @@ proc run*(args: seq[string]): int =
     of "merge": mergeCommand(rest)
     of "canonical", "jcs": canonicalCommand(rest)
     of "diff": diffCommand(rest)
-    of "expand": yamlexpand.run(rest, stdin, stdout)
+    of "expand": yamlexpand.run(rest, stdin, stdout, randomInput)
     of "config": configCommand(rest)
     of "index": indexCommand(rest)
     of "lsp": lspCommand(rest)

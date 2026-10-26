@@ -702,6 +702,23 @@ suite "memory cli":
     check written
     check cli("format", "--check", "--memory-limit=128KiB", file) == ("", 0)
 
+  test "lint, validate, expand and query within the limit":
+    var text = "%GLOBAL TAG !e! tag:example.com,2000:\n"
+    for i in 0 ..< 4000:
+      text.add("--- # doc " & $i & "\nid: " & $i & "\nname: item " & $i &
+          "\n")
+    let file = dir / "many.yaml"
+    writeFile(file, text)
+    check getFileSize(file) > 128 * 1024
+    for args in [@["lint"], @["validate"], @["expand"], @["query", "$.id"],
+        @["query", "--paths", "$..name"]]:
+      let expected = cli(args & @[file])
+      let limited = cli(args & @["--memory-limit=128KiB", file])
+      check limited.exitCode == expected.exitCode
+      let same = limited.output == expected.output
+      check same
+      if not same: echo args, ": ", limited.output[0 ..< min(300, limited.output.len)]
+
   test "every tier reads every format":
     let expected = cli("as", "jsonl", "a.yaml", "b.jsonc", "c.jsonl")
     for tier in ["memory", "mmap", "seek", "stream"]:

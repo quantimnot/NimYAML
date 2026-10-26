@@ -15,7 +15,15 @@ import std/[os, streams, strutils, unittest]
 when defined(nimPreviewSlimSystem):
   import std/syncio
 import "../yaml/data", "../yaml/parser", "../yaml/stream", "../yaml/presenter",
-    "../yaml/portable", "../tools/yamlexpand"
+    "../yaml/portable", "../tools/yamlexpand", "../yaml/source"
+
+proc expanded(source: string, options = ExpandOptions()): string =
+  ## `expandDirectives` of ``source``, which must give the same result when
+  ## it reads ``source`` from a `YamlSource`
+  result = expandDirectives(source, options)
+  let output = newStringStream()
+  expandDirectives(sourceOf(source), output, options)
+  check output.data == result
 
 proc events(source: string, extensions: bool): seq[Event] =
   for e in initYamlParser(directiveExtensions = extensions).parse(source):
@@ -60,7 +68,7 @@ suite "expandDirectives":
 ...
 --- !e!c 3
 """
-    let expanded = expandDirectives(source)
+    let expanded = expanded(source)
     check expanded == """# tags for everything
 %TAG !e! tag:example.com,2000:
 --- !e!a 1
@@ -79,13 +87,13 @@ suite "expandDirectives":
 
   test "`...` is added before a document that gains directives":
     let source = "%GLOBAL YAML 1.1\n--- a\n--- b\n"
-    let expanded = expandDirectives(source)
+    let expanded = expanded(source)
     check expanded == "%YAML 1.1\n--- a\n...\n%YAML 1.1\n--- b\n"
     check roundTrips(source, expanded)
 
   test "`---` is added after directives of a bare document":
     let source = "%GLOBAL TAG !e! tag:e:\n--- !e!a 1\n...\n!e!b 2\n"
-    let expanded = expandDirectives(source)
+    let expanded = expanded(source)
     check expanded ==
         "%TAG !e! tag:e:\n--- !e!a 1\n...\n%TAG !e! tag:e:\n---\n!e!b 2\n"
     check roundTrips(source, expanded)
@@ -102,7 +110,7 @@ suite "expandDirectives":
 ...
 --- !e!c 3
 """
-    let expanded = expandDirectives(source)
+    let expanded = expanded(source)
     # the first document's own %TAG !e! overrides the global one there
     check expanded == """%YAML 1.1
 %TAG !e! tag:first:
@@ -125,7 +133,7 @@ suite "expandDirectives":
 %SCHEMA schemas/special.json
 --- {name: b}
 """
-    let directives = expandDirectives(source)
+    let directives = expanded(source)
     check directives == """%SCHEMA schemas/service.json
 --- {name: a}
 ...
@@ -134,7 +142,7 @@ suite "expandDirectives":
 """
     check roundTrips(source, directives)
     check unknownDirectives(directives) == 2 # %SCHEMA is still NimYAML's
-    let modelines = expandDirectives(source, ExpandOptions(schemas: soModeline))
+    let modelines = expanded(source, ExpandOptions(schemas: soModeline))
     check modelines == """# yaml-language-server: $schema=schemas/service.json
 --- {name: a}
 ...
@@ -152,19 +160,19 @@ suite "expandDirectives":
         "--- 1\n...\n--- 2\n"
     let expected = "%SCHEMA https://x.example/a https://x.example/b\n" &
         "--- 1\n...\n%SCHEMA https://x.example/a https://x.example/b\n--- 2\n"
-    check expandDirectives(source) == expected
+    check expanded(source) == expected
     # a modeline names one schema
-    check expandDirectives(source, ExpandOptions(schemas: soModeline)) ==
+    check expanded(source, ExpandOptions(schemas: soModeline)) ==
         expected
     check schemasOf(expected) == schemasOf(source)
     const own = "%SCHEMA https://x.example/a https://x.example/b\n--- 1\n"
-    check expandDirectives(own, ExpandOptions(schemas: soModeline)) == own
+    check expanded(own, ExpandOptions(schemas: soModeline)) == own
 
   test "comments, styles and line breaks are kept":
     let source = "%GLOBAL TAG !e! tag:e: # the e handle\r\n" &
         "--- # first\r\n- !e!a  'quoted'   # comment\r\n...\r\n" &
         "--- |\r\n  literal\r\n"
-    let expanded = expandDirectives(source)
+    let expanded = expanded(source)
     check expanded == "%TAG !e! tag:e:\r\n" &
         "--- # first\r\n- !e!a  'quoted'   # comment\r\n...\r\n" &
         "%TAG !e! tag:e:\r\n--- |\r\n  literal\r\n"
@@ -173,11 +181,11 @@ suite "expandDirectives":
   test "input without globals is unchanged":
     for source in ["a: 1\n", "%YAML 1.2\n--- a\n...\n%TAG !e! x:\n--- !e!b c\n",
         "--- a\n--- b\n"]:
-      check expandDirectives(source) == source
+      check expanded(source) == source
 
   test "invalid YAML raises":
     expect YamlParserError:
-      discard expandDirectives("a: [\n")
+      discard expanded("a: [\n")
 
 suite "presenter directive options":
   test "ovDocument and schemaDirective":

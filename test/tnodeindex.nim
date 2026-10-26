@@ -196,6 +196,17 @@ suite "nodeindex":
       check read.get().documents[0].entries == index.documents[0].entries
       check read.get().source == index.source
 
+suite "nodeindex: fingerprints":
+  test "a file is hashed in chunks":
+    let path = getTempDir() / ("fingerprint-" & $getCurrentProcessId() & ".yaml")
+    var text = ""
+    for i in 0 ..< 20000: text.add("k" & $i & ": v\n")
+    writeFile(path, text)
+    check fingerprintFile(path, 7) == fingerprint(text, 7)
+    writeFile(path, "")
+    check fingerprintFile(path) == fingerprint("")
+    removeFile(path)
+
 suite "nodeindex: files":
   setup:
     let tmp = getTempDir() / "tnodeindex-files-" & $getCurrentProcessId()

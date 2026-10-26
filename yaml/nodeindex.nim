@@ -178,8 +178,10 @@ const
 
 # Fingerprints
 
-proc fnv1a64(content: string): uint64 =
-  result = 14695981039346656037'u64
+const fnvOffset = 14695981039346656037'u64
+
+proc fnv1a64(content: openArray[char], hash = fnvOffset): uint64 =
+  result = hash
   for c in content:
     result = (result xor uint64(ord(c))) * 1099511628211'u64
 
@@ -189,6 +191,24 @@ proc fingerprint*(content: string, mtime = 0'i64): SourceFingerprint =
   ## The fingerprint of a source with ``content``, modified at ``mtime``.
   SourceFingerprint(size: content.len, mtime: mtime,
       hash: toHex(fnv1a64(content)).toLowerAscii())
+
+proc fingerprintFile*(file: string, mtime = 0'i64): SourceFingerprint =
+  ## The fingerprint of the content of ``file``, read in chunks, so that a
+  ## file of any size is hashed in little memory; the same as `fingerprint`
+  ## of its content.
+  let f = open(file)
+  defer: f.close()
+  var
+    buffer = newString(65536)
+    hash = fnvOffset
+    size = 0'i64
+  while true:
+    let n = f.readBuffer(addr buffer[0], buffer.len)
+    if n <= 0: break
+    hash = fnv1a64(buffer.toOpenArray(0, n - 1), hash)
+    size += n
+  SourceFingerprint(size: size, mtime: mtime,
+      hash: toHex(hash).toLowerAscii())
 
 proc modificationTime*(file: string): int64 =
   ## The modification time of ``file`` in nanoseconds; 0 if it has none.
@@ -521,7 +541,7 @@ proc indexedNodes*(file: string, path: string, settings: IndexSettings):
   if size != index.source.size: return
   if mtime != index.source.mtime:
     try:
-      if fingerprint(readFile(file)).hash != index.source.hash: return
+      if fingerprintFile(file).hash != index.source.hash: return
     except IOError: return
     index.source.mtime = mtime
     touched = true

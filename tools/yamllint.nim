@@ -23,7 +23,8 @@
 import std/[os, parseopt, tables]
 when defined(nimPreviewSlimSystem):
   import std/syncio
-import ../yaml/[lint, jsonschema, schemavalidation, toolconfig, schemacache]
+import ../yaml/[lint, jsonschema, schemavalidation, toolconfig, schemacache,
+    source, memory]
 
 type
   LintMode* = enum
@@ -42,13 +43,18 @@ proc restrict(config: LintConfig, mode: LintMode): LintConfig =
     for id in styleRules:
       result.rules[id] = RuleConfig(level: some(levelOff))
 
+type InputOpener* = proc (file: string): YamlSource
+  ## Opens the input ``file``, standard input for "".
+
 proc run*(args: seq[string], mode = lmLint, usage = usage,
-    toolConfigs = false, input = stdin): int =
+    toolConfigs = false, input = stdin, openInput: InputOpener = nil): int =
   ## Lints or validates the files named in ``args`` and prints their
   ## diagnostics. With ``toolConfigs``, ``--config`` names a ``.yaml``
   ## config (see `yaml/toolconfig`) instead of a lint config, and without
   ## files ``input`` is read, with the config found from the current
-  ## directory.
+  ## directory. ``openInput`` opens the inputs, within a memory budget;
+  ## without it, they are opened without one. Exit code 3 if an input
+  ## exceeds the budget.
   var
     configPath = ""
     files: seq[string]
@@ -82,12 +88,25 @@ proc run*(args: seq[string], mode = lmLint, usage = usage,
       if configPath.len == 0: none(ToolConfig)
       elif toolConfigs: some(loadToolConfig(configPath))
       else: some(ToolConfig(lint: loadLintConfig(configPath)))
-    proc check(name, source, uri: string, config: ToolConfig,
+    proc check(file, uri: string, config: ToolConfig,
         configDir: string): int =
-      var diagnostics = lint(source, config.lint.restrict(mode), uri)
-      if validate and config.validateSchemas:
-        diagnostics.add(validateDocuments(source,
-            registryFor(config, configDir), uri))
+      # lint and validation read the input twice
+      let src =
+        if not openInput.isNil: openInput(file)
+        elif file.len == 0: openSource(input, "<stdin>", randomAccess = true)
+        else: openSource(file)
+      defer: src.close()
+      let name = src.name
+      var diagnostics: seq[Diagnostic]
+      try:
+        diagnostics = lint(src, config.lint.restrict(mode), uri)
+        if validate and config.validateSchemas:
+          diagnostics.add(validateDocuments(src,
+              registryFor(config, configDir), uri))
+      except YamlMemoryLimitError as e:
+        stderr.writeLine(name & ": " & e.describe &
+            ". Raise memory.limit or use --memory-limit")
+        return 3
       for d in diagnostics:
         stdout.writeLine(name & ":" & $d)
         if d.severity == severityError: result = 1
@@ -100,17 +119,15 @@ proc run*(args: seq[string], mode = lmLint, usage = usage,
       else: (defaultToolConfig(), "")
     if files.len == 0:
       let (config, configDir) = configOf(getCurrentDir() / "-")
-      result = check("<stdin>", input.readAll(), fileUri(getCurrentDir() / "-"),
-          config, configDir)
+      result = check("", fileUri(getCurrentDir() / "-"), config, configDir)
     for file in files:
       let (config, configDir) = configOf(file)
-      result = max(result, check(file, readFile(file), fileUri(file), config,
-          configDir))
+      result = max(result, check(file, fileUri(file), config, configDir))
   except LintConfigError, ToolConfigError:
     stderr.writeLine("config error: " & getCurrentExceptionMsg())
     return 2
-  except IOError as e:
-    stderr.writeLine(e.msg)
+  except IOError, OSError:
+    stderr.writeLine(getCurrentExceptionMsg())
     return 2
 
 when isMainModule:

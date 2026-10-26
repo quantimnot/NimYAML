@@ -52,7 +52,8 @@
 ## string.
 
 import std/strutils
-import data, parser, stream, diagnostics, hints, private/uri
+import data, parser, stream, diagnostics, hints, private/uri, source
+import std/streams
 
 type
   SchemaSourceKind* = enum
@@ -250,13 +251,25 @@ proc diagnostics*(documents: seq[DocumentSchema]): seq[Diagnostic] =
               references.join(" and ") & " from the " & $winner.kind &
               "; ignored: " & others.join(", ")))
 
-proc documentSchemas*(source: string, sourceUri = ""): seq[DocumentSchema] =
-  ## The schema sources of the valid documents of ``source``.
+proc documentSchemasOf(events: YamlRecoveringStream, lines: Stream,
+    sourceUri: string): seq[DocumentSchema] =
   var c = initSchemaCollector(sourceUri)
-  let events = initYamlParser(sourceUri = sourceUri).parseRecovering(source)
   for e in events:
     if e.kind == yamlStartDoc: c.onDocumentStart(e, events.documentStart)
     else: c.onEvent(e)
-  for n, text in source.sourceLines: c.onLine(n, text)
+  for n, text in lines.sourceLines: c.onLine(n, text)
   for error in events.errors: c.onDocumentDropped(error)
   result = c.finish()
+
+proc documentSchemas*(source: string, sourceUri = ""): seq[DocumentSchema] =
+  ## The schema sources of the valid documents of ``source``.
+  documentSchemasOf(initYamlParser(sourceUri = sourceUri).
+      parseRecovering(source), newStringStream(source), sourceUri)
+
+proc documentSchemas*(src: YamlSource, sourceUri = ""): seq[DocumentSchema] =
+  ## Like the `string` variant, for input of any size. ``src`` is read
+  ## twice, so it must have random access; a stream is read into memory.
+  if not src.randomAccess:
+    return documentSchemas(src.readAll("reading " & src.name), sourceUri)
+  documentSchemasOf(initYamlParser(sourceUri = sourceUri, budget = src.budget).
+      parseRecovering(newSourceStream(src)), newSourceStream(src), sourceUri)

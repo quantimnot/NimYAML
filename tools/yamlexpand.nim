@@ -23,11 +23,17 @@
 import std/[os, parseopt]
 when defined(nimPreviewSlimSystem):
   import std/syncio
-import ../yaml/[parser, stream, portable]
+import ../yaml/[parser, stream, portable, source, memory]
+import std/streams
 
 const usage = "usage: yamlexpand [--modeline] [FILE]"
 
-proc run*(args: seq[string], input: File, output: File): int =
+proc run*(args: seq[string], input: File, output: File,
+    openInput: proc (file: string): YamlSource = nil): int =
+  ## Expands the file named in ``args``, or ``input``, into ``output``.
+  ## ``openInput`` opens the input ("" for ``input``) within a memory
+  ## budget; without it, it is opened without one. Exit code 3 if the input
+  ## exceeds the budget.
   var
     options = ExpandOptions()
     files: seq[string]
@@ -46,14 +52,28 @@ proc run*(args: seq[string], input: File, output: File): int =
   if files.len > 1:
     stderr.writeLine(usage)
     return 2
-  var source: string
+  var src: YamlSource
   try:
-    source = if files.len == 1: readFile(files[0]) else: input.readAll()
-  except IOError as e:
-    stderr.writeLine(e.msg)
+    let file = if files.len == 1: files[0] else: ""
+    src =
+      if not openInput.isNil: openInput(file)
+      elif file.len == 0: openSource(input, "<stdin>", randomAccess = true)
+      else: openSource(file)
+  except IOError, OSError:
+    stderr.writeLine(getCurrentExceptionMsg())
     return 2
+  defer: src.close()
+  let target = newFileStream(output)
   try:
-    output.write(expandDirectives(source, options))
+    expandDirectives(src, target, options)
+    target.flush()
+  except YamlMemoryLimitError as e:
+    stderr.writeLine(src.name & ": " & e.describe &
+        ". Raise memory.limit or use --memory-limit")
+    return 3
+  except IOError, OSError:
+    stderr.writeLine(getCurrentExceptionMsg())
+    return 2
   except YamlParserError as e:
     let name = if files.len == 1: files[0] else: "<stdin>"
     stderr.writeLine(name & ":" & $e.mark.line & ":" & $e.mark.column & ": " &
