@@ -39,7 +39,7 @@ import std/[os, strutils, tables, uri]
 when defined(nimPreviewSlimSystem):
   import std/syncio
 import data, dom, loading, native, parser, stream, diagnostics, fragment,
-    jsonschema, documentschema, source
+    jsonschema, documentschema, source, memory
 import std/streams
 
 proc fileUri*(path: string): string =
@@ -86,30 +86,52 @@ proc rangeOf(root: YamlNode, instanceLocation: string,
   except YamlFragmentError: discard
   result = (fallback, Mark(line: fallback.line, column: fallback.column + 1))
 
-proc validateWith(schemas: seq[DocumentSchema],
-    recovering: YamlRecoveringStream, registry: SchemaRegistry,
-    options: ValidationOptions): seq[Diagnostic] =
-  var byIndex = initTable[int, DocumentSchema]()
-  for s in schemas: byIndex[s.index] = s
+proc validated(doc: DocumentSchema, buffer: BufferYamlStream,
+    compiled: var Table[string, JsonSchema],
+    unavailable: var Table[string, string], registry: SchemaRegistry,
+    options: ValidationOptions): seq[Diagnostic]
+
+proc validateWith(recovering: YamlRecoveringStream, lines: Stream,
+    sourceUri: string, registry: SchemaRegistry, options: ValidationOptions,
+    budget: MemoryBudget): seq[Diagnostic] =
   var compiled = initTable[string, JsonSchema]()
   var unavailable = initTable[string, string]()
-  var events = YamlStream(recovering)
-  discard events.next() # yamlStartStream
-  while true:
-    let start = events.next()
-    if start.kind != yamlStartDoc: break
-    # the document's events are buffered, so that only documents with a
-    # schema are constructed, and a document that cannot be constructed
-    # (e.g. for a duplicate key, which lint reports) affects only itself
-    let index = recovering.documentStart.index
+  # the events of the current document are held until its schema sources
+  # are known, so that only documents with a schema are constructed, and a
+  # document that cannot be constructed (e.g. for a duplicate key, which
+  # lint reports) affects only itself
+  var
+    held: seq[Event]
+    charged = 0
+    diagnostics: seq[Diagnostic]
+  proc onEvent(e: Event) =
+    if e.kind in {yamlStartStream, yamlEndStream}: return
+    let size = 64 + (if e.kind == yamlScalar: e.scalarContent.len else: 0)
+    budget.reserve(size, "holding a document to validate it")
+    charged += size
+    held.add(e)
+  proc onDocument(doc: DocumentSchema) =
     let buffer = newBufferYamlStream()
-    buffer.put(start)
-    while true:
-      let e = events.next()
-      buffer.put(e)
-      if e.kind == yamlEndDoc: break
-    if index notin byIndex or byIndex[index].schema.len == 0: continue
-    let applied = byIndex[index].schemas
+    for e in held: buffer.put(e)
+    held.setLen(0)
+    budget.release(charged)
+    charged = 0
+    if doc.schema.len > 0:
+      diagnostics.add(validated(doc, buffer, compiled, unavailable,
+          registry, options))
+  discard readSchemas(recovering, lines, sourceUri, onEvent,
+      proc (line: int, text: string) = discard, onDocument)
+  diagnostics
+
+proc validated(doc: DocumentSchema, buffer: BufferYamlStream,
+    compiled: var Table[string, JsonSchema],
+    unavailable: var Table[string, string], registry: SchemaRegistry,
+    options: ValidationOptions): seq[Diagnostic] =
+  ## The diagnostics of the document ``doc`` whose events are in
+  ## ``buffer``.
+  let index = doc.index
+  block:
+    let applied = doc.schemas
     var root: YamlNode
     try:
       var docEvents = YamlStream(buffer)
@@ -119,7 +141,7 @@ proc validateWith(schemas: seq[DocumentSchema],
           severity: severityWarning, startPos: applied[0].startPos,
           endPos: applied[0].endPos,
           message: "cannot validate document " & $(index + 1) & ": " & e.msg))
-      continue
+      return
     # valid against all of them: each is reported on its own
     for declared in applied:
       let uri = declared.uri
@@ -156,9 +178,8 @@ proc validateDocuments*(source: string, registry: SchemaRegistry,
     sourceUri = "", options = ValidationOptions()): seq[Diagnostic] =
   ## Validates every valid document of ``source`` that declares a schema.
   ## ``sourceUri`` resolves relative schema references.
-  validateWith(documentSchemas(source, sourceUri),
-      initYamlParser(sourceUri = sourceUri).parseRecovering(source),
-      registry, options)
+  validateWith(initYamlParser(sourceUri = sourceUri).parseRecovering(source),
+      newStringStream(source), sourceUri, registry, options, nil)
 
 proc validateDocuments*(src: YamlSource, registry: SchemaRegistry,
     sourceUri = "", options = ValidationOptions()): seq[Diagnostic] =
@@ -168,7 +189,6 @@ proc validateDocuments*(src: YamlSource, registry: SchemaRegistry,
   if not src.randomAccess:
     return validateDocuments(src.readAll("validating " & src.name), registry,
         sourceUri, options)
-  validateWith(documentSchemas(src, sourceUri),
-      initYamlParser(sourceUri = sourceUri, budget = src.budget).
+  validateWith(initYamlParser(sourceUri = sourceUri, budget = src.budget).
         parseRecovering(newSourceStream(src)),
-      registry, options)
+      newSourceStream(src), sourceUri, registry, options, src.budget)

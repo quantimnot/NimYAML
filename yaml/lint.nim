@@ -353,16 +353,15 @@ proc cmpDiagnostics(a, b: Diagnostic): int =
   if result == 0: result = cmp(a.startPos.column, b.startPos.column)
   if result == 0: result = cmp(a.rule, b.rule)
 
-proc lintWith(ctx: var LintContext, config: LintConfig,
+proc lintWith(context: LintContext, config: LintConfig,
     events: YamlRecoveringStream, lines: Stream): seq[Diagnostic] =
   ## Lints the input whose events are ``events`` and whose text ``lines``
-  ## reads.
-  let sourceUri = ctx.sourceUri
+  ## reads, both at once (see `readSchemas`).
   var
+    ctx = context
     rules: seq[LintRule]
     syntax: LintRule = nil
     reported = initTable[string, LintRule]()
-    schemas = initSchemaCollector(sourceUri)
   for r in builtinRules():
     r.config = config.rules.getOrDefault(r.id)
     if r.config.level.isSome: r.level = r.config.level.get()
@@ -375,36 +374,36 @@ proc lintWith(ctx: var LintContext, config: LintConfig,
       var found = d
       found.severity = reported[d.rule].level.severity
       ctx.diagnostics.add(found)
-  for e in events:
+  # the range of a syntax error ends with its line, which is read after the
+  # error is found
+  var
+    lineLengths = initTable[int, int]()
+    errorsSeen = 0
+  proc onEvent(e: Event) =
     if e.kind == yamlStartDoc:
       ctx.documentStart = events.documentStart
-      schemas.onDocumentStart(e, ctx.documentStart)
       if not e.directives.isNil:
         for i in e.directives.issues:
           report(Diagnostic(rule: $i.kind, startPos: i.startPos,
               endPos: i.endPos, message: i.message))
-    else: schemas.onEvent(e)
     for r in rules: r.onEvent(ctx, e)
-  # the range of a syntax error ends with its line
-  var lineLengths = initTable[int, int]()
-  for err in events.errors: lineLengths[err.error.mark.line] = 0
-  for err in events.errors: schemas.onDocumentDropped(err)
-  var
-    reader = initLineReader(lines)
-    text: string
-  while reader.readLine(text):
-    let n = reader.number
+  proc onLine(n: int, text: string) =
+    for i in errorsSeen ..< events.errors.len:
+      lineLengths[events.errors[i].error.mark.line] = 0
+    errorsSeen = events.errors.len
     if n in lineLengths: lineLengths[n] = text.len
-    ctx.lastLine = (n, text.len)
-    schemas.onLine(n, text)
     for r in rules: r.onLine(ctx, n, text)
-  ctx.finalLineBreak = reader.length == 0 or reader.lastChar == '\n'
+  proc onDocument(doc: DocumentSchema) =
+    for d in diagnostics(@[doc]): report(d)
+  let ending = readSchemas(events, lines, ctx.sourceUri, onEvent, onLine,
+      onDocument)
+  ctx.finalLineBreak = ending.finalLineBreak
+  ctx.lastLine = ending.lastLine
   if not syntax.isNil:
     for err in events.errors:
-      var d = err.syntaxDiagnostic(lineLengths[err.error.mark.line])
+      var d = err.syntaxDiagnostic(lineLengths.getOrDefault(err.error.mark.line))
       d.severity = syntax.level.severity
       ctx.diagnostics.add(d)
-  for d in schemas.finish().diagnostics: report(d)
   for r in rules: r.onEnd(ctx)
   result = move(ctx.diagnostics)
   result.sort(cmpDiagnostics)
@@ -415,9 +414,9 @@ proc lint*(source: string, config = defaultConfig(), sourceUri = ""):
   ## the URI ``source`` was retrieved from; relative schema references
   ## resolve against it. Returns the diagnostics sorted by start position,
   ## then rule id.
-  var ctx = LintContext(source: source, sourceUri: sourceUri)
   let events = initYamlParser(sourceUri = sourceUri).parseRecovering(source)
-  lintWith(ctx, config, events, newStringStream(source))
+  lintWith(LintContext(source: source, sourceUri: sourceUri), config, events,
+      newStringStream(source))
 
 proc lint*(src: YamlSource, config = defaultConfig(), sourceUri = ""):
     seq[Diagnostic] =
@@ -427,7 +426,7 @@ proc lint*(src: YamlSource, config = defaultConfig(), sourceUri = ""):
   ## the parser's buffer.
   if not src.randomAccess:
     return lint(src.readAll("linting " & src.name), config, sourceUri)
-  var ctx = LintContext(sourceUri: sourceUri)
   let events = initYamlParser(sourceUri = sourceUri, budget = src.budget).
       parseRecovering(newSourceStream(src))
-  lintWith(ctx, config, events, newSourceStream(src))
+  lintWith(LintContext(sourceUri: sourceUri), config, events,
+      newSourceStream(src))

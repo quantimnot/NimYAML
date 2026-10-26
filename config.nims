@@ -30,6 +30,11 @@ task sourceTests, "Run input source tests":
   --verbosity:0
   setCommand "c", "test/tsource"
 
+task constrainedTests, "Run the yaml tool on huge inputs within a memory limit (YAML_HUGE_MB, default 64)":
+  --r
+  --verbosity:0
+  setCommand "c", "test/tconstrained"
+
 task lexerTests, "Run lexer tests":
   --r
   --verbosity:0

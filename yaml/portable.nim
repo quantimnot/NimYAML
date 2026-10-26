@@ -62,15 +62,28 @@ type
 
 const modelinePrefix* = "# yaml-language-server: $schema="
 
-proc documentsOf(events: YamlStream): seq[DocumentInfo] =
+type DocumentFeed = object
+  ## The documents of a stream, read as far as the lines being written
+  ## need: the documents from index ``first`` on.
+  events: YamlStream
+  docs: seq[DocumentInfo]
+  first: int
+  ended: bool
+
+proc readUntil(f: var DocumentFeed, line: int) =
+  ## Reads until a document starts after line ``line``, or the stream ends,
+  ## so that every document that starts on or before it is known (with
+  ## ``ended`` set for each but the last).
   try:
-    for e in events:
+    while not f.ended and (f.docs.len == 0 or f.docs[^1].start.line <= line):
+      let e = f.events.next()
       case e.kind
       of yamlStartDoc:
-        result.add(DocumentInfo(start: events.documentStart,
+        f.docs.add(DocumentInfo(start: f.events.documentStart,
             marker: if e.explicitDirectivesEnd: int(e.startPos.line) else: 0,
             directives: e.directives))
-      of yamlEndDoc: result[^1].ended = e.explicitDocumentEnd
+      of yamlEndDoc: f.docs[^1].ended = e.explicitDocumentEnd
+      of yamlEndStream: f.ended = true
       else: discard
   except YamlStreamError as e:
     if e.parent of YamlParserError: raise (ref YamlParserError)(e.parent)
@@ -78,6 +91,15 @@ proc documentsOf(events: YamlStream): seq[DocumentInfo] =
   except ValueError as e:
     # documentStart only fails for streams that do not come from a parser
     raise newException(YamlStreamError, e.msg)
+
+proc `[]`(f: DocumentFeed, i: int): DocumentInfo = f.docs[i - f.first]
+
+proc dropBefore(f: var DocumentFeed, i: int) =
+  ## Forgets the documents before index ``i``.
+  let count = min(i - f.first, f.docs.len)
+  if count > 0:
+    f.docs = f.docs[count .. ^1]
+    f.first += count
 
 proc directiveLines(directives: seq[Directive], schemas: SchemaOutput):
     seq[string] =
@@ -111,17 +133,21 @@ proc baseOf(sourceUri: string): string =
   # no URI.
   if sourceUri.len > 0: sourceUri else: "file:///"
 
-proc expandLines(docs: seq[DocumentInfo], newline: string, input: Stream,
+proc inserted(doc: DocumentInfo, options: ExpandOptions): seq[string] =
+  ## The directive lines ``doc`` gains.
+  if doc.directives.isNil: return
+  var globals: seq[Directive]
+  for d in doc.directives.declarations:
+    if d.origin == doGlobal and not d.overridden: globals.add(d)
+  globals.directiveLines(options.schemas)
+
+proc expandLines(events: YamlStream, newline: string, input: Stream,
     output: Stream, options: ExpandOptions) =
   ## Writes the lines of ``input`` to ``output``, with the directives each
-  ## document of ``docs`` gains.
-  var inserted = newSeq[seq[string]](docs.len)
-  for i, doc in docs:
-    if doc.directives.isNil: continue
-    var globals: seq[Directive]
-    for d in doc.directives.declarations:
-      if d.origin == doGlobal and not d.overridden: globals.add(d)
-    inserted[i] = globals.directiveLines(options.schemas)
+  ## document of ``events`` (the events of the same input) gains. The events
+  ## are read as far as the lines need them, so that two documents are held
+  ## at a time.
+  var docs = DocumentFeed(events: events)
   var
     line = 0
     current = -1 # index of the document whose directive block we are in
@@ -151,19 +177,24 @@ proc expandLines(docs: seq[DocumentInfo], newline: string, input: Stream,
     if text.endsWith('\n'): text.setLen(text.len - 1)
     if text.endsWith('\r'): text.setLen(text.len - 1)
     # the start of a document: write what it gains
-    while following < docs.len and docs[following].start.line <= line:
+    docs.readUntil(line)
+    while following < docs.first + docs.docs.len and
+        docs[following].start.line <= line:
       let i = following
       inc(following)
       if docs[i].start.line != line: continue
       let doc = docs[i]
       current = i
-      if inserted[i].len > 0:
+      # the document before is needed for whether it ended with `...`
+      docs.dropBefore(i - 1)
+      let gained = doc.inserted(options)
+      if gained.len > 0:
         # a document that already has directives already follows a
         # `...`; one that only had `---` may not
         let hasOwnDirectives = doc.marker > doc.start.line
         if i > 0 and not docs[i - 1].ended and not hasOwnDirectives:
           output.write("..." & newline)
-        for directive in inserted[i]: output.write(directive & newline)
+        for directive in gained: output.write(directive & newline)
         if doc.marker == 0: output.write("---" & newline)
     let inBlock = current >= 0 and docs[current].marker > 0 and
         line < docs[current].marker
@@ -186,13 +217,16 @@ proc expandDirectives*(source: string, options = ExpandOptions(),
   ## Returns ``source`` with its global directives expanded into every
   ## document, as described in the module documentation. Raises
   ## `YamlParserError` if ``source`` is not valid YAML.
-  let docs = documentsOf(initYamlParser(sourceUri = baseOf(sourceUri)).
-      parse(source))
+  let events = initYamlParser(sourceUri = baseOf(sourceUri)).parse(source)
   let newline = if "\r\n" in source: "\r\n" else: "\n"
   let output = newStringStream()
-  try: expandLines(docs, newline, newStringStream(source), output, options)
+  try: expandLines(events, newline, newStringStream(source), output, options)
   except IOError, OSError:
     raise newException(YamlStreamError, "cannot write to a string")
+  # input after the last line, like a missing end of a flow collection,
+  # may still be invalid
+  var rest = DocumentFeed(events: events)
+  rest.readUntil(int.high)
   result = move(output.data)
 
 proc hasCrLf(input: Stream): bool =
@@ -217,7 +251,9 @@ proc expandDirectives*(src: YamlSource, output: Stream,
     output.write(expandDirectives(src.readAll("expanding " & src.name),
         options, sourceUri))
     return
-  let docs = documentsOf(initYamlParser(sourceUri = baseOf(sourceUri),
-      budget = src.budget).parse(src))
+  let events = initYamlParser(sourceUri = baseOf(sourceUri),
+      budget = src.budget).parse(src)
   let newline = if hasCrLf(newSourceStream(src)): "\r\n" else: "\n"
-  expandLines(docs, newline, newSourceStream(src), output, options)
+  expandLines(events, newline, newSourceStream(src), output, options)
+  var rest = DocumentFeed(events: events)
+  rest.readUntil(int.high)

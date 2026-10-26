@@ -1166,14 +1166,18 @@ proc queryCommand(args: seq[string]): int =
     except YamlPresenterJsonError, YamlPresenterCborError, YamlStreamError:
       return failed("<output>", getCurrentException())
 
-proc documents(input: YamlSource, format: DataFormat): seq[YamlNode] =
-  ## The documents of ``input`` as graphs.
+iterator eachDocument(input: YamlSource, format: DataFormat): YamlNode =
+  ## The documents of ``input`` as graphs, one at a time.
   var s = events(input, format)
   discard s.next() # yamlStartStream
   while s.peek().kind == yamlStartDoc:
     var root: YamlNode
     construct(s, root)
-    result.add(root)
+    yield root
+
+proc documents(input: YamlSource, format: DataFormat): seq[YamlNode] =
+  ## The documents of ``input`` as graphs.
+  for root in eachDocument(input, format): result.add(root)
 
 proc transformCommand(command: string, args: seq[string], operands: int,
     prepare: proc(operands: seq[string]): int,
@@ -1289,7 +1293,7 @@ proc canonicalCommand(args: seq[string]): int =
     let format = source.get(
         if files.len == 0: dfYaml else: formatOf(input.name))
     try:
-      for root in documents(input, format):
+      for root in eachDocument(input, format):
         stdout.writeLine(canonicalJson(root))
     except YamlStreamError, YamlParserError, YamlConstructionError:
       return failed(input.name, getCurrentException())

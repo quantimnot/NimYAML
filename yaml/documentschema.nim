@@ -79,13 +79,20 @@ type
     ## Collects the schema sources of the documents of a stream. Feed it with
     ## `onDocumentStart` (for ``yamlStartDoc``), `onEvent` (for all other
     ## events) and `onLine` (for every line), then call `finish`.
+    ##
+    ## To keep only the documents whose sources may still change, feed the
+    ## lines while the events are read: after `onDocumentStart`, feed the
+    ## lines before the line the document starts on, then `takeCompleted`
+    ## hands over the documents before it.
     sourceUri: string
-    documents: seq[DocumentSchema]
+    documents: seq[DocumentSchema] # those not handed over yet
     startLines, endLines: seq[int]
     # documents dropped by error recovery: the line of the error and the
     # line the next document starts on (0 if none followed)
     dropped: seq[tuple[errorLine, resumeLine: int]]
+    # modelines before the first document
     modelines: seq[tuple[line: int, source: SchemaSource]]
+    started: bool # a document has started
     # root mapping of the current document: nesting depth, number of
     # complete nodes directly in the root mapping, whether the last complete
     # one was a ``$schema`` key
@@ -114,6 +121,11 @@ proc onDocumentStart*(c: var SchemaCollector, e: Event,
   c.documents.add(doc)
   c.startLines.add(start.line)
   c.endLines.add(high(int))
+  if not c.started:
+    # modelines before the first document go with it
+    for (line, source) in c.modelines: c.documents[^1].sources.add(source)
+    c.modelines.setLen(0)
+    c.started = true
   c.depth = 0
   c.rootIsMapping = false
   c.rootItems = 0
@@ -182,35 +194,55 @@ proc onLine*(c: var SchemaCollector, line: int, text: string) =
   let reference = rest["$schema=".len .. ^1].strip().split({' ', '\t'})[0]
   if reference.len == 0: return
   let column = text.find("$schema=") + "$schema=".len + 1
-  c.modelines.add((line, SchemaSource(kind: sskModeline, reference: reference,
+  let source = SchemaSource(kind: sskModeline, reference: reference,
       uri: c.resolveReference(reference),
       startPos: Mark(line: line, column: column),
-      endPos: Mark(line: line, column: column + reference.len))))
+      endPos: Mark(line: line, column: column + reference.len))
+  if not c.started:
+    c.modelines.add((line, source))
+    return
+  # the owner is the last document that starts on or before the line
+  var owner = 0
+  for i, startLine in c.startLines:
+    if startLine <= line: owner = i
+  # after the end of its owner, a modeline may belong to a dropped
+  # document: one whose error comes after the owner's end and whose
+  # region (up to where parsing resumed) contains the modeline
+  var inDropped = false
+  if line > c.endLines[owner]:
+    for (errorLine, resumeLine) in c.dropped:
+      if errorLine > c.endLines[owner] and
+          (resumeLine == 0 or line < resumeLine):
+        inDropped = true
+  if not inDropped: c.documents[owner].sources.add(source)
+
+proc sorted(doc: DocumentSchema): DocumentSchema =
+  ## ``doc`` with its sources sorted by precedence.
+  result = doc
+  result.sources.setLen(0)
+  for kind in SchemaSourceKind:
+    for s in doc.sources:
+      if s.kind == kind: result.sources.add(s)
+
+proc takeCompleted*(c: var SchemaCollector): seq[DocumentSchema] =
+  ## The schema sources of the documents before the current one, sorted by
+  ## precedence, which the collector then forgets. Only correct once the
+  ## lines before the current document have been fed.
+  if c.documents.len <= 1: return
+  for i in 0 ..< c.documents.high: result.add(c.documents[i].sorted)
+  c.documents = @[c.documents[^1]]
+  c.startLines = @[c.startLines[^1]]
+  c.endLines = @[c.endLines[^1]]
+  # drops before the current document no longer matter
+  var kept: seq[tuple[errorLine, resumeLine: int]]
+  for d in c.dropped:
+    if d.resumeLine == 0 or d.resumeLine > c.startLines[0]: kept.add(d)
+  c.dropped = kept
 
 proc finish*(c: var SchemaCollector): seq[DocumentSchema] =
-  ## The schema sources of every document, sorted by precedence.
-  for (line, source) in c.modelines:
-    if c.documents.len == 0: break
-    var owner = 0
-    for i, startLine in c.startLines:
-      if startLine <= line: owner = i
-    # after the end of its owner, a modeline may belong to a dropped
-    # document: one whose error comes after the owner's end and whose
-    # region (up to where parsing resumed) contains the modeline
-    var inDropped = false
-    if line > c.endLines[owner]:
-      for (errorLine, resumeLine) in c.dropped:
-        if errorLine > c.endLines[owner] and
-            (resumeLine == 0 or line < resumeLine):
-          inDropped = true
-    if not inDropped: c.documents[owner].sources.add(source)
-  for doc in c.documents.mitems:
-    var sorted: seq[SchemaSource]
-    for kind in SchemaSourceKind:
-      for s in doc.sources:
-        if s.kind == kind: sorted.add(s)
-    doc.sources = sorted
-  result = c.documents
+  ## The schema sources of every document not handed over yet, sorted by
+  ## precedence.
+  for doc in c.documents: result.add(doc.sorted)
 
 proc schemas*(doc: DocumentSchema): seq[SchemaSource] =
   ## The sources whose schemas ``doc`` is validated with, all of them: the
@@ -251,15 +283,58 @@ proc diagnostics*(documents: seq[DocumentSchema]): seq[Diagnostic] =
               references.join(" and ") & " from the " & $winner.kind &
               "; ignored: " & others.join(", ")))
 
+type
+  SchemaEventHandler* = proc (e: Event) {.closure.}
+  SchemaLineHandler* = proc (line: int, text: string) {.closure.}
+  SchemaDocumentHandler* = proc (doc: DocumentSchema) {.closure.}
+
+proc readSchemas*(events: YamlRecoveringStream, lines: Stream,
+    sourceUri: string, handleEvent: SchemaEventHandler,
+    handleLine: SchemaLineHandler, handleDocument: SchemaDocumentHandler):
+    tuple[finalLineBreak: bool, lastLine: tuple[number, length: int]] =
+  ## Reads the ``events`` and the ``lines`` of the same input together, so
+  ## that only the current document is held: the schema sources of a
+  ## document are complete once the lines before the next document have
+  ## been read, and ``handleDocument`` gets them then, before
+  ## ``handleEvent`` gets the next ``yamlStartDoc``. ``handleEvent`` gets
+  ## every event, ``handleLine`` every line. Returns whether the input is empty or ends with a line
+  ## break, and its last line.
+  var
+    c = initSchemaCollector(sourceUri)
+    reader = initLineReader(lines)
+    text: string
+    dropped = 0
+    lastLine: tuple[number, length: int]
+  proc feed(before: int) =
+    # the lines before line ``before``
+    while reader.number + 1 < before and reader.readLine(text):
+      lastLine = (reader.number, text.len)
+      c.onLine(reader.number, text)
+      handleLine(reader.number, text)
+  for e in events:
+    for i in dropped ..< events.errors.len:
+      c.onDocumentDropped(events.errors[i])
+    dropped = events.errors.len
+    if e.kind == yamlStartDoc:
+      let start = events.documentStart
+      c.onDocumentStart(e, start)
+      feed(start.line)
+      for doc in c.takeCompleted(): handleDocument(doc)
+    else: c.onEvent(e)
+    handleEvent(e)
+  for i in dropped ..< events.errors.len: c.onDocumentDropped(events.errors[i])
+  feed(int.high)
+  for doc in c.finish(): handleDocument(doc)
+  result.lastLine = lastLine
+  result.finalLineBreak = reader.length == 0 or reader.lastChar == '\n'
+
 proc documentSchemasOf(events: YamlRecoveringStream, lines: Stream,
     sourceUri: string): seq[DocumentSchema] =
-  var c = initSchemaCollector(sourceUri)
-  for e in events:
-    if e.kind == yamlStartDoc: c.onDocumentStart(e, events.documentStart)
-    else: c.onEvent(e)
-  for n, text in lines.sourceLines: c.onLine(n, text)
-  for error in events.errors: c.onDocumentDropped(error)
-  result = c.finish()
+  var documents: seq[DocumentSchema]
+  discard readSchemas(events, lines, sourceUri,
+      proc (e: Event) = discard, proc (line: int, text: string) = discard,
+      proc (doc: DocumentSchema) = documents.add(doc))
+  documents
 
 proc documentSchemas*(source: string, sourceUri = ""): seq[DocumentSchema] =
   ## The schema sources of the valid documents of ``source``.
