@@ -22,7 +22,7 @@
 import std / [tables, typetraits, strutils, macros, streams, times, parseutils, options]
 when defined(nimPreviewSlimSystem):
   import std/formatfloat
-import data, taglib, stream, private/internal, hints, annotations
+import data, taglib, stream, private/internal, hints, annotations, memory
 export data, stream, annotations
   # *something* in here needs externally visible `==`(x,y: AnchorId),
   # but I cannot figure out what. binding it would be the better option.
@@ -169,6 +169,33 @@ proc initConstructionContext*(input: YamlStream): ConstructionContext =
     input: input,
     refs : initTable[Anchor, tuple[tag: Tag, p: pointer]](),
   )
+
+const constructionCharge* = 128
+  ## bytes charged for each event a value is constructed from, besides the
+  ## content of a scalar: about what a node of the DOM takes
+
+type ChargingStream = ref object of YamlStream
+  ## The events of ``source``, each charged to ``budget`` as it is read.
+  source: YamlStream
+  budget: MemoryBudget
+  charged: int
+
+proc charging(source: YamlStream, budget: MemoryBudget): ChargingStream =
+  result = ChargingStream(source: source, budget: budget)
+  result.basicInit(proc(s: YamlStream, lineContent: var string): bool
+      {.raises: [], gcsafe, closure.} =
+    try: ChargingStream(s).source.getLastTokenContext(lineContent)
+    except CatchableError: false
+  )
+  result.nextImpl = proc(s: YamlStream, e: var Event): bool
+      {.gcsafe, raises: [CatchableError], closure.} =
+    let c = ChargingStream(s)
+    e = c.source.next()
+    let size = constructionCharge +
+        (if e.kind == yamlScalar: e.scalarContent.len else: 0)
+    c.budget.reserve(size, "constructing a document")
+    c.charged += size
+    result = true
 
 proc initSerializationContext*(
   options: SerializationOptions,
@@ -1905,6 +1932,39 @@ proc construct*[T](
     ex.parent = ce
     raise ex
 
+proc chargingStream*(source: YamlStream, budget: MemoryBudget): YamlStream =
+  ## The events of ``source``, each charged to ``budget`` as it is read,
+  ## like `construct` with a budget charges them; see `chargedBytes`.
+  charging(source, budget)
+
+proc chargedBytes*(s: YamlStream): int =
+  ## The bytes a stream from `chargingStream` has charged so far.
+  ChargingStream(s).charged
+
+proc construct*[T](
+  input : var YamlStream,
+  target: var T,
+  budget: MemoryBudget,
+): int {.gcsafe, raises: [YamlStreamError, YamlConstructionError].} =
+  ## Like the other variant, within ``budget``: each event the value is
+  ## constructed from is charged to it (`constructionCharge` plus the
+  ## content of a scalar), so that a document that does not fit raises a
+  ## ``YamlStreamError`` whose ``parent`` is a `YamlMemoryLimitError` before
+  ## its value has taken the memory. Returns the bytes charged, which stay
+  ## reserved for the value: release them when the value is dropped. On an
+  ## error, they are released.
+  let counted = charging(input, budget)
+  var events = YamlStream(counted)
+  try:
+    construct(events, target)
+  except YamlStreamError as e:
+    budget.release(counted.charged)
+    raise e
+  except YamlConstructionError as e:
+    budget.release(counted.charged)
+    raise e
+  result = counted.charged
+
 proc represent*[T](
   value  : T,
   options: SerializationOptions = SerializationOptions(),
@@ -1923,11 +1983,12 @@ proc represent*[T](
   bys.put(endStreamEvent())
   if options.anchorStyle == asTidy:
     var ctx = initAnchorContext()
+    let referenced = referencedAnchors(context.refs)
     for item in bys.mitems():
       case item.kind
-      of yamlStartMap: ctx.process(item.mapProperties, context.refs)
-      of yamlStartSeq: ctx.process(item.seqProperties, context.refs)
-      of yamlScalar: ctx.process(item.scalarProperties, context.refs)
+      of yamlStartMap: ctx.process(item.mapProperties, referenced)
+      of yamlStartSeq: ctx.process(item.seqProperties, referenced)
+      of yamlScalar: ctx.process(item.scalarProperties, referenced)
       of yamlAlias: item.aliasTarget = ctx.map(item.aliasTarget)
       else: discard
   result = bys

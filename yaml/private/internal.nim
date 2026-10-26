@@ -76,15 +76,21 @@ type
 proc initAnchorContext*(): AnchorContext =
   return AnchorContext(nextAnchorId: "a", mapping: initTable[Anchor, Anchor]())
 
+proc referencedAnchors*(refs: Table[pointer, tuple[a: Anchor, referenced: bool]]):
+    Table[Anchor, bool] =
+  ## For each anchor of ``refs``, whether it is referenced; for `process`.
+  for val in refs.values:
+    # the first entry of an anchor decides, as the search for it did
+    if val.a notin result: result[val.a] = val.referenced
+
 proc process*(context: var AnchorContext,
-    target: var Properties, refs: Table[pointer, tuple[a: Anchor, referenced: bool]]) =
+    target: var Properties, referenced: Table[Anchor, bool]) =
+  ## Drops the anchor of ``target`` if it is not referenced (see
+  ## `referencedAnchors`), else renames it to the next tidy name.
   if target.anchor == yAnchorNone: return
-  for key, val in refs:
-    if val.a == target.anchor:
-      if not val.referenced:
-        target.anchor = yAnchorNone
-        return
-      break
+  if not referenced.getOrDefault(target.anchor, true):
+    target.anchor = yAnchorNone
+    return
   if context.mapping.hasKey(target.anchor):
     target.anchor = context.mapping.getOrDefault(target.anchor)
   else:

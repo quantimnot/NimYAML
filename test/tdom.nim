@@ -5,7 +5,7 @@
 #    distribution, for details about the copyright.
 
 import "../yaml"
-import unittest, commonTestUtils, streams, tables
+import unittest, commonTestUtils, streams, tables, times
 when defined(nimPreviewSlimSystem):
   import std/assertions
 
@@ -162,3 +162,19 @@ suite "DOM":
       scalarEvent("a"), scalarEvent("b"), scalarEvent("c"), startSeqEvent(),
       scalarEvent("d"), scalarEvent("e"), endSeqEvent(), endMapEvent(),
       endDocEvent(), endStreamEvent())
+suite "DOM: large graphs":
+  test "representing takes time linear in the nodes":
+    proc graph(items: int): YamlNode =
+      var text = "items:\n"
+      for i in 0 ..< items: text.add("  - {k: " & $i & ", name: item}\n")
+      load(text, result)
+    proc representing(node: YamlNode): float =
+      let start = cpuTime()
+      for e in represent(node, SerializationOptions(tagStyle: tsAll)): discard
+      cpuTime() - start
+    discard representing(graph(200)) # warm up
+    let
+      small = representing(graph(1000))
+      large = representing(graph(4000))
+    # linear: about 4 times; quadratic: about 16 times
+    check large < max(small, 0.001) * 8
