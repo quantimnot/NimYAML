@@ -37,9 +37,9 @@
 ##
 ## Where each node is in the text comes from `yaml/spans <spans.html>`_.
 
-import std/[algorithm, strutils, tables, sets, options]
+import std/[algorithm, strutils, tables, sets, options, streams]
 import data, dom, hints, jsonpath, loading, native, parser, presenter, spans,
-    stream
+    stream, source, memory
 import private/jsonmodel
 
 type
@@ -74,9 +74,15 @@ proc fail(reason: string, op = opAssign) {.noreturn.} =
   let verb = if op == opAssign: "assign" else: $op
   raise newException(YamlEditError, "cannot " & verb & " in place: " & reason)
 
-proc readEvents(text: string, json: bool): seq[Event] =
+proc readEvents(text: string, json: bool,
+    start = none(YamlDocumentStart)): seq[Event] =
+  ## The events of ``text``; with ``start``, ``text`` is the source from
+  ## that document start on.
   var parser = initYamlParser()
-  var s = parser.parse(if json: stripJsonComments(text) else: text)
+  let input = if json: stripJsonComments(text) else: text
+  var s =
+    if start.isSome: parser.parse(input, start.get())
+    else: parser.parse(input)
   for e in s: result.add(e)
 
 proc roots(events: seq[Event]): seq[YamlNode] =
@@ -374,11 +380,13 @@ proc applied(source: string, kept: seq[tuple[doc: int, c: Chosen]],
     result = result[0 ..< e.first] & e.text & result[e.last .. ^1]
     bound = e.first
 
-proc verify(text: string, json: bool, docs: seq[Document], op: Operation) =
+proc verify(text: string, json: bool, docs: seq[Document], op: Operation,
+    start = none(YamlDocumentStart)) =
   ## Checks that ``text`` has the documents ``docs``, whose roots have been
-  ## edited the way the text is supposed to have been.
+  ## edited the way the text is supposed to have been. With ``start``,
+  ## ``text`` is the source from that document start on.
   var edited: seq[YamlNode]
-  try: edited = roots(readEvents(text, json))
+  try: edited = roots(readEvents(text, json, start))
   except YamlParserError, YamlConstructionError:
     fail("the edited text is invalid: " & getCurrentExceptionMsg(), op)
   if edited.len != docs.len:
@@ -446,6 +454,151 @@ proc assign*(source: string, path: JsonPath, value: string,
   except CatchableError:
     # Normalized Paths are valid queries, and the paths looked up are those
     # the index has
+    raise newException(YamlEditError,
+        "internal error: " & getCurrentExceptionMsg())
+
+proc assignInRegion(region: string, events: seq[Event],
+    start: YamlDocumentStart, path: JsonPath, value: string,
+    newValue: YamlNode, valueEvents: seq[Event], options: PresentationOptions,
+    json: bool, taken: HashSet[string], newline: string,
+    budget: MemoryBudget): tuple[text: string, count: int] =
+  ## `doAssign` for the one document whose text is ``region`` (see
+  ## `regionSpans`).
+  var root: YamlNode
+  var charged = 0
+  block:
+    var s = newBufferYamlStream()
+    for e in events: s.put(e)
+    var stream = YamlStream(s)
+    charged = construct(stream, root, budget)
+  defer: budget.release(charged)
+  let doc = Document(spans: regionSpans(region, events, start), root: root)
+  var chosen: seq[tuple[doc: int, c: Chosen]]
+  for found in doc.root.queryLocated(path):
+    let (resolved, target) = doc.resolve(found.path)
+    chosen.add((0, chosen(resolved, target, edits(region, target, newValue,
+        valueEvents, options, json, taken, newline))))
+  let kept = outermost(chosen)
+  if kept.len == 0: return (region, 0)
+  result = (applied(region, kept, opAssign), kept.len)
+  for k in kept:
+    if k.c.target.kind == skAlias: doc.root.setSlot(k.c, loadValue(value))
+    else:
+      for found in doc.root.queryLocated(parseJsonPath(k.c.path)):
+        found.node[] = loadValue(value)[]
+  verify(result.text, json, @[doc], opAssign, some(start))
+
+proc copy(src: YamlSource, first, last: int64, output: Stream) =
+  ## Writes the bytes ``first ..< last`` of ``src`` to ``output``.
+  var
+    buffer = newString(65536)
+    pos = first
+  while pos < last:
+    let n = src.read(pos, buffer.toOpenArray(0, int(min(int64(buffer.len),
+        last - pos)) - 1))
+    if n <= 0: break
+    output.writeData(addr buffer[0], n)
+    pos += n
+
+proc doAssign(src: YamlSource, path: JsonPath, value: string,
+    output: Stream, options: PresentationOptions, json: bool,
+    document: int): int =
+  let newValue = loadValue(value)
+  if newValue.kind == yMapping and json:
+    for key in newValue.fields.keys:
+      if key.kind != yScalar:
+        raise newException(YamlEditError, "a JSON key must be a scalar")
+  let valueEvents = valueEvents(value)
+  proc events(): YamlStream =
+    var parser = initYamlParser(budget = src.budget)
+    if json: parser.parse(newJsonCommentStripStream(newSourceStream(src)))
+    else: parser.parse(src)
+  # the anchors of all documents, which new anchors avoid, and the line
+  # breaks, as `assign` of a string finds them
+  var taken: HashSet[string]
+  var newline = "\l"
+  block:
+    for e in events():
+      let anchor = case e.kind
+        of yamlScalar: e.scalarProperties.anchor
+        of yamlStartMap: e.mapProperties.anchor
+        of yamlStartSeq: e.seqProperties.anchor
+        else: yAnchorNone
+      if anchor != yAnchorNone: taken.incl($anchor)
+    let input = newSourceStream(src)
+    var
+      buffer = newString(65536)
+      lastCr = false
+    block scan:
+      while true:
+        let n = input.readDataStr(buffer, 0 ..< buffer.len)
+        if n <= 0: break
+        for i in 0 ..< n:
+          if buffer[i] == '\l' and lastCr:
+            newline = "\c\l"
+            break scan
+          lastCr = buffer[i] == '\c'
+  # each document is edited in its region of the text, which reaches up to
+  # the next document
+  var
+    s = events()
+    written = 0'i64
+    d = 0
+  discard s.next() # yamlStartStream
+  while s.peek().kind == yamlStartDoc:
+    let start = s.documentStart
+    var docEvents: seq[Event]
+    var charged = 0
+    while true:
+      let e = s.next()
+      let size = 64 + (if e.kind == yamlScalar: e.scalarContent.len else: 0)
+      src.budget.reserve(size, "holding a document to assign to it")
+      charged += size
+      docEvents.add(e)
+      if e.kind == yamlEndDoc: break
+    let regionEnd =
+      if s.peek().kind == yamlStartDoc: int64(s.documentStart.offset)
+      else: src.size
+    if document < 0 or d == document:
+      src.budget.reserve(int(regionEnd - start.offset) * 2,
+          "editing a document")
+      charged += int(regionEnd - start.offset) * 2
+      let region = src.slice(start.offset, regionEnd - 1)
+      let (text, count) = assignInRegion(region, docEvents, start, path,
+          value, newValue, valueEvents, options, json, taken, newline,
+          src.budget)
+      if count > 0:
+        src.copy(written, start.offset, output)
+        output.write(text)
+        written = regionEnd
+        result += count
+    src.budget.release(charged)
+    inc(d)
+  src.copy(written, src.size, output)
+
+proc assign*(src: YamlSource, path: JsonPath, value: string, output: Stream,
+    options = PresentationOptions(), json = false, document = -1): int
+    {.raises: [YamlEditError, YamlParserError, YamlConstructionError,
+    YamlStreamError, IOError, OSError, YamlMemoryLimitError].} =
+  ## Like `assign` of a string, for a source of any size: the edited text
+  ## is written to ``output``, and the number of nodes assigned to is
+  ## returned. Each document is edited and checked on its own, so one
+  ## document and its text are held at a time; ``src`` is read more than
+  ## once, so it must have random access (a stream is read into memory).
+  if not src.randomAccess:
+    let (text, count) = assign(src.readAll("assigning in " & src.name), path,
+        value, options, json, document)
+    output.write(text)
+    return count
+  try: result = doAssign(src, path, value, output, options, json, document)
+  except YamlEditError as e: raise e
+  except YamlParserError as e: raise e
+  except YamlConstructionError as e: raise e
+  except YamlStreamError as e: raise e
+  except YamlMemoryLimitError as e: raise e
+  except IOError as e: raise e
+  except OSError as e: raise e
+  except CatchableError:
     raise newException(YamlEditError,
         "internal error: " & getCurrentExceptionMsg())
 

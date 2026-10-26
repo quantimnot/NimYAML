@@ -46,7 +46,7 @@
 ## ``:``, ``-``, properties and trailing blanks are enough for nodes.
 
 import std/[tables, sets, strutils]
-import data, dom, jsonpath, loading, parser, stream
+import data, dom, jsonpath, loading, parser, stream, source, memory
 import private/jsonmodel
 
 type
@@ -110,20 +110,72 @@ type
     anchorNames*: HashSet[string]
       ## every anchor of the source, so that new anchors can avoid them
 
+# Text
+#
+# The text of a source is a string, or a `YamlSource` read through a small
+# window, so that the spans of a document of any size are found without the
+# whole text.
+
+type
+  SourceText* = ref object
+    ## The text of a source, by byte offset.
+    str: string
+    src: YamlSource # nil: all of it is ``str``
+    size: int
+    window: string
+    windowStart: int
+
+const textWindow = 4096
+
+proc textOf*(text: string): SourceText =
+  SourceText(str: text, size: text.len)
+
+proc textOf*(src: YamlSource): SourceText =
+  ## The text of ``src``, which must have random access.
+  SourceText(src: src, size: int(src.size))
+
+proc len*(t: SourceText): int = t.size
+
+proc `[]`*(t: SourceText, i: int): char =
+  if t.src.isNil: return t.str[i]
+  if i < t.windowStart or i >= t.windowStart + t.window.len:
+    t.windowStart = max(0, i - textWindow div 2)
+    try: t.window = t.src.slice(t.windowStart, t.windowStart + textWindow - 1)
+    except IOError: t.window = ""
+    if i - t.windowStart >= t.window.len: return '\0'
+  t.window[i - t.windowStart]
+
 # Offsets
 #
 # Marks count lines from 1 and columns from 1 in bytes, so a table of line
-# starts turns them into offsets.
+# starts turns them into offsets: of all lines of a string, or of the lines
+# of the document being walked.
+
+type LineIndex = object
+  first: int        # the number of the line that starts at starts[0]
+  starts: seq[int]
+  size: int
 
 proc lineStarts(src: string): seq[int] =
   result = @[0]
   for i, c in src:
     if c == '\l': result.add(i + 1)
 
-proc offset(lineStarts: seq[int], srcLen: int, m: Mark): int =
+proc lineIndexOf(text: SourceText, offset, line, lastLine: int): LineIndex =
+  ## The starts of the lines from ``line``, which starts at ``offset``, up
+  ## to ``lastLine``.
+  result = LineIndex(first: line, starts: @[offset], size: text.len)
+  var i = offset
+  while i < text.len and line + result.starts.len <= lastLine:
+    if text[i] == '\l': result.starts.add(i + 1)
+    inc(i)
+
+proc offset(lines: LineIndex, m: Mark): int =
   if m.line < 1: return 0
-  if m.line > lineStarts.len: return srcLen
-  min(lineStarts[m.line - 1] + m.column - 1, srcLen)
+  let k = m.line - lines.first
+  if k < 0: return 0
+  if k >= lines.starts.len: return lines.size
+  min(lines.starts[k] + m.column - 1, lines.size)
 
 proc columnOf*(src: string, offset: int): int =
   ## Zero-based column of ``offset`` in ``src``.
@@ -131,14 +183,20 @@ proc columnOf*(src: string, offset: int): int =
   while i > 0 and src[i - 1] != '\l': dec(i)
   offset - i
 
+proc columnOf*(src: SourceText, offset: int): int =
+  ## Zero-based column of ``offset`` in ``src``.
+  var i = offset
+  while i > 0 and src[i - 1] != '\l': dec(i)
+  offset - i
+
 # Scanning the text between marks
 
-proc trimEnd(src: string, first, last: int): int =
+proc trimEnd(src: SourceText, first, last: int): int =
   result = last
   while result > first and src[result - 1] in {' ', '\t', '\l', '\c'}:
     dec(result)
 
-proc after(src: string, pos: int, indicator: char): int =
+proc after(src: SourceText, pos: int, indicator: char): int =
   ## The offset after ``indicator`` that follows ``pos`` across whitespace
   ## and comments, or -1.
   if pos < 0: return -1
@@ -151,7 +209,7 @@ proc after(src: string, pos: int, indicator: char): int =
     else: break
   if i < src.len and src[i] == indicator: i + 1 else: -1
 
-proc tokens(src: string, first, last: int): seq[PropertyToken] =
+proc tokens(src: SourceText, first, last: int): seq[PropertyToken] =
   ## The anchor and tag tokens in ``first ..< last``; comments are skipped.
   var i = first
   while i < last:
@@ -165,7 +223,7 @@ proc tokens(src: string, first, last: int): seq[PropertyToken] =
       if src[start] in {'&', '!'}:
         result.add((start, i, src[start] == '!'))
 
-proc contentAfterProps(src: string, first, last: int): int =
+proc contentAfterProps(src: SourceText, first, last: int): int =
   ## Skips the anchor and tag tokens at ``first``; plain scalars cannot start
   ## with ``&`` or ``!``.
   result = first
@@ -215,8 +273,8 @@ proc mix(h: var uint64, x: uint64) =
 # collection ends with its last child, not at its end event.
 
 type Walker = object
-  src: string
-  lineStarts: seq[int]
+  src: SourceText
+  lines: LineIndex
   events: seq[Event]
   i: int
   doc: DocumentSpans
@@ -225,7 +283,7 @@ type Walker = object
   anchorNames: HashSet[string]
   digest: uint64 # of the node walked last
 
-proc offset(w: Walker, m: Mark): int = offset(w.lineStarts, w.src.len, m)
+proc offset(w: Walker, m: Mark): int = w.lines.offset(m)
 
 proc scalarSpan(w: Walker, e: Event): NodeSpan =
   ## The scalar ``e`` as it is in the source: its properties, then its
@@ -348,6 +406,25 @@ proc walk(w: var Walker, path, parentPath: string, index: int, name: string,
 
 # Sources
 
+proc walkDocument(w: var Walker, number: int, starts: seq[YamlDocumentStart])
+    {.raises: [YamlSpanError].} =
+  ## Walks the document whose ``yamlStartDoc`` is at ``w.i`` into ``w.doc``.
+  let docStart = w.offset(w.events[w.i].endPos)
+  w.doc = DocumentSpans()
+  if number < starts.len:
+    let start = starts[number]
+    w.doc.start = start
+    w.doc.selfContained = start.globals.len == 0 and
+        (start.offset >= w.src.len or w.src[start.offset] != '%')
+  else:
+    w.doc.start = YamlDocumentStart(offset: w.offset(w.events[w.i].startPos),
+        line: w.events[w.i].startPos.line, index: number)
+  inc(w.i)
+  w.anchors.clear()
+  w.anchorDigests.clear()
+  discard w.walk("$", "", -1, "", false, -1, docStart)
+  inc(w.i) # yamlEndDoc
+
 proc sourceSpans*(source: string, events: seq[Event],
     starts: seq[YamlDocumentStart] = @[]): SourceSpans
     {.raises: [YamlSpanError].} =
@@ -355,28 +432,72 @@ proc sourceSpans*(source: string, events: seq[Event],
   ## ``events``. ``starts`` are the document starts the parser reported, one
   ## per document; without them, ``start`` of each document holds its
   ## ``yamlStartDoc`` position only and no document is ``selfContained``.
-  var w = Walker(src: source, events: events, lineStarts: lineStarts(source))
+  var w = Walker(src: textOf(source), events: events,
+      lines: LineIndex(first: 1, starts: lineStarts(source), size: source.len))
   w.i = 1 # after yamlStartStream
   while w.events[w.i].kind == yamlStartDoc:
-    let
-      number = result.documents.len
-      docStart = w.offset(w.events[w.i].endPos)
-    w.doc = DocumentSpans()
-    if number < starts.len:
-      let start = starts[number]
-      w.doc.start = start
-      w.doc.selfContained = start.globals.len == 0 and
-          (start.offset >= source.len or source[start.offset] != '%')
-    else:
-      w.doc.start = YamlDocumentStart(offset: w.offset(w.events[w.i].startPos),
-          line: w.events[w.i].startPos.line, index: number)
-    inc(w.i)
-    w.anchors.clear()
-    w.anchorDigests.clear()
-    discard w.walk("$", "", -1, "", false, -1, docStart)
-    inc(w.i) # yamlEndDoc
+    w.walkDocument(result.documents.len, starts)
     result.documents.add(w.doc)
   result.anchorNames = w.anchorNames
+
+proc regionSpans*(region: string, events: seq[Event],
+    start: YamlDocumentStart): DocumentSpans {.raises: [YamlSpanError].} =
+  ## The spans of the document that begins at ``start`` and whose text is
+  ## ``region`` (from ``start.offset`` on, up to the next document), with
+  ## the events ``events`` (``yamlStartDoc`` to ``yamlEndDoc``). Offsets
+  ## are in ``region``; ``start`` keeps the document's place in the source.
+  var w = Walker(src: textOf(region), events: events,
+      lines: LineIndex(first: start.line, starts: lineStarts(region),
+          size: region.len))
+  var local = start
+  local.offset = 0
+  w.walkDocument(0, @[local])
+  result = w.doc
+  result.start = start
+
+iterator documentSpans*(src: YamlSource, json = false): DocumentSpans
+    {.raises: [YamlParserError, YamlStreamError, YamlSpanError, IOError,
+    OSError, YamlMemoryLimitError].} =
+  ## The spans of the documents of ``src``, one at a time, for a source of
+  ## any size: the events and the line starts of one document are held, and
+  ## the text is read through a small window, so ``src`` must have random
+  ## access. ``json`` is as for `parsedEvents`. The parser's buffer is
+  ## charged to the budget of ``src``.
+  var parser = initYamlParser(budget = src.budget)
+  var s =
+    if json: parser.parse(newJsonCommentStripStream(newSourceStream(src)))
+    else: parser.parse(src)
+  var w = Walker(src: textOf(src))
+  discard s.next() # yamlStartStream
+  while s.peek().kind == yamlStartDoc:
+    var
+      events = @[s.next()]
+      start: YamlDocumentStart
+      lastLine = events[0].endPos.line
+    try: start = s.documentStart
+    except ValueError:
+      # documentStart of a stream from parse does not fail
+      raise newException(YamlStreamError, getCurrentExceptionMsg())
+    # the events, line starts and spans of the document, roughly
+    var charged = 0
+    while true:
+      let e = s.next()
+      let size = 192 + (if e.kind == yamlScalar: e.scalarContent.len else: 0)
+      src.budget.reserve(size, "finding the spans of a document")
+      charged += size
+      events.add(e)
+      lastLine = max(lastLine, e.endPos.line)
+      if e.kind == yamlEndDoc: break
+    src.budget.reserve(8 * (lastLine - start.line + 2),
+        "finding the spans of a document")
+    charged += 8 * (lastLine - start.line + 2)
+    w.events = move events
+    w.i = 0
+    w.lines = lineIndexOf(w.src, start.offset, start.line, lastLine + 1)
+    # the start carries the document's number
+    w.walkDocument(0, @[start])
+    yield w.doc
+    src.budget.release(charged)
 
 proc parsedEvents*(source: string, json = false):
     tuple[events: seq[Event], starts: seq[YamlDocumentStart]]

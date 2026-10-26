@@ -366,6 +366,7 @@ var
   verbose = false
   runBudget: MemoryBudget
   opened: seq[YamlSource] # closed when the run ends
+  temporaries: seq[string] # removed when the run ends
 
 proc configFile(file: string): string =
   ## The path a config is looked up for: the file, or for standard input a
@@ -706,7 +707,7 @@ proc inputFormat(files: seq[string], name: string,
   source.get(if files.len == 0: dfYaml else: formatOf(name))
 
 proc concatenated(files: seq[string], source: Option[DataFormat],
-    each: DocumentsOf, current: ref string): YamlStream =
+    each: DocumentsOf, current: ref string, randomAccess = false): YamlStream =
   ## One stream of the documents ``each`` makes of every input, opened one
   ## after the other; ``current`` is the name of the input being read.
   let names = if files.len == 0: @[""] else: files
@@ -717,7 +718,7 @@ proc concatenated(files: seq[string], source: Option[DataFormat],
         src: YamlSource
         s: YamlStream
       {.cast(gcsafe), cast(raises: [CatchableError]).}:
-        src = openInput(name)
+        src = openInput(name, randomAccess)
         current[] = src.name
         s = each(src, inputFormat(files, name, source))
       try:
@@ -748,12 +749,12 @@ proc commitFiles(temps: seq[tuple[temp, file: string]]) =
     moveFile(temp, file)
     let format = formatOf(file)
     let settings = indexSettingsFor(file)
-    if format.indexable and settings.mode != imOff:
-      refreshIndex(file, readText(file).content, settings,
-          json = format != dfYaml)
+    if format.indexable:
+      refreshIndex(file, settings, json = format != dfYaml,
+          budget = budgetFor(file))
 
 proc writeDocuments(files: seq[string], source, target: Option[DataFormat],
-    inPlace: bool, each: DocumentsOf): int =
+    inPlace: bool, each: DocumentsOf, randomAccess = false): int =
   ## Writes the documents ``each`` makes of all inputs: as one stream on
   ## stdout, in the format ``target`` or else that of the first input, or
   ## with ``inPlace``, each into its file, in its own format. Files are
@@ -769,7 +770,7 @@ proc writeDocuments(files: seq[string], source, target: Option[DataFormat],
     try:
       for file in files:
         let
-          src = openInput(file)
+          src = openInput(file, randomAccess)
           format = inputFormat(files, file, source)
           temp = file & ".yaml-tmp-" & $getCurrentProcessId()
         name = src.name
@@ -801,8 +802,8 @@ proc writeDocuments(files: seq[string], source, target: Option[DataFormat],
     current = new string
     output = newFileStream(stdout)
   try:
-    writeStream(output, concatenated(files, source, each, current), format,
-        yamlStyle, budgetFor(names[0]))
+    writeStream(output, concatenated(files, source, each, current,
+        randomAccess), format, yamlStyle, budgetFor(names[0]))
   except YamlStreamError:
     output.flush()
     return failedInput(current[], getCurrentException())
@@ -1021,30 +1022,55 @@ proc assignedCbor(input: Input, path: JsonPath, value: string):
     if result.count > 0: render(documents, dfCbor, FormatConfig())
     else: input.content
 
-proc assigned(input: Input, format: DataFormat, path: JsonPath,
-    value: string, style: FormatConfig): tuple[text: string, count: int] =
-  ## ``input`` with ``value`` assigned to the nodes that ``path`` selects,
-  ## and their number; see `yaml/edit <../yaml/edit.html>`_.
+proc assignTo(src: YamlSource, format: DataFormat, path: JsonPath,
+    value: string, style: FormatConfig, output: Stream): int =
+  ## Writes ``src`` with ``value`` assigned to the nodes that ``path``
+  ## selects to ``output``, and returns their number; see `yaml/edit
+  ## <../yaml/edit.html>`_. ``src`` must have random access.
   case format
-  of dfCbor: result = assignedCbor(input, path, value)
+  of dfCbor:
+    let (text, count) = assignedCbor((src.name,
+        src.readAll("assigning in " & src.name)), path, value)
+    output.write(text)
+    result = count
   of dfJsonLines:
-    var lineNumber = 0
-    for line in input.content.splitLines(keepEol = true):
+    # each line is a document of its own, edited on its own
+    let input = newSourceStream(src)
+    var
+      lineNumber = 0
+      buffer = newString(65536)
+      pos, filled = 0
+      line = ""
+    while true:
+      line.setLen(0)
+      while true:
+        if pos >= filled:
+          filled = max(0, input.readDataStr(buffer, 0 ..< buffer.len))
+          pos = 0
+          if filled == 0: break
+        let stop = buffer.find('\n', pos, filled - 1)
+        if stop < 0:
+          line.add(buffer[pos ..< filled])
+          pos = filled
+        else:
+          line.add(buffer[pos .. stop])
+          pos = stop + 1
+          break
+      if line.len == 0: break
       inc(lineNumber)
       let content = line.strip(leading = false, chars = {'\l', '\c'})
       if content.strip().len == 0:
-        result.text.add(line)
+        output.write(line)
         continue
       try:
         let (text, count) = edit.assign(content, path, value, json = true)
-        result.text.add(text & line[content.len .. ^1])
-        result.count += count
+        output.write(text & line[content.len .. ^1])
+        result += count
       except YamlParserError as e:
         e.mark.line = lineNumber
         raise e
   else:
-    result = edit.assign(input.content, path, value,
-        style.dumper.presentation,
+    result = edit.assign(src, path, value, output, style.dumper.presentation,
         json = format in {dfJson, dfJsonc})
 
 iterator selected(src: YamlSource, format: DataFormat, path: JsonPath,
@@ -1060,7 +1086,7 @@ iterator selected(src: YamlSource, format: DataFormat, path: JsonPath,
       else: IndexSettings(mode: imOff)
     nodes =
       if location.len > 0 and settings.mode != imOff:
-        indexedNodes(src.name, location, settings)
+        indexedNodes(src.name, location, settings, src.budget)
       else: none(seq[YamlNode])
   if nodes.isSome:
     for node in nodes.get(): yield (location, node)
@@ -1072,10 +1098,8 @@ iterator selected(src: YamlSource, format: DataFormat, path: JsonPath,
       let charged = construct(s, root, src.budget)
       for found in root.queryLocated(path): yield (found.path, found.node)
       src.budget.release(charged)
-    if settings.mode != imOff:
-      # the index is built from the whole text (see yaml/nodeindex)
-      updateIndex(src.name, readText(src.name).content, [location], settings,
-          json = format != dfYaml)
+    updateIndex(src.name, [location], settings, json = format != dfYaml,
+        budget = src.budget)
 
 proc selectCommand(path: JsonPath, files: seq[string],
     source, target: Option[DataFormat], paths: bool): int =
@@ -1136,36 +1160,63 @@ proc queryCommand(args: seq[string]): int =
       stderr.writeLine("invalid value: " & getCurrentExceptionMsg())
       return 2
   if not assigns: return selectCommand(path, files, source, target, paths)
-  let
-    yamlStyle = toolConfigFor(
-        if files.len > 0: files[0] else: getCurrentDir() / "-").format
-    selected = newStream()
-  var asText = false # the edited text of a single input is written as is
-  for name in (if files.len == 0: @[""] else: files):
-    let format = source.get(if files.len == 0: dfYaml else: formatOf(name))
-    let input = readText(name, randomAccess = assigns)
-    try:
-      if assigns:
-        let edited = assigned(input, format, path, valueText,
-            if files.len == 0: yamlStyle
-            else: toolConfigFor(input.name).format)
+  let yamlStyle = toolConfigFor(configFile(
+      if files.len > 0: files[0] else: "")).format
+  proc styleOf(name: string): FormatConfig =
+    if files.len == 0: yamlStyle else: toolConfigFor(name).format
+  let firstFormat = inputFormat(files, if files.len > 0: files[0] else: "",
+      source)
+  if inPlace or (files.len <= 1 and target.isNone and firstFormat != dfCbor):
+    # the edited text is written as is: into each file, or on stdout
+    for name in (if files.len == 0: @[""] else: files):
+      let
+        format = inputFormat(files, name, source)
+        src = openInput(name, randomAccess = true)
+        temp = name & ".yaml-tmp-" & $getCurrentProcessId()
+      defer: src.close()
+      try:
         if inPlace:
-          if edited.count > 0: writeSource(input.name, edited.text)
-        elif files.len <= 1 and target.isNone and format != dfCbor:
-          asText = true
-          stdout.write(edited.text)
-        else: selected.collect(events((input.name, edited.text), format))
-    except YamlEditError as e:
-      stderr.writeLine(input.name & ": " & e.msg)
-      return 1
-    except YamlStreamError, YamlParserError, YamlConstructionError,
-        YamlPresenterCborError:
-      return failed(input.name, getCurrentException())
-  if not (paths or inPlace or asText):
-    try:
-      stdout.write(selected, target.get(dfYaml), yamlStyle)
-    except YamlPresenterJsonError, YamlPresenterCborError, YamlStreamError:
-      return failed("<output>", getCurrentException())
+          let output = newFileStream(temp, fmWrite)
+          if output.isNil: raise newException(IOError, temp & ": cannot write")
+          var count = 0
+          try: count = assignTo(src, format, path, valueText,
+              styleOf(src.name), output)
+          finally: output.close()
+          if count > 0: commitFiles(@[(temp, name)])
+          else: removeFile(temp)
+        else:
+          let output = newFileStream(stdout)
+          try: discard assignTo(src, format, path, valueText,
+              styleOf(src.name), output)
+          finally: output.flush()
+      except YamlEditError as e:
+        if fileExists(temp): removeFile(temp)
+        stderr.writeLine(src.name & ": " & e.msg)
+        return 1
+      except YamlStreamError, YamlParserError, YamlConstructionError,
+          YamlPresenterCborError, YamlMemoryLimitError:
+        if fileExists(temp): removeFile(temp)
+        return failed(src.name, getCurrentException())
+    return 0
+  # several inputs, or another format: the edited documents are written as
+  # by convert, each input edited into a temporary file that is then read
+  proc edited(src: YamlSource, format: DataFormat): YamlStream =
+    let temp = getTempDir() / ("yaml-edited-" & $getCurrentProcessId() &
+        "-" & $temporaries.len)
+    temporaries.add(temp)
+    let output = newFileStream(temp, fmWrite)
+    if output.isNil: raise newException(IOError, temp & ": cannot write")
+    try: discard assignTo(src, format, path, valueText, styleOf(src.name),
+        output)
+    finally: output.close()
+    let editedSrc = openSource(temp, src.budget, policyFor(src.name))
+    opened.add(editedSrc)
+    events(editedSrc, format)
+  try: result = writeDocuments(files, source, some(target.get(dfYaml)), false,
+      edited, randomAccess = true)
+  except YamlEditError as e:
+    stderr.writeLine(e.msg)
+    return 1
 
 iterator eachDocument(input: YamlSource, format: DataFormat): YamlNode =
   ## The documents of ``input`` as graphs, one at a time.
@@ -1559,25 +1610,25 @@ proc indexCommand(args: seq[string]): int =
       if dropIndex(file, settings): stdout.writeLine(indexPath)
       continue
     let
-      content = readText(file, randomAccess = true).content
+      src = openInput(file, randomAccess = true)
       json = dataFormat != dfYaml
-      old = readIndex(indexPath, settings.format)
+      old = readIndex(indexPath, settings.format, src.budget)
       current = old.isSome and old.get().mode == settings.mode and
           old.get().json == json and
-          old.get().source.hash == fingerprint(content).hash
+          old.get().source.hash == fingerprintFile(file).hash
+    defer: src.close()
     var index: YamlIndex
     if current: index = old.get()
     else:
       try:
-        let spans = sourceSpans(content, json)
-        index = buildIndex(content, spans, settings.mode, json,
-            modificationTime(file))
+        index = buildIndex(src, settings.mode, json, modificationTime(file))
         # a recent index keeps its paths, looked up in the new content
         if settings.mode == imRecent and old.isSome:
-          for lookup in old.get().lookups:
-            index.record(content, spans, lookup.path, lookup.used,
-                settings.recentLimit)
-      except YamlParserError, YamlStreamError, YamlSpanError:
+          var paths: seq[tuple[path: string, used: int64]]
+          for lookup in old.get().lookups: paths.add((lookup.path, lookup.used))
+          index.record(src, paths, settings.recentLimit)
+      except YamlParserError, YamlStreamError, YamlSpanError,
+          YamlMemoryLimitError:
         result = max(result, failed(file, getCurrentException()))
         continue
     index.source.mtime = modificationTime(file)
@@ -1652,6 +1703,10 @@ proc run*(args: seq[string]): int =
     # sources whose reading an error abandoned, and their spool files
     for src in opened: src.close()
     opened.setLen(0)
+    for temp in temporaries:
+      try: removeFile(temp)
+      except OSError: discard
+    temporaries.setLen(0)
 
 when isMainModule:
   quit(run(commandLineParams()))

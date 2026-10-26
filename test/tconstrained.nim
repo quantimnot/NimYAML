@@ -116,9 +116,18 @@ suite "many documents":
       @["convert", "jsonl"], @["merge"], @["format"],
       @["format", "--drop-comments"], @["lint"], @["validate"], @["expand"],
       @["query", "$.item.k"], @["query", "--paths", "$..name"],
-      @["canonical"], @["patch", patchFile], @["diff", many]]:
+      @["canonical"], @["patch", patchFile], @["diff", many],
+      @["query", "$.item.k = 0"], @["query", "--to:json", "$.item.k = 0"]]:
     test args.join(" "):
       expectNothing within(args, many)
+
+  test "index --mode:recent exceeds the limit":
+    # an index has a record of each of the many documents
+    expectNothing exceeds(@["index", "--mode:recent", "--location:beside"],
+        many)
+
+  test "index --mode:all exceeds the limit":
+    expectNothing exceeds(@["index", "--mode:all", "--location:beside"], many)
 
   test "forced memory exceeds the limit":
     expectNothing exceeds(@["convert", "json"], many, "memory")
@@ -136,7 +145,7 @@ suite "one huge document":
     expectNothing exceeds(@["format"], huge)
 
   for args in [@["canonical"], @["merge"], @["patch", patchFile],
-      @["diff", huge]]:
+      @["diff", huge], @["query", "$.items[0].k = 0"]]:
     test args.join(" ") & " exceeds the limit":
       expectNothing exceeds(args, huge)
 

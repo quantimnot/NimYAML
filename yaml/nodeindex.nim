@@ -101,7 +101,10 @@
 import std/[algorithm, options, os, sets, strutils, tables, times]
 when defined(nimPreviewSlimSystem):
   import std/syncio
-import cbor, data, dom, dumping, loading, native, parser, spans, stream
+import cbor, data, dom, dumping, loading, native, parser, spans, stream, source,
+    presenter,
+    memory
+import std/streams
 export options, SpanKind
 
 type
@@ -210,6 +213,23 @@ proc fingerprintFile*(file: string, mtime = 0'i64): SourceFingerprint =
   SourceFingerprint(size: size, mtime: mtime,
       hash: toHex(hash).toLowerAscii())
 
+proc fingerprint*(src: YamlSource, mtime = 0'i64): SourceFingerprint
+    {.raises: [IOError, OSError].} =
+  ## The fingerprint of the content of ``src``, read in chunks; the same as
+  ## `fingerprint` of its content.
+  let input = newSourceStream(src)
+  var
+    buffer = newString(65536)
+    hash = fnvOffset
+    size = 0'i64
+  while true:
+    let n = input.readData(addr buffer[0], buffer.len)
+    if n <= 0: break
+    hash = fnv1a64(buffer.toOpenArray(0, n - 1), hash)
+    size += n
+  SourceFingerprint(size: size, mtime: mtime,
+      hash: toHex(hash).toLowerAscii())
+
 proc modificationTime*(file: string): int64 =
   ## The modification time of ``file`` in nanoseconds; 0 if it has none.
   try: getLastModificationTime(file).nanoseconds
@@ -217,12 +237,12 @@ proc modificationTime*(file: string): int64 =
 
 # Building
 
-proc lineEnd(source: string, pos: int): int =
+proc lineEnd(source: SourceText, pos: int): int =
   result = pos
   while result < source.len and source[result] notin {'\l', '\c'}:
     inc(result)
 
-proc entryOf(source, path: string, span: NodeSpan,
+proc entryOf(source: SourceText, path: string, span: NodeSpan,
     doc: DocumentSpans): IndexEntry =
   result = IndexEntry(path: path, kind: span.kind, start: span.start,
       stop: span.stop, anchor: span.anchor, alias: span.aliasOf,
@@ -253,13 +273,49 @@ proc buildIndex*(source: string, spans: SourceSpans, mode = imAll,
   ## with `record`.
   result = YamlIndex(version: indexVersion, mode: mode, json: json,
       source: fingerprint(source, mtime))
+  let text = textOf(source)
   for doc in spans.documents:
     var indexed = documentOf(doc)
     if mode == imAll:
       for path, span in doc.nodes.pairs:
-        indexed.entries.add(entryOf(source, path, span, doc))
+        indexed.entries.add(entryOf(text, path, span, doc))
       indexed.entries.sort(byPath)
     result.documents.add(indexed)
+
+const documentCharge = 256
+  ## bytes charged for a document of an index
+
+const entryCharge = 768
+  ## bytes charged for an entry of an index, besides its path: about what
+  ## an entry and its part of writing the index take
+
+proc buildIndex*(src: YamlSource, mode = imAll, json = false,
+    mtime = 0'i64): YamlIndex
+    {.raises: [YamlParserError, YamlStreamError, YamlSpanError, IOError,
+    OSError, YamlMemoryLimitError].} =
+  ## Like the `string` variant, for a source of any size, read one document
+  ## at a time (see `documentSpans`). The budget of ``src`` is charged for
+  ## the entries while the index is built: an ``all`` index has one for
+  ## every node, so the index of a large file may not fit where a
+  ## ``recent`` one does.
+  result = YamlIndex(version: indexVersion, mode: mode, json: json,
+      source: fingerprint(src, mtime))
+  let text = textOf(src)
+  var charged = 0
+  try:
+    for doc in documentSpans(src, json):
+      src.budget.reserve(documentCharge, "building an index")
+      charged += documentCharge
+      var indexed = documentOf(doc)
+      if mode == imAll:
+        for path, span in doc.nodes.pairs:
+          src.budget.reserve(entryCharge + path.len, "building an index")
+          charged += entryCharge + path.len
+          indexed.entries.add(entryOf(text, path, span, doc))
+        indexed.entries.sort(byPath)
+      result.documents.add(indexed)
+  finally:
+    src.budget.release(charged)
 
 proc buildIndex*(source: string, mode = imAll, json = false,
     mtime = 0'i64): YamlIndex
@@ -354,6 +410,9 @@ proc touch*(index: var YamlIndex, path: string, now: int64) =
   let i = index.findLookup(path)
   if i >= 0: index.lookups[i].used = now
 
+proc addLookup(index: var YamlIndex, path: string, hits: seq[Hit],
+    now: int64, limit: int)
+
 proc record*(index: var YamlIndex, source: string, spans: SourceSpans,
     path: string, now: int64, limit = defaultRecentLimit) =
   ## Adds the nodes ``path`` names to the ``recent`` index of ``source``,
@@ -362,12 +421,19 @@ proc record*(index: var YamlIndex, source: string, spans: SourceSpans,
   ## recorded, since the index could not answer it.
   if index.mode != imRecent: return
   var hits: seq[Hit]
+  let text = textOf(source)
   for d, doc in spans.documents:
     try:
       let (resolved, span) = doc.resolve(path)
-      hits.add(Hit(document: d, entry: entryOf(source, resolved, span, doc)))
+      hits.add(Hit(document: d, entry: entryOf(text, resolved, span, doc)))
     except YamlSpanMissing: discard # the document has no such node
     except YamlSpanError: return
+  index.addLookup(path, hits, now, limit)
+
+proc addLookup(index: var YamlIndex, path: string, hits: seq[Hit],
+    now: int64, limit: int) =
+  ## Records the ``hits`` of ``path``, dropping the least recently used
+  ## paths beyond ``limit``.
   let found = index.findLookup(path)
   if found >= 0:
     index.lookups[found].hits = hits
@@ -378,6 +444,31 @@ proc record*(index: var YamlIndex, source: string, spans: SourceSpans,
       index.lookups.sort(proc(a, b: Lookup): int = cmp(b.used, a.used))
       index.lookups.setLen(max(limit, 1))
     index.lookups.sort(proc(a, b: Lookup): int = cmp(a.path, b.path))
+
+proc record*(index: var YamlIndex, src: YamlSource,
+    paths: openArray[tuple[path: string, used: int64]],
+    limit = defaultRecentLimit)
+    {.raises: [YamlParserError, YamlStreamError, YamlSpanError, IOError,
+    OSError, YamlMemoryLimitError].} =
+  ## Like `record` of a string, for ``paths`` with the times they were used,
+  ## in one pass over the documents of ``src``.
+  if index.mode != imRecent or paths.len == 0: return
+  var
+    hits = newSeq[seq[Hit]](paths.len)
+    unresolvable = newSeq[bool](paths.len)
+  let text = textOf(src)
+  var d = 0
+  for doc in documentSpans(src, index.json):
+    for k, (path, _) in paths:
+      if unresolvable[k]: continue
+      try:
+        let (resolved, span) = doc.resolve(path)
+        hits[k].add(Hit(document: d, entry: entryOf(text, resolved, span, doc)))
+      except YamlSpanMissing: discard # the document has no such node
+      except YamlSpanError: unresolvable[k] = true
+    inc(d)
+  for k, (path, used) in paths:
+    if not unresolvable[k]: index.addLookup(path, hits[k], used, limit)
 
 # Reading nodes from slices
 
@@ -475,11 +566,19 @@ proc indexFile*(file: string, settings: IndexSettings): string =
     if segment.len > 0: result = result / encodeSegment(segment)
   result.add(suffix)
 
-proc readIndex*(path: string, format: IndexFormat): Option[YamlIndex] =
-  ## The index stored at ``path``; none if there is none, it cannot be read
-  ## or it is of another version.
+proc readIndex*(path: string, format: IndexFormat,
+    budget: MemoryBudget = nil): Option[YamlIndex] =
+  ## The index stored at ``path``; none if there is none, it cannot be read,
+  ## it is of another version, or it does not fit into ``budget``, which is
+  ## charged while it is read (an index takes several times its file size
+  ## in memory).
   if path.len == 0 or not fileExists(path): return
+  var charged = 0
+  defer: budget.release(charged)
   try:
+    let size = int(getFileSize(path)) * 4
+    budget.reserve(size, "reading the index " & path)
+    charged = size
     let content = readFile(path)
     let index =
       case format
@@ -489,19 +588,57 @@ proc readIndex*(path: string, format: IndexFormat): Option[YamlIndex] =
   except CatchableError:
     discard
 
+proc indexEvents(index: YamlIndex, options: SerializationOptions):
+    YamlStream =
+  ## The events `represent` gives for ``index``, made one document at a
+  ## time: an index has an entry for each node of its source, and all of
+  ## them as events would take many times the memory of the index.
+  initYamlStream(iterator(): Event {.gcsafe, raises: [CatchableError].} =
+    var shell = index
+    shell.documents = @[]
+    var
+      depth = 0
+      afterDocumentsKey = false
+    for e in represent(shell, options):
+      yield e
+      case e.kind
+      of yamlStartMap, yamlStartSeq:
+        if depth == 1 and afterDocumentsKey and e.kind == yamlStartSeq:
+          # the documents, nested like the shell's own content
+          for doc in index.documents:
+            for de in represent(doc, options):
+              if de.kind notin {yamlStartStream, yamlStartDoc, yamlEndDoc,
+                  yamlEndStream}:
+                yield de
+        inc(depth)
+        afterDocumentsKey = false
+      of yamlEndMap, yamlEndSeq:
+        dec(depth)
+        afterDocumentsKey = false
+      of yamlScalar:
+        afterDocumentsKey = depth == 1 and not afterDocumentsKey and
+            e.scalarContent == "documents"
+      else: afterDocumentsKey = false)
+
 proc writeIndex*(index: YamlIndex, path: string, format: IndexFormat): bool =
   ## Stores ``index`` at ``path`` and returns whether it was stored; an
   ## index that cannot be written is no error, just no index.
   if path.len == 0: return false
   try:
-    let content =
-      case format
-      of ifCbor: dumpCbor(Dumper(), index)
-      of ifYaml: blockOnlyDumper().dump(index)
     createDir(path.parentDir())
     # write and rename, so that readers never see half an index
     let partial = path & ".partial-" & $getCurrentProcessId()
-    writeFile(partial, content)
+    let output = newFileStream(partial, fmWrite)
+    if output.isNil: return false
+    try:
+      case format
+      of ifCbor:
+        presentCbor(indexEvents(index, Dumper().serialization), output)
+      of ifYaml:
+        let dumper = blockOnlyDumper()
+        present(indexEvents(index, dumper.serialization), output,
+            dumper.presentation)
+    finally: output.close()
     moveFile(partial, path)
     result = true
   except CatchableError:
@@ -523,15 +660,15 @@ proc dropIndex*(file: string, settings: IndexSettings): bool =
 # its source, and bring the index up to date when the source has been
 # parsed anyway, or written.
 
-proc indexedNodes*(file: string, path: string, settings: IndexSettings):
-    Option[seq[YamlNode]] =
+proc indexedNodes*(file: string, path: string, settings: IndexSettings,
+    budget: MemoryBudget = nil): Option[seq[YamlNode]] =
   ## The nodes that the Normalized Path ``path`` names in ``file``, one per
   ## document that has one, read from their slices of ``file``; none if
   ## there is no current index that knows them all, so that ``file`` must
   ## be parsed. A ``recent`` index notes the lookup.
   if path.len == 0: return
   let indexPath = indexFile(file, settings)
-  var index = readIndex(indexPath, settings.format).get(YamlIndex())
+  var index = readIndex(indexPath, settings.format, budget).get(YamlIndex())
   if index.version != indexVersion or index.mode != settings.mode: return
   var size: int64
   try: size = getFileSize(file)
@@ -598,6 +735,64 @@ proc updateIndex*(file, source: string, paths: openArray[string],
   for path in toRecord:
     index.record(source, spans, path, now, settings.recentLimit)
   discard index.writeIndex(indexPath, settings.format)
+
+proc updateIndex*(file: string, paths: openArray[string],
+    settings: IndexSettings, json = false, budget: MemoryBudget = nil) =
+  ## Like the other `updateIndex`, reading ``file`` through a source within
+  ## ``budget`` instead of its content as a string.
+  if settings.mode == imOff: return
+  let
+    indexPath = indexFile(file, settings)
+    mtime = modificationTime(file)
+  var current: SourceFingerprint
+  try: current = fingerprintFile(file, mtime)
+  except IOError, OSError: return
+  var index = readIndex(indexPath, settings.format, budget).get(YamlIndex())
+  let stale = index.version != indexVersion or index.mode != settings.mode or
+      index.json != json or index.source.size != current.size or
+      index.source.hash != current.hash
+  var toRecord: seq[tuple[path: string, used: int64]]
+  let now = getTime().nanoseconds
+  if settings.mode == imRecent:
+    for path in paths:
+      if path.len > 0 and (stale or index.findLookup(path) < 0):
+        toRecord.add((path, now))
+  if not stale and toRecord.len == 0:
+    if index.source.mtime != mtime:
+      index.source.mtime = mtime
+      discard index.writeIndex(indexPath, settings.format)
+    return
+  var src: YamlSource
+  try:
+    src = openSource(file, budget, randomAccess = true)
+    if stale: index = buildIndex(src, settings.mode, json, mtime)
+    index.source.mtime = mtime
+    index.record(src, toRecord, settings.recentLimit)
+  except CatchableError: return
+  finally:
+    if not src.isNil: src.close()
+  discard index.writeIndex(indexPath, settings.format)
+
+proc refreshIndex*(file: string, settings: IndexSettings, json = false,
+    budget: MemoryBudget = nil) =
+  ## Like the other `refreshIndex`, reading ``file`` through a source within
+  ## ``budget`` instead of its content as a string.
+  if settings.mode == imOff: return
+  let indexPath = indexFile(file, settings)
+  let old = readIndex(indexPath, settings.format, budget)
+  var src: YamlSource
+  try:
+    src = openSource(file, budget, randomAccess = true)
+    var index = buildIndex(src, settings.mode, json, modificationTime(file))
+    if settings.mode == imRecent and old.isSome:
+      var paths: seq[tuple[path: string, used: int64]]
+      for lookup in old.get().lookups: paths.add((lookup.path, lookup.used))
+      index.record(src, paths, settings.recentLimit)
+    discard index.writeIndex(indexPath, settings.format)
+  except CatchableError:
+    discard dropIndex(file, settings)
+  finally:
+    if not src.isNil: src.close()
 
 proc refreshIndex*(file, source: string, settings: IndexSettings,
     json = false) =

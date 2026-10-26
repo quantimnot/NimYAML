@@ -4,11 +4,57 @@
 #    See the file "copying.txt", included in this
 #    distribution, for details about the copyright.
 
-import std/unittest
-import ../yaml/[edit, jsonpath, presenter]
+import std/[os, streams, unittest]
+when defined(nimPreviewSlimSystem):
+  import std/syncio
+import ../yaml/[edit, jsonpath, presenter, source, memory]
+
+let tmp = getTempDir() / ("tedit-" & $getCurrentProcessId())
+createDir(tmp)
+
+proc fromSources(source, path, value: string, json: bool,
+    document = -1): seq[tuple[text: string, count: int, error: string]] =
+  ## `assign` of ``source`` read from a `YamlSource`: in memory, and as a
+  ## file read by seeking.
+  writeFile(tmp / "in.yaml", source)
+  for src in [sourceOf(source), openSource(tmp / "in.yaml",
+      newMemoryBudget(1 shl 20), SourcePolicy(choice: tcSeek,
+      pageCache: 8192))]:
+    let output = newStringStream()
+    try:
+      let count = assign(src, parseJsonPath(path), value, output,
+          json = json, document = document)
+      result.add((output.data, count, ""))
+    except CatchableError as e: result.add(("", 0, $e.name))
+    src.close()
 
 proc assigned(source, path, value: string, json = false): string =
-  assign(source, parseJsonPath(path), value, json = json).text
+  ## `assign` of ``source``, which must give the same when it reads
+  ## ``source`` from a `YamlSource`
+  var expected: tuple[text: string, count: int, error: string]
+  try:
+    let (text, count) = assign(source, parseJsonPath(path), value, json = json)
+    expected = (text, count, "")
+  except CatchableError as e: expected = ("", 0, $e.name)
+  for r in fromSources(source, path, value, json): check r == expected
+  if expected.error.len > 0:
+    raise newException(YamlEditError, expected.error)
+  expected.text
+
+suite "edit: from a source":
+  test "documents one at a time":
+    let source = "# head\n%YAML 1.2\n--- # one\na: 1\n...\n# between\n" &
+        "--- !!map\na: [2, 3]  # two\nb: x\n--- \na: {c: 4}\n# tail\n"
+    for document in [-1, 0, 1, 2]:
+      let expected = assign(source, parseJsonPath("$.a"), "[z]",
+          document = document)
+      for r in fromSources(source, "$.a", "[z]", false, document):
+        check r == (expected.text, expected.count, "")
+
+  test "nothing selected copies the source":
+    let source = "a: 1\n---\nb: 2\n"
+    for r in fromSources(source, "$.z", "1", false):
+      check r == (source, 0, "")
 
 suite "edit":
   test "only the selected node changes":

@@ -11,8 +11,8 @@
 import std/[algorithm, options, os, strutils, tables, times, unittest]
 when defined(nimPreviewSlimSystem):
   import std/syncio
-import ../yaml/[dom, jsonpath, loading, native, nodeindex, parser, spans,
-    stream]
+import ../yaml/[dom, jsonpath, loading, native, nodeindex, parser, spans, source, memory,
+    stream, cbor, dumping]
 
 proc rootsOf(source: string): seq[YamlNode] =
   var s = initYamlParser().parse(source)
@@ -277,3 +277,73 @@ suite "nodeindex: yaml-test-suite":
     # most nodes are read from their slices, not by falling back
     check sliced * 10 > nodes * 8
     echo "  ", inputs, " inputs, ", nodes, " nodes, ", sliced, " from slices"
+
+suite "nodeindex: from a source":
+  test "spans and indexes equal those of the text":
+    var inputs = 0
+    for input in suiteInputs():
+      let source = readFile(input)
+      var expected: SourceSpans
+      try: expected = sourceSpans(source)
+      except CatchableError: continue # the parser rejects it
+      inc(inputs)
+      let src = openSource(input, newMemoryBudget(1 shl 20),
+          SourcePolicy(choice: tcSeek, pageCache: 8192))
+      var docs: seq[DocumentSpans]
+      for doc in documentSpans(src): docs.add(doc)
+      let index = buildIndex(src, imAll)
+      src.close()
+      if docs != expected.documents or index != buildIndex(source, expected):
+        checkpoint(input)
+        fail()
+    check inputs > 250
+
+  test "recent paths are recorded from a source":
+    let source = "a: {b: 1}\n---\na: {b: 2, c: [x]}\n"
+    let path = getTempDir() / ("recent-" & $getCurrentProcessId() & ".yaml")
+    writeFile(path, source)
+    var expected = buildIndex(source, imRecent)
+    let spans = sourceSpans(source)
+    for p in ["$['a']['b']", "$['a']['c'][0]"]:
+      expected.record(source, spans, p, 7, 8)
+    let src = openSource(path)
+    var index = buildIndex(src, imRecent)
+    index.record(src, @[("$['a']['b']", 7'i64), ("$['a']['c'][0]", 7'i64)], 8)
+    src.close()
+    removeFile(path)
+    check index == expected
+
+  test "the JSON of a file":
+    let source = "{\"a\": [1, // one\n 2]}\n"
+    let path = getTempDir() / ("json-" & $getCurrentProcessId() & ".jsonc")
+    writeFile(path, source)
+    let src = openSource(path)
+    check buildIndex(src, imAll, json = true) ==
+        buildIndex(source, imAll, json = true)
+    src.close()
+    removeFile(path)
+
+suite "nodeindex: writing":
+  test "an index is written as dumping it gives it, in both formats":
+    var source = ""
+    for i in 0 ..< 50: source.add("--- {a: " & $i & ", b: [x, y], &c c: *c}\n")
+    let index = buildIndex(source, imAll)
+    let dir = getTempDir() / ("index-writing-" & $getCurrentProcessId())
+    check index.writeIndex(dir / "i.cbor", ifCbor)
+    check readFile(dir / "i.cbor") == dumpCbor(Dumper(), index)
+    check index.writeIndex(dir / "i.yaml", ifYaml)
+    check readFile(dir / "i.yaml") == blockOnlyDumper().dump(index)
+    check readIndex(dir / "i.cbor", ifCbor) == some(index)
+    removeDir(dir)
+
+  test "writing a large index holds one document at a time":
+    var source = ""
+    for i in 0 ..< 4000: source.add("--- {a: " & $i & ", b: [x, y]}\n")
+    let index = buildIndex(source, imAll)
+    let dir = getTempDir() / ("index-large-" & $getCurrentProcessId())
+    # the peak so far is below the occupied memory plus what writing adds
+    let before = max(getMaxMem(), getOccupiedMem())
+    check index.writeIndex(dir / "i.yaml", ifYaml)
+    # the whole index as events would take tens of megabytes
+    check getMaxMem() - before < 4 shl 20
+    removeDir(dir)
