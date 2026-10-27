@@ -44,7 +44,7 @@ async function activateEmbedded(context, selector, getClient) {
   const isHost = (doc) => vscode.languages.match(selector, doc) > 0 && !store.isProjection(doc.uri);
   // diagnostics need projections before anyone asks; everything else
   // projects on demand
-  const eager = () => readConfig().enabled && readConfig().diagnosticsEnabled;
+  const eager = () => readConfig().projecting && readConfig().diagnosticsEnabled;
 
   const schedule = (doc, delay = readConfig().debounceMs) => {
     const key = doc.uri.toString();
@@ -79,7 +79,7 @@ async function activateEmbedded(context, selector, getClient) {
       if (!e.affectsConfiguration("yaml+lsp.embedded")) return;
       await registry.refresh();
       syncGrammar(registry);
-      if (!readConfig().enabled) {
+      if (!readConfig().projecting) {
         await store.cleanAll();
         for (const doc of vscode.workspace.textDocuments) bridge.clear(doc.uri);
         return;
@@ -87,6 +87,13 @@ async function activateEmbedded(context, selector, getClient) {
       // regions depend on the settings, but the document versions did not change
       store.hosts.clear();
       if (eager()) await ensureExcludes();
+      scheduleAll();
+    }),
+    // nothing was projected while the workspace was untrusted (config.js);
+    // trust is granted once and never revoked within a window
+    vscode.workspace.onDidGrantWorkspaceTrust(async () => {
+      if (!eager()) return;
+      await ensureExcludes();
       scheduleAll();
     }),
     // installing or removing an extension changes the languages
@@ -238,7 +245,11 @@ async function showRegions(store) {
     })),
   ];
   if (!items.length) {
-    vscode.window.showInformationMessage("No embedded language regions in this document.");
+    const cfg = readConfig();
+    vscode.window.showInformationMessage(
+      cfg.enabled && !cfg.projecting
+        ? "Embedded languages are off until the workspace is trusted (Workspace Trust)."
+        : "No embedded language regions in this document.");
     return;
   }
   const pick = await vscode.window.showQuickPick(items, { title: "Embedded language regions" });

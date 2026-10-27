@@ -31,12 +31,12 @@ class DiagnosticBridge {
   republish(hostUri) {
     const cfg = readConfig();
     const out = [];
-    if (cfg.enabled && cfg.diagnosticsEnabled) {
+    if (cfg.projecting && cfg.diagnosticsEnabled) {
       for (const p of this.store.projectionsOf(hostUri)) {
         for (const d of vscode.languages.getDiagnostics(p.uri)) out.push(remapDiagnostic(p, d));
       }
     }
-    if (cfg.enabled && cfg.warnOnFoldedScalars) {
+    if (cfg.projecting && cfg.warnOnFoldedScalars) {
       for (const f of this.store.foldedOf(hostUri)) {
         const d = new vscode.Diagnostic(
           new vscode.Range(f.headerLine, 0, f.headerLine, Number.MAX_SAFE_INTEGER),

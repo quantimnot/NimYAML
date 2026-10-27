@@ -53,6 +53,18 @@ activationEvents:
   - "workspaceContains:**/.yaml"
   - "workspaceContains:**/.yaml.yaml"
   - "onCustomEditor:yaml+lsp.grid"
+# Workspace Trust: what runs in a workspace the user has not trusted. The
+# server does, since its config files are data, but with the user's
+# command, not the workspace's; the rest is in extension.js.
+capabilities:
+  untrustedWorkspaces:
+    supported: limited
+    description: >-
+      yamllsp runs, started with the user's yaml+lsp.path and yaml+lsp.args
+      rather than the workspace's. Embedded languages, which write projection
+      files and settings into the workspace, and downloads of https: schemas
+      wait for the workspace to be trusted.
+    restrictedConfigurations: [yaml+lsp.path, yaml+lsp.args]
 # bundled from extension.js and its dependencies by `bun run build`
 main: dist/extension.js
 scripts:

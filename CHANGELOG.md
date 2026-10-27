@@ -49,6 +49,10 @@ Features:
    command `diff`, also usable as a git diff driver, and the language server
    a request `nimyaml/diff`, which the VS Code extension's "Compare
    Semantically" commands use.
+ * the VS Code extension supports Workspace Trust: in an untrusted workspace
+   yamllsp is started with the user's `yaml+lsp.path` and `yaml+lsp.args`
+   (restricted settings), embedded languages project nothing and `https:`
+   schemas are not downloaded, until the workspace is trusted
  * `YamlNode` collections end where their end event does (`endPos` was that
    of their start event), and merge patches remove members with a plain
    `null` instead of `!!null null`.

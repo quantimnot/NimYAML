@@ -106,4 +106,7 @@ How much works depends on the language's extension:
   that are only commands are dropped: they would run on the projection.
 
 `yaml+lsp.embedded.enabled: false` turns all of this off and deletes the
-projections.
+projections. In a workspace that is not trusted (Restricted Mode), nothing
+is projected either, since projections are files written into the workspace
+and settings of it: only the colouring remains until the workspace is
+trusted, see [Workspace Trust](../README.md#workspace-trust).

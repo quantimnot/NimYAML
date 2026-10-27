@@ -13,14 +13,18 @@
 // as VS Code's JSON support does, and only while its
 // `json.schemaDownload.enable` allows it. The project can forbid them too,
 // with `validate: {remote-schemas: false}` in its `.yaml` config; yamllsp
-// then does not ask for them.
+// then does not ask for them. Nor is anything downloaded in a workspace the
+// user has not trusted (Workspace Trust): the URL comes from a file of
+// that workspace, which would then choose where the editor sends requests.
+// Cached copies (`validate.schema-cache`) are yamllsp's to read regardless.
 //
 // yamllsp is told in `initialize` which schemes the client serves
 // (`initializationOptions`), asks for a schema of them with
 // `nimyaml/schemaContent`, and keeps the answer (see tools/yamllsp.nim).
 // VS Code changes a schema when, say, an extension that contributes
-// settings is installed, and downloads may be switched on or off; then
-// yamllsp is sent `nimyaml/schemaChanged` and asks again.
+// settings is installed, and downloads may be switched on or off, or the
+// workspace trusted; then yamllsp is sent `nimyaml/schemaChanged` and asks
+// again.
 
 const vscode = require("vscode");
 
@@ -37,6 +41,9 @@ function downloadsEnabled() {
 async function download(uri) {
   if (!downloadsEnabled()) {
     throw new Error("schema download is disabled (json.schemaDownload.enable)");
+  }
+  if (!vscode.workspace.isTrusted) {
+    throw new Error("schemas are not downloaded until the workspace is trusted (Workspace Trust)");
   }
   let response;
   try {
@@ -96,6 +103,9 @@ function registerSchemas(getClient) {
       if (event.affectsConfiguration("json.schemaDownload.enable")) {
         for (const uri of downloads) changed(uri);
       }
+    }),
+    vscode.workspace.onDidGrantWorkspaceTrust(() => {
+      for (const uri of downloads) changed(uri);
     }),
   );
 

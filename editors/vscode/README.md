@@ -565,6 +565,26 @@ between VS Code and yamllsp in the "yaml+lsp Trace" output channel. The
 `yaml+lsp.paths.*` settings are described under [Paths](#paths) and the
 `yaml+lsp.embedded.*` ones in [docs/embedded-langs.md](docs/embedded-langs.md).
 
+## Workspace Trust
+
+In a workspace that is not trusted ([Restricted
+Mode](https://code.visualstudio.com/docs/editor/workspace-trust)) the
+extension works, with three exceptions, until the workspace is trusted:
+
+- yamllsp is started with the user's `yaml+lsp.path` and `yaml+lsp.args`;
+  the workspace's values of these settings are not read, as they would make
+  the workspace choose the program that runs. The server reads the
+  workspace's `.yaml` configs and schemas, which are data.
+- [Embedded languages](docs/embedded-langs.md) are off: their projections
+  are files written into the workspace and its `files.exclude` and
+  `search.exclude` settings, and the extensions of the embedded languages
+  would be asked to analyze the workspace's code. The colouring of the
+  blocks stays.
+- `https:` schemas are not downloaded, since the URL comes from a file of
+  the workspace; the copies in the schema cache are used.
+
+Granting trust applies all three at once, without a restart.
+
 ## Development
 
 ```bash

@@ -33,6 +33,16 @@
 //
 // And schemas (schemas/): VS Code's own `vscode://schemas/...`, which
 // yamllsp cannot read, are given to it on request.
+//
+// Workspace Trust (`capabilities.untrustedWorkspaces` in package.yaml):
+// yamllsp runs in a workspace the user has not trusted, since what it reads
+// from the workspace (`.yaml` configs, schemas) is data, but the command
+// that starts it must not come from there, so `yaml+lsp.path` and
+// `yaml+lsp.args` are restricted settings: VS Code gives their user values
+// until trust is granted, then reports them changed, which restarts the
+// server below. Embedded languages (config.js) and schema downloads
+// (schemas/) wait for trust too; the grid, paths, the semantic diff and
+// comments touch nothing outside the editor and work as usual.
 
 const vscode = require("vscode");
 const { LanguageClient, TransportKind } = require("vscode-languageclient/node");

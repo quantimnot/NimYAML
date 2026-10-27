@@ -124,7 +124,7 @@ class ProjectionStore {
    * first if needed. Concurrent callers share one projection.
    */
   ensure(doc) {
-    if (!readConfig().enabled || this.isProjection(doc.uri)) return Promise.resolve([]);
+    if (!readConfig().projecting || this.isProjection(doc.uri)) return Promise.resolve([]);
     const key = doc.uri.toString();
     const state = this.hosts.get(key);
     if (state && state.version === doc.version) return Promise.resolve(state.projections);
