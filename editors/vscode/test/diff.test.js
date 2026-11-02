@@ -25,6 +25,9 @@ test("paths in either format, the root, and documents", () => {
   assert.equal(changePath(change("changed", { newPointer: "" }), "pointer", [1, 1]), "(root)");
   assert.equal(changePath(change("changed", { document: 1 }), "pointer", [1, 2]), "#2 /a/0");
   assert.equal(changePath(change("added", { document: 1, newPointer: "" }), "pointer", [1, 2]), "#2");
+  assert.equal(changePath(change("changed", { newPointer: "/a b" }), "fragment", [1, 1]), "#/a%20b");
+  assert.equal(changePath(change("changed", { newPointer: "" }), "fragment", [1, 1]), "#");
+  assert.equal(changePath(change("changed", { document: 1 }), "fragment", [1, 2]), "#2 #/a/0");
 });
 
 test("values on one line", () => {

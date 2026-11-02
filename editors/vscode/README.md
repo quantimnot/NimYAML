@@ -137,9 +137,17 @@ default of `yaml+lsp.paths.format`), and how the
 
 ### [JSON Path](../../README.md#jsonpath)
 
-`$.servers[0].host`: the other format of [Paths](#paths) and the
+`$.servers[0].host`: another format of [Paths](#paths) and the
 [Semantic Diff](#semantic-diff), with `yaml+lsp.paths.format: "path"`.
 `yaml query '$..host' config.yaml` runs a full RFC 9535 query.
+
+### [URL Fragment](https://www.rfc-editor.org/rfc/rfc9512#section-1.2)
+
+`#/servers/0/host`, or `file:///home/me/config.yaml#/servers/0/host`: a
+JSON Pointer as a URI fragment identifier (RFC 6901 section 6, RFC 9512 for
+YAML), percent-encoded where a fragment cannot hold it (`#/a%20b`), as
+`$ref`s and links use it. The third format of [Paths](#paths) and the
+[Semantic Diff](#semantic-diff), with `yaml+lsp.paths.format: "fragment"`.
 
 ### [JSON Patch](../../README.md#patches-merge-keys-and-canonical-json)
 
@@ -243,21 +251,27 @@ cbor` and `yaml convert --from:cbor yaml` translate them.
 ### Paths
 
 Where the cursor is, as a [JSON Pointer](https://www.rfc-editor.org/rfc/rfc6901)
-(`/a/0/b`) or a [JSON Path](https://www.rfc-editor.org/rfc/rfc9535)
-(`$.a[0].b`), in YAML, JSON and JSONC files, and navigation by it, after
+(`/a/0/b`), a [JSON Path](https://www.rfc-editor.org/rfc/rfc9535)
+(`$.a[0].b`) or a [URL fragment](#url-fragment) (`#/a/0/b`), in YAML, JSON
+and JSONC files, and navigation by it, after
 [vscode-yamlnav](https://github.com/skorth/vscode-yamlnav):
 
 - The status bar shows the path of the node at the cursor; on a key, that
   of its member. In a stream of several documents it is prefixed with the
   document's number (`#2 /a`). Clicking it copies the path.
-- *YAML+: Copy JSON Pointer* and *YAML+: Copy JSON Path*, also in the
-  editor's context menu, copy either.
+- *YAML+: Copy JSON Pointer*, *YAML+: Copy JSON Path* and *YAML+: Copy URL
+  Fragment*, also in the editor's context menu, copy any of them. The
+  fragment is relative (`#/a/0/b`) by default; with
+  `yaml+lsp.paths.fragment: "absolute"` it follows the file's URI
+  (`file:///home/me/config.yaml#/a/0/b`). Untitled files have no URI, so
+  theirs stay relative, and as RFC 9512 has it a fragment cannot refer into
+  a stream of several documents, so copying one there warns.
 - *YAML+: Go to Path…*, also in the context menu, lists every node by its
   path, with the value of each scalar, and moves the cursor to the one
   picked. The list filters on paths and values as you type, and the editor
   follows the selected entry; Escape goes back to where the cursor was.
 
-`yaml+lsp.paths.format` chooses which of the two is shown and what clicking
+`yaml+lsp.paths.format` chooses which of the three is shown and what clicking
 the status bar copies; `yaml+lsp.paths.statusBar` turns the status bar item
 off. yamllsp names the nodes (`nimyaml/pathAt` and `nimyaml/paths`), from
 the text as far as it parses, so a document being typed keeps the paths
@@ -554,7 +568,7 @@ $ yaml diff config.yaml config.json
 |---|---|
 | *YAML+: Restart yamllsp* | restarts the server, e.g. after rebuilding it |
 | *YAML+: Open in Grid* | opens the file in the [Grid](#grid) |
-| *YAML+: Copy JSON Pointer* / *Copy JSON Path* / *Go to Path…* | see [Paths](#paths) |
+| *YAML+: Copy JSON Pointer* / *Copy JSON Path* / *Copy URL Fragment* / *Go to Path…* | see [Paths](#paths) |
 | *YAML+: Compare Semantically …* | see [Semantic Diff](#semantic-diff) |
 | *YAML+: Show / Format / Open Projection of / Delete Projections of Embedded Language Region(s)* | see [Embedded Languages](docs/embedded-langs.md) |
 

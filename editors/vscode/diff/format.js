@@ -1,6 +1,8 @@
 // The pure parts of diff/: how the changes of a semantic diff are listed.
 // The changes come from yamllsp (`nimyaml/diff`), tested in test/tlsp.nim.
 
+const { fragmentOf } = require("../paths/format");
+
 const ICONS = { added: "$(diff-added)", removed: "$(diff-removed)", changed: "$(diff-modified)" };
 
 /** The side a change is shown on: where its node is, the new one if both. */
@@ -9,13 +11,16 @@ function sideOf(change) {
 }
 
 /**
- * The path of `change` on its side, as a JSON Pointer or (`format` "path")
- * a JSON Path: the root's empty pointer as `(root)`, and the number of its
- * document when a text has several.
+ * The path of `change` on its side, as a JSON Pointer, (`format` "path") a
+ * JSON Path or (`format` "fragment") a relative URL fragment: the root's
+ * empty pointer as `(root)`, and the number of its document when a text has
+ * several.
  */
 function changePath(change, format, documents) {
   const side = sideOf(change);
-  const text = change[side + (format === "path" ? "Path" : "Pointer")];
+  const text = format === "fragment"
+    ? fragmentOf(change[side + "Pointer"])
+    : change[side + (format === "path" ? "Path" : "Pointer")];
   if (Math.max(...(documents ?? [1])) > 1) {
     return `#${change.document + 1}` + (text ? ` ${text}` : "");
   }

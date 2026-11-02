@@ -1,11 +1,13 @@
-// Paths: where the cursor is, as a JSON Pointer or a JSON Path, and
-// navigation by them, after skorth/vscode-yamlnav.
+// Paths: where the cursor is, as a JSON Pointer, a JSON Path or a URL
+// fragment, and navigation by them, after skorth/vscode-yamlnav.
 //
 // The status bar shows the path of the node at the cursor and copies it
-// when clicked; "Copy JSON Pointer" and "Copy JSON Path" in the editor's
-// context menu copy either. "Go to Path…" lists every node of the file by
-// its path, with the values of scalars, and moves the cursor to the one
-// picked, previewing each as it is selected.
+// when clicked; "Copy JSON Pointer", "Copy JSON Path" and "Copy URL
+// Fragment" in the editor's context menu copy any of them, the fragment
+// relative (`#/a/0`) or after the document's URI as `yaml+lsp.paths.fragment`
+// says. "Go to Path…" lists every node of the file by its path, with the
+// values of scalars, and moves the cursor to the one picked, previewing each
+// as it is selected.
 //
 // yamllsp names the nodes (`nimyaml/pathAt` and `nimyaml/paths`, see
 // tools/yamllsp.nim). Like the grid, it is given the text rather than the
@@ -25,6 +27,23 @@ function config() {
 
 function supported(editor) {
   return editor && LANGUAGES.includes(editor.document.languageId);
+}
+
+// the commands that copy each format, also what clicking the status bar runs
+const COPY_COMMANDS = {
+  pointer: "yaml+lsp.paths.copyPointer",
+  path: "yaml+lsp.paths.copyPath",
+  fragment: "yaml+lsp.paths.copyFragment",
+};
+
+/**
+ * The URI an absolute fragment of `document` follows, without a fragment of
+ * its own, or undefined when fragments are relative. An untitled document
+ * has no URI to refer to, so its fragments stay relative.
+ */
+function fragmentBase(document) {
+  if (config().get("fragment") !== "absolute" || document.isUntitled) return undefined;
+  return document.uri.with({ fragment: "" }).toString();
 }
 
 function params(document) {
@@ -80,10 +99,7 @@ function registerPaths(getClient) {
     item.tooltip = `${format.name} of the node at the cursor` +
       (node.documents > 1 ? `, in document ${node.document + 1} of ${node.documents}` : "") +
       ". Click to copy it.";
-    item.command = {
-      title: `Copy ${format.name}`,
-      command: format.key === "path" ? "yaml+lsp.paths.copyPath" : "yaml+lsp.paths.copyPointer",
-    };
+    item.command = { title: `Copy ${format.name}`, command: COPY_COMMANDS[format.key] };
     item.show();
   }
 
@@ -102,9 +118,14 @@ function registerPaths(getClient) {
         : "yamllsp is not running.");
       return;
     }
-    const text = pathText(node, name);
+    const text = pathText(node, name, fragmentBase(editor.document));
     await vscode.env.clipboard.writeText(text);
     vscode.window.setStatusBarMessage(`Copied ${formatOf(name).name} ${text || "(root)"}`, 2000);
+    if (formatOf(name).key === "fragment" && node.documents > 1) {
+      // RFC 9512: a JSON Pointer fragment refers into a single document
+      vscode.window.showWarningMessage(
+        "Copied a URL fragment of a stream of several documents, which it cannot refer into.");
+    }
   }
 
   async function goTo() {
@@ -160,8 +181,8 @@ function registerPaths(getClient) {
 
   const disposable = vscode.Disposable.from(
     item,
-    vscode.commands.registerCommand("yaml+lsp.paths.copyPointer", () => copy("pointer")),
-    vscode.commands.registerCommand("yaml+lsp.paths.copyPath", () => copy("path")),
+    ...Object.entries(COPY_COMMANDS).map(([name, command]) =>
+      vscode.commands.registerCommand(command, () => copy(name))),
     vscode.commands.registerCommand("yaml+lsp.paths.goTo", goTo),
     vscode.window.onDidChangeActiveTextEditor(update),
     vscode.window.onDidChangeTextEditorSelection((event) => {

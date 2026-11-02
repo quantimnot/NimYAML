@@ -1,25 +1,45 @@
-// The pure parts of paths/: how a node's JSON Pointer or JSON Path is shown
-// in the status bar and the items of "Go to Path…". The paths themselves
-// come from yamllsp (`nimyaml/pathAt`, `nimyaml/paths`), tested in
-// test/tlsp.nim.
+// The pure parts of paths/: how a node's JSON Pointer, JSON Path or URL
+// fragment is shown in the status bar and the items of "Go to Path…". The
+// paths themselves come from yamllsp (`nimyaml/pathAt`, `nimyaml/paths`),
+// tested in test/tlsp.nim.
 
 const FORMATS = {
   pointer: { name: "JSON Pointer", key: "pointer" },
   path: { name: "JSON Path", key: "path" },
+  fragment: { name: "URL Fragment", key: "fragment" },
 };
 
 function formatOf(name) {
   return FORMATS[name] ?? FORMATS.pointer;
 }
 
-/** The text of `node` in the format `name`, as it is copied. */
-function pathText(node, name) {
-  return node[formatOf(name).key];
+// what encodeURIComponent escapes but a URI fragment may hold (RFC 3986:
+// fragment = *( pchar / "/" / "?" ))
+const FRAGMENT_CHARS = /%(24|26|2B|2C|3B|3D|3A|40|2F|3F)/g;
+
+/**
+ * The URI fragment identifier of the JSON Pointer `pointer` (RFC 6901,
+ * section 6, and RFC 9512 for YAML): `#` and the pointer, UTF-8
+ * percent-encoded where a fragment may not hold it, e.g. `#/a%20b/0`.
+ */
+function fragmentOf(pointer) {
+  return "#" + encodeURIComponent(pointer).replace(FRAGMENT_CHARS, decodeURIComponent);
 }
 
 /**
- * How `node` is shown: the root's empty JSON Pointer as `(root)`, and the
- * number of its document when there are several.
+ * The text of `node` in the format `name`, as it is copied. A fragment
+ * follows `uri`, the document's, when given, and is relative otherwise.
+ */
+function pathText(node, name, uri) {
+  const format = formatOf(name);
+  if (format.key === "fragment") return (uri ?? "") + fragmentOf(node.pointer);
+  return node[format.key];
+}
+
+/**
+ * How `node` is shown: the root's empty JSON Pointer as `(root)`, a
+ * fragment always relative, and the number of its document when there are
+ * several.
  */
 function displayText(node, name) {
   const text = pathText(node, name) || "(root)";
@@ -55,4 +75,4 @@ function pickItems(nodes, name) {
   return items;
 }
 
-module.exports = { FORMATS, formatOf, pathText, displayText, previewValue, pickItems };
+module.exports = { FORMATS, formatOf, fragmentOf, pathText, displayText, previewValue, pickItems };
