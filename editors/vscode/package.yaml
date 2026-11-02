@@ -44,6 +44,7 @@ keywords:
   - grid
   - overview
   - diff
+  - json schema
 activationEvents:
   - "onLanguage:yaml"
   - "onLanguage:json"
@@ -172,6 +173,38 @@ contributes:
         description: >-
           Traces the communication between VS Code and yamllsp in the "yaml+lsp
           Trace" output channel.
+      yaml+lsp.infer.required:
+        type: boolean
+        default: true
+        markdownDescription: >-
+          Generated schemas list the members that every object has in
+          `required`.
+      yaml+lsp.infer.additionalProperties:
+        type: boolean
+        default: true
+        markdownDescription: >-
+          Generated schemas allow members that no example has. Off, every
+          object schema gets `additionalProperties: false`.
+      yaml+lsp.infer.enumLimit:
+        type: integer
+        default: 0
+        minimum: 0
+        markdownDescription: >-
+          Generated schemas give a location whose values are strings an `enum`
+          of them if there are at most this many distinct ones, each seen twice
+          on average. 0 for no enums.
+      yaml+lsp.infer.formats:
+        type: boolean
+        default: true
+        markdownDescription: >-
+          Generated schemas give a `format` to strings that are all dates,
+          times, e-mail addresses, UUIDs or URLs.
+      yaml+lsp.infer.integers:
+        type: boolean
+        default: true
+        markdownDescription: >-
+          Generated schemas tell `integer` from `number`. Off, every number is a
+          `number`.
       yaml+lsp.embedded.enabled:
         type: boolean
         default: true
@@ -345,6 +378,10 @@ contributes:
       title: "YAML+: Compare Semantically with HEAD"
     - command: yaml+lsp.diff.selected
       title: "YAML+: Compare Selected Semantically"
+    - command: yaml+lsp.infer.fromDocument
+      title: "YAML+: Generate Schema from Document"
+    - command: yaml+lsp.infer.fromSelected
+      title: "YAML+: Generate Schema from Selected Files"
   customEditors:
     - viewType: yaml+lsp.grid
       displayName: YAML+ Grid
@@ -371,6 +408,11 @@ contributes:
       # it needs files selected in the explorer
       - command: yaml+lsp.diff.selected
         when: "false"
+      - command: yaml+lsp.infer.fromDocument
+        when: editorLangId =~ /^(yaml|json|jsonc|jsonl)$/
+      # it needs files selected in the explorer
+      - command: yaml+lsp.infer.fromSelected
+        when: "false"
     editor/context:
       - command: yaml+lsp.paths.copyPointer
         when: editorLangId =~ /^(yaml|json|jsonc)$/
@@ -393,5 +435,8 @@ contributes:
       - command: yaml+lsp.diff.selected
         when: listDoubleSelection && resourceLangId =~ /^(yaml|json|jsonc)$/
         group: 3_compare@30
+      - command: yaml+lsp.infer.fromSelected
+        when: resourceLangId =~ /^(yaml|json|jsonc|jsonl)$/
+        group: 7_modification@90
 # devDependencies only: the bundle carries what the extension needs
 devDependencies: {"vscode-languageclient": 10.1.2, esbuild: 0.28.2}
