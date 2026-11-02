@@ -12,14 +12,14 @@ function sideOf(change) {
 
 /**
  * The path of `change` on its side, as a JSON Pointer, (`format` "path") a
- * JSON Path or (`format` "fragment") a relative URL fragment: the root's
- * empty pointer as `(root)`, and the number of its document when a text has
- * several.
+ * JSON Path or (`format` "fragment") a URL fragment after `files[side]`,
+ * the `fileReference` of the side's file: the root's empty pointer as
+ * `(root)`, and the number of its document when a text has several.
  */
-function changePath(change, format, documents) {
+function changePath(change, format, documents, files) {
   const side = sideOf(change);
   const text = format === "fragment"
-    ? fragmentOf(change[side + "Pointer"])
+    ? (files?.[side] ?? "") + fragmentOf(change[side + "Pointer"])
     : change[side + (format === "path" ? "Path" : "Pointer")];
   if (Math.max(...(documents ?? [1])) > 1) {
     return `#${change.document + 1}` + (text ? ` ${text}` : "");
@@ -44,10 +44,13 @@ function summary(changes) {
   return parts.length ? parts.join(", ") : "no changes";
 }
 
-/** The quick pick items of the answer to `nimyaml/diff`; each keeps its change. */
-function pickItems(result, format) {
+/**
+ * The quick pick items of the answer to `nimyaml/diff`, fragments after
+ * `files`, the sides' `fileReference`s; each keeps its change.
+ */
+function pickItems(result, format, files) {
   return result.changes.map((change) => ({
-    label: `${ICONS[change.kind]} ${changePath(change, format, result.documents)}`,
+    label: `${ICONS[change.kind]} ${changePath(change, format, result.documents, files)}`,
     description: changeValues(change),
     change,
   }));

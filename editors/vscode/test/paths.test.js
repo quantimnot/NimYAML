@@ -3,7 +3,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { formatOf, fragmentOf, pathText, displayText, previewValue, pickItems } =
+const { formatOf, fragmentOf, fileReference, pathText, displayText, previewValue, pickItems } =
   require("../paths/format");
 
 const node = (document, pointer, path, extra = {}) =>
@@ -43,18 +43,32 @@ test("the text copied and the text shown", () => {
   assert.equal(displayText(node(1, "/b", "$.b", { documents: 3 }), "pointer"), "#2 /b");
 });
 
-test("URL fragments, relative or after the file's URI", () => {
+test("file references, relative URLs of a file's name", () => {
+  assert.equal(fileReference("config.yaml"), "config.yaml");
+  assert.equal(fileReference("my config.yaml"), "my%20config.yaml");
+  assert.equal(fileReference("a#b?c%d.yaml"), "a%23b%3Fc%25d.yaml");
+  // a colon would make the name a scheme
+  assert.equal(fileReference("c:d.yaml"), "c%3Ad.yaml");
+  assert.equal(fileReference("größe&co.json"), "gr%C3%B6%C3%9Fe&co.json");
+  // a file without a name, e.g. an untitled one, is the same document
+  assert.equal(fileReference(""), "");
+  assert.equal(fileReference(undefined), "");
+});
+
+test("URL fragments, after the file's name or its URI", () => {
   const n = node(0, "/a b/0", "$['a b'][0]", { documents: 1 });
-  assert.equal(pathText(n, "fragment"), "#/a%20b/0");
+  assert.equal(pathText(n, "fragment", "x%20y.yaml"), "x%20y.yaml#/a%20b/0");
   assert.equal(pathText(n, "fragment", "file:///home/me/x%20y.yaml"),
     "file:///home/me/x%20y.yaml#/a%20b/0");
-  // the URI is only for fragments
-  assert.equal(pathText(n, "pointer", "file:///x.yaml"), "/a b/0");
-  // the root's fragment is shown as it is, and always without the URI
-  assert.equal(displayText(node(0, "", "$", { documents: 1 }), "fragment"), "#");
-  assert.equal(displayText(node(1, "/b", "$.b", { documents: 2 }), "fragment"), "#2 #/b");
-  assert.deepEqual(pickItems([node(0, "", "$"), node(0, "/a", "$.a")], "fragment")
-    .map((i) => i.label), ["#", "#/a"]);
+  // a file without a name has only the fragment
+  assert.equal(pathText(n, "fragment"), "#/a%20b/0");
+  // the file is only for fragments
+  assert.equal(pathText(n, "pointer", "x.yaml"), "/a b/0");
+  assert.equal(displayText(node(0, "", "$", { documents: 1 }), "fragment", "x.yaml"), "x.yaml#");
+  assert.equal(displayText(node(1, "/b", "$.b", { documents: 2 }), "fragment", "x.yaml"),
+    "#2 x.yaml#/b");
+  assert.deepEqual(pickItems([node(0, "", "$"), node(0, "/a", "$.a")], "fragment", "x.yaml")
+    .map((i) => i.label), ["x.yaml#", "x.yaml#/a"]);
 });
 
 test("values on one line", () => {

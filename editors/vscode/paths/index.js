@@ -2,12 +2,13 @@
 // fragment, and navigation by them, after skorth/vscode-yamlnav.
 //
 // The status bar shows the path of the node at the cursor and copies it
-// when clicked; "Copy JSON Pointer", "Copy JSON Path" and "Copy URL
-// Fragment" in the editor's context menu copy any of them, the fragment
-// relative (`#/a/0`) or after the document's URI as `yaml+lsp.paths.fragment`
-// says. "Go to Path…" lists every node of the file by its path, with the
-// values of scalars, and moves the cursor to the one picked, previewing each
-// as it is selected.
+// when clicked; "Copy JSON Pointer", "Copy JSON Path", "Copy URL Fragment"
+// (relative: `config.yaml#/a/0`) and "Copy Absolute URL Fragment"
+// (`file:///…/config.yaml#/a/0`) in the editor's context menu copy any of
+// them; `yaml+lsp.paths.fragment` says which fragment the status bar has.
+// "Go to Path…" lists every node of the file by its path, with the values of
+// scalars, and moves the cursor to the one picked, previewing each as it is
+// selected.
 //
 // yamllsp names the nodes (`nimyaml/pathAt` and `nimyaml/paths`, see
 // tools/yamllsp.nim). Like the grid, it is given the text rather than the
@@ -15,7 +16,8 @@
 // too; and a text being typed keeps the paths up to its first error.
 
 const vscode = require("vscode");
-const { formatOf, pathText, displayText, pickItems } = require("./format");
+const path = require("path");
+const { formatOf, fileReference, pathText, displayText, pickItems } = require("./format");
 
 const LANGUAGES = ["yaml", "json", "jsonc"];
 // cursor moves and typing wait this long before the status bar is updated
@@ -35,15 +37,21 @@ const COPY_COMMANDS = {
   path: "yaml+lsp.paths.copyPath",
   fragment: "yaml+lsp.paths.copyFragment",
 };
+const COPY_ABSOLUTE_FRAGMENT = "yaml+lsp.paths.copyAbsoluteFragment";
+
+function absoluteFragments() {
+  return config().get("fragment") === "absolute";
+}
 
 /**
- * The URI an absolute fragment of `document` follows, without a fragment of
- * its own, or undefined when fragments are relative. An untitled document
- * has no URI to refer to, so its fragments stay relative.
+ * What a fragment of `document` follows: its URI without query or fragment
+ * when `absolute`, its file's name otherwise. An untitled document has
+ * neither, so its fragments are only `#/a/0`.
  */
-function fragmentBase(document) {
-  if (config().get("fragment") !== "absolute" || document.isUntitled) return undefined;
-  return document.uri.with({ fragment: "" }).toString();
+function fragmentFile(document, absolute) {
+  if (document.isUntitled) return "";
+  if (absolute) return document.uri.with({ query: "", fragment: "" }).toString();
+  return fileReference(path.posix.basename(document.uri.path));
 }
 
 function params(document) {
@@ -95,11 +103,17 @@ function registerPaths(getClient) {
       return;
     }
     const format = formatOf(config().get("format"));
-    item.text = `$(symbol-key) ${displayText(node, config().get("format"))}`;
-    item.tooltip = `${format.name} of the node at the cursor` +
+    const absolute = format.key === "fragment" && absoluteFragments();
+    const name = absolute ? `Absolute ${format.name}` : format.name;
+    item.text = `$(symbol-key) ${displayText(node, format.key,
+      fragmentFile(editor.document, absolute))}`;
+    item.tooltip = `${name} of the node at the cursor` +
       (node.documents > 1 ? `, in document ${node.document + 1} of ${node.documents}` : "") +
       ". Click to copy it.";
-    item.command = { title: `Copy ${format.name}`, command: COPY_COMMANDS[format.key] };
+    item.command = {
+      title: `Copy ${name}`,
+      command: absolute ? COPY_ABSOLUTE_FRAGMENT : COPY_COMMANDS[format.key],
+    };
     item.show();
   }
 
@@ -108,7 +122,8 @@ function registerPaths(getClient) {
     timer = setTimeout(update, UPDATE_DELAY_MS);
   }
 
-  async function copy(name) {
+  // copies the format `name`, a fragment after the document's URI if `absolute`
+  async function copy(name, absolute = false) {
     const editor = vscode.window.activeTextEditor;
     if (!supported(editor)) return;
     const node = await nodeAt(editor);
@@ -118,7 +133,7 @@ function registerPaths(getClient) {
         : "yamllsp is not running.");
       return;
     }
-    const text = pathText(node, name, fragmentBase(editor.document));
+    const text = pathText(node, name, fragmentFile(editor.document, absolute));
     await vscode.env.clipboard.writeText(text);
     vscode.window.setStatusBarMessage(`Copied ${formatOf(name).name} ${text || "(root)"}`, 2000);
     if (formatOf(name).key === "fragment" && node.documents > 1) {
@@ -148,7 +163,8 @@ function registerPaths(getClient) {
       node.range.start.line, node.range.start.character,
       node.range.end.line, node.range.end.character);
     const pick = vscode.window.createQuickPick();
-    pick.items = pickItems(nodes, config().get("format"));
+    // relative fragments, which all have the same file, keep the list short
+    pick.items = pickItems(nodes, config().get("format"), fragmentFile(document, false));
     pick.placeholder = `${formatOf(config().get("format")).name} of the node to go to`;
     pick.matchOnDescription = true;
     const selections = editor.selections;
@@ -183,6 +199,7 @@ function registerPaths(getClient) {
     item,
     ...Object.entries(COPY_COMMANDS).map(([name, command]) =>
       vscode.commands.registerCommand(command, () => copy(name))),
+    vscode.commands.registerCommand(COPY_ABSOLUTE_FRAGMENT, () => copy("fragment", true)),
     vscode.commands.registerCommand("yaml+lsp.paths.goTo", goTo),
     vscode.window.onDidChangeActiveTextEditor(update),
     vscode.window.onDidChangeTextEditorSelection((event) => {

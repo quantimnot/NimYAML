@@ -19,6 +19,7 @@
 const vscode = require("vscode");
 const path = require("path");
 const { sideOf, summary, pickItems, isJson, errorMessage } = require("./format");
+const { fileReference } = require("../paths/format");
 
 const SCHEME = "yaml+lsp-diff";
 const LANGUAGES = ["yaml", "json", "jsonc"];
@@ -128,7 +129,9 @@ function registerDiff(getClient) {
     const pick = vscode.window.createQuickPick();
     pick.title = `${title}: ${summary(result.changes)}`;
     pick.placeholder = "Change to show";
-    pick.items = pickItems(result, format());
+    // a version's URI ends in the path of its file; an untitled side has none
+    const file = (side) => side.uri.scheme === "untitled" ? "" : fileReference(path.basename(side.uri.path));
+    pick.items = pickItems(result, format(), { old: file(old), new: file(now) });
     pick.matchOnDescription = true;
     pick.buttons = result.patch === undefined ? [diffButton] : [patchButton, diffButton];
     // the new side where the active editor is, the old one beside it

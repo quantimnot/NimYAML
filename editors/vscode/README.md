@@ -143,10 +143,12 @@ default of `yaml+lsp.paths.format`), and how the
 
 ### [URL Fragment](https://www.rfc-editor.org/rfc/rfc9512#section-1.2)
 
-`#/servers/0/host`, or `file:///home/me/config.yaml#/servers/0/host`: a
-JSON Pointer as a URI fragment identifier (RFC 6901 section 6, RFC 9512 for
-YAML), percent-encoded where a fragment cannot hold it (`#/a%20b`), as
-`$ref`s and links use it. The third format of [Paths](#paths) and the
+`config.yaml#/servers/0/host`, or absolute
+`file:///home/me/config.yaml#/servers/0/host`: the file's URL with a JSON
+Pointer as its fragment identifier (RFC 6901 section 6, RFC 9512 for YAML),
+percent-encoded where a URL cannot hold it (`my%20config.yaml#/a%20b`), as
+`$ref`s and links use it. The relative one refers to the file from its own
+directory. The third format of [Paths](#paths) and the
 [Semantic Diff](#semantic-diff), with `yaml+lsp.paths.format: "fragment"`.
 
 ### [JSON Patch](../../README.md#patches-merge-keys-and-canonical-json)
@@ -252,20 +254,24 @@ cbor` and `yaml convert --from:cbor yaml` translate them.
 
 Where the cursor is, as a [JSON Pointer](https://www.rfc-editor.org/rfc/rfc6901)
 (`/a/0/b`), a [JSON Path](https://www.rfc-editor.org/rfc/rfc9535)
-(`$.a[0].b`) or a [URL fragment](#url-fragment) (`#/a/0/b`), in YAML, JSON
+(`$.a[0].b`) or a [URL fragment](#url-fragment) (`config.yaml#/a/0/b`), in YAML, JSON
 and JSONC files, and navigation by it, after
 [vscode-yamlnav](https://github.com/skorth/vscode-yamlnav):
 
 - The status bar shows the path of the node at the cursor; on a key, that
   of its member. In a stream of several documents it is prefixed with the
   document's number (`#2 /a`). Clicking it copies the path.
-- *YAML+: Copy JSON Pointer*, *YAML+: Copy JSON Path* and *YAML+: Copy URL
-  Fragment*, also in the editor's context menu, copy any of them. The
-  fragment is relative (`#/a/0/b`) by default; with
-  `yaml+lsp.paths.fragment: "absolute"` it follows the file's URI
-  (`file:///home/me/config.yaml#/a/0/b`). Untitled files have no URI, so
-  theirs stay relative, and as RFC 9512 has it a fragment cannot refer into
-  a stream of several documents, so copying one there warns.
+- *YAML+: Copy JSON Pointer*, *YAML+: Copy JSON Path*, *YAML+: Copy URL
+  Fragment* (relative, after the file's name: `config.yaml#/a/0/b`) and
+  *YAML+: Copy Absolute URL Fragment* (after the file's URI:
+  `file:///home/me/config.yaml#/a/0/b`), also in the editor's context menu,
+  copy any of them. With `yaml+lsp.paths.format: "fragment"`, the status
+  bar has the relative one, or the absolute one with
+  `yaml+lsp.paths.fragment: "absolute"`; "Go to Path…" and the semantic
+  diff list relative ones. Untitled files have neither name nor URI, so
+  theirs are only the fragment (`#/a/0/b`). As RFC 9512 has it, a fragment
+  cannot refer into a stream of several documents, so copying one there
+  warns.
 - *YAML+: Go to Path…*, also in the context menu, lists every node by its
   path, with the value of each scalar, and moves the cursor to the one
   picked. The list filters on paths and values as you type, and the editor
@@ -614,7 +620,7 @@ $ yaml schema --enum:5 people.yaml people.jsonl > person.schema.yaml
 |---|---|
 | *YAML+: Restart yamllsp* | restarts the server, e.g. after rebuilding it |
 | *YAML+: Open in Grid* | opens the file in the [Grid](#grid) |
-| *YAML+: Copy JSON Pointer* / *Copy JSON Path* / *Copy URL Fragment* / *Go to Path…* | see [Paths](#paths) |
+| *YAML+: Copy JSON Pointer* / *Copy JSON Path* / *Copy (Absolute) URL Fragment* / *Go to Path…* | see [Paths](#paths) |
 | *YAML+: Compare Semantically …* | see [Semantic Diff](#semantic-diff) |
 | *YAML+: Generate Schema from Document* / *from Selected Files* | see [Generate Schema](#generate-schema) |
 | *YAML+: Show / Format / Open Projection of / Delete Projections of Embedded Language Region(s)* | see [Embedded Languages](docs/embedded-langs.md) |

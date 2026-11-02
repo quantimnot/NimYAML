@@ -346,7 +346,7 @@ contributes:
         enumDescriptions:
           - "A JSON Pointer (RFC 6901): /a/0/b"
           - "A JSON Path (RFC 9535): $.a[0].b"
-          - "A URL fragment (RFC 6901, RFC 9512): #/a/0/b"
+          - "A URL with a fragment (RFC 6901, RFC 9512): config.yaml#/a/0/b"
         default: pointer
         description: >-
           How paths are shown in the status bar and in "Go to Path…", and which
@@ -355,14 +355,16 @@ contributes:
         type: string
         enum: [relative, absolute]
         enumDescriptions:
-          - "Only the fragment: #/a/0/b"
+          - "After the file's name: config.yaml#/a/0/b"
           - "After the file's URI: file:///home/me/config.yaml#/a/0/b"
         default: relative
         markdownDescription: >-
-          Whether a copied URL fragment is relative (`#/a/0/b`, as in a
-          `$ref` within the file) or follows the file's URI
-          (`file:///home/me/config.yaml#/a/0/b`). Untitled files have no URI,
-          so their fragments are always relative.
+          Whether the status bar shows and copies a URL fragment as a relative
+          URL (`config.yaml#/a/0/b`) or an absolute one
+          (`file:///home/me/config.yaml#/a/0/b`), with
+          `#yaml+lsp.paths.format#` set to `fragment`. *Copy URL Fragment* and
+          *Copy Absolute URL Fragment* copy either. Untitled files have neither,
+          so theirs are only the fragment (`#/a/0/b`).
   commands:
     - command: yaml+lsp.restart
       title: "YAML+: Restart yamllsp"
@@ -383,6 +385,8 @@ contributes:
       title: "YAML+: Copy JSON Path"
     - command: yaml+lsp.paths.copyFragment
       title: "YAML+: Copy URL Fragment"
+    - command: yaml+lsp.paths.copyAbsoluteFragment
+      title: "YAML+: Copy Absolute URL Fragment"
     - command: yaml+lsp.paths.goTo
       title: "YAML+: Go to Path…"
     - command: yaml+lsp.diff.withFile
@@ -414,6 +418,8 @@ contributes:
         when: editorLangId =~ /^(yaml|json|jsonc)$/
       - command: yaml+lsp.paths.copyFragment
         when: editorLangId =~ /^(yaml|json|jsonc)$/
+      - command: yaml+lsp.paths.copyAbsoluteFragment
+        when: editorLangId =~ /^(yaml|json|jsonc)$/
       - command: yaml+lsp.paths.goTo
         when: editorLangId =~ /^(yaml|json|jsonc)$/
       - command: yaml+lsp.diff.withFile
@@ -440,6 +446,9 @@ contributes:
       - command: yaml+lsp.paths.copyFragment
         when: editorLangId =~ /^(yaml|json|jsonc)$/
         group: 9_cutcopypaste@12
+      - command: yaml+lsp.paths.copyAbsoluteFragment
+        when: editorLangId =~ /^(yaml|json|jsonc)$/
+        group: 9_cutcopypaste@13
       - command: yaml+lsp.paths.goTo
         when: editorLangId =~ /^(yaml|json|jsonc)$/
         group: navigation@90

@@ -26,23 +26,37 @@ function fragmentOf(pointer) {
   return "#" + encodeURIComponent(pointer).replace(FRAGMENT_CHARS, decodeURIComponent);
 }
 
+// what encodeURIComponent escapes but the first segment of a relative
+// reference may hold: pchar without ":" (RFC 3986, section 4.2)
+const SEGMENT_CHARS = /%(24|26|2B|2C|3B|3D|40)/g;
+
+/**
+ * The relative URL of the file named `name` from its own directory, e.g.
+ * `my%20config.yaml`; empty for a file without a name, as an untitled one,
+ * whose fragments refer into the same document.
+ */
+function fileReference(name) {
+  return encodeURIComponent(name ?? "").replace(SEGMENT_CHARS, decodeURIComponent);
+}
+
 /**
  * The text of `node` in the format `name`, as it is copied. A fragment
- * follows `uri`, the document's, when given, and is relative otherwise.
+ * follows `file`: the document's `fileReference` for a relative URL, its
+ * URI for an absolute one.
  */
-function pathText(node, name, uri) {
+function pathText(node, name, file) {
   const format = formatOf(name);
-  if (format.key === "fragment") return (uri ?? "") + fragmentOf(node.pointer);
+  if (format.key === "fragment") return (file ?? "") + fragmentOf(node.pointer);
   return node[format.key];
 }
 
 /**
  * How `node` is shown: the root's empty JSON Pointer as `(root)`, a
- * fragment always relative, and the number of its document when there are
+ * fragment after `file`, and the number of its document when there are
  * several.
  */
-function displayText(node, name) {
-  const text = pathText(node, name) || "(root)";
+function displayText(node, name, file) {
+  const text = pathText(node, name, file) || "(root)";
   return node.documents > 1 ? `#${node.document + 1} ${text}` : text;
 }
 
@@ -53,10 +67,11 @@ function previewValue(value) {
 
 /**
  * The quick pick items of `nodes`, the answer to `nimyaml/paths`: one per
- * node, labelled in the format `name`, and a separator before each document
- * when there are several. Each item keeps its node.
+ * node, labelled in the format `name` (fragments after `file`), and a
+ * separator before each document when there are several. Each item keeps
+ * its node.
  */
-function pickItems(nodes, name) {
+function pickItems(nodes, name, file) {
   const items = [];
   const several = nodes.some((node) => node.document > 0);
   let document = -1;
@@ -67,7 +82,7 @@ function pickItems(nodes, name) {
       items.push({ label: `Document ${document + 1}`, kind: -1 });
     }
     items.push({
-      label: pathText(node, name) || "(root)",
+      label: pathText(node, name, file) || "(root)",
       description: previewValue(node.value),
       node,
     });
@@ -75,4 +90,6 @@ function pickItems(nodes, name) {
   return items;
 }
 
-module.exports = { FORMATS, formatOf, fragmentOf, pathText, displayText, previewValue, pickItems };
+module.exports = {
+  FORMATS, formatOf, fragmentOf, fileReference, pathText, displayText, previewValue, pickItems,
+};

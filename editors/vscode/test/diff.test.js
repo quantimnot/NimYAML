@@ -25,9 +25,17 @@ test("paths in either format, the root, and documents", () => {
   assert.equal(changePath(change("changed", { newPointer: "" }), "pointer", [1, 1]), "(root)");
   assert.equal(changePath(change("changed", { document: 1 }), "pointer", [1, 2]), "#2 /a/0");
   assert.equal(changePath(change("added", { document: 1, newPointer: "" }), "pointer", [1, 2]), "#2");
-  assert.equal(changePath(change("changed", { newPointer: "/a b" }), "fragment", [1, 1]), "#/a%20b");
-  assert.equal(changePath(change("changed", { newPointer: "" }), "fragment", [1, 1]), "#");
-  assert.equal(changePath(change("changed", { document: 1 }), "fragment", [1, 2]), "#2 #/a/0");
+  // fragments follow the file of the change's side
+  const files = { old: "old.yaml", new: "new%20one.json" };
+  assert.equal(changePath(change("changed", { newPointer: "/a b" }), "fragment", [1, 1], files),
+    "new%20one.json#/a%20b");
+  assert.equal(changePath(change("removed"), "fragment", [1, 1], files), "old.yaml#/a/1");
+  assert.equal(changePath(change("changed", { newPointer: "" }), "fragment", [1, 1], files),
+    "new%20one.json#");
+  assert.equal(changePath(change("changed", { document: 1 }), "fragment", [1, 2], files),
+    "#2 new%20one.json#/a/0");
+  // a side without a file has only the fragment
+  assert.equal(changePath(change("changed"), "fragment", [1, 1]), "#/a/0");
 });
 
 test("values on one line", () => {
@@ -45,6 +53,9 @@ test("a summary by kind", () => {
 test("quick pick items keep their changes", () => {
   const c = change("changed", { old: "1", new: "2" });
   const [item] = pickItems({ documents: [1, 1], changes: [c] }, "pointer");
+  const [fragment] = pickItems({ documents: [1, 1], changes: [c] }, "fragment",
+    { old: "a.yaml", new: "b.yaml" });
+  assert.match(fragment.label, / b\.yaml#\/a\/0$/);
   assert.equal(item.label, "$(diff-modified) /a/0");
   assert.equal(item.description, "1 → 2");
   assert.equal(item.change, c);
