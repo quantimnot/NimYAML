@@ -128,6 +128,11 @@ task diffTests, "Run semantic diff tests":
   --verbosity:0
   setCommand "c", "test/tdiff"
 
+task schemaInferTests, "Run JSON Schema inference tests":
+  --r
+  --verbosity:0
+  setCommand "c", "test/tschemainfer"
+
 task mergeTests, "Run YAML merge key tests":
   --r
   --verbosity:0

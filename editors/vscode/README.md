@@ -562,6 +562,52 @@ $ yaml diff config.yaml config.json
 - /debug: true
 ```
 
+### Generate Schema
+
+"YAML+: Generate Schema from Document" infers a JSON Schema (draft
+2020-12) from all documents of the active YAML, JSON, JSONC or JSON Lines
+editor; "Generate Schema from Selected Files", in the explorer's context
+menu, from all documents of the files selected there, together. The schema
+opens in a new untitled YAML editor, to be refined and saved where it
+belongs, and validates every document it was made from:
+
+```yaml
+# inferred from people.yaml, people.jsonl (4 documents)
+$schema: "https://json-schema.org/draft/2020-12/schema"
+type: object
+properties:
+  name:
+    type: [string, "null"]
+  born:
+    type: string
+    format: date
+  score: {type: number}
+required: [name]
+```
+
+Each location gets the types seen there (`integer` within `number` where
+both occur), the members of its objects with those that every object has
+as `required`, one `items` schema merged from the items of all its arrays,
+and a `format` that all its strings satisfy (`date-time`, `date`, `time`,
+`email`, `uuid` or `uri`). Scalars are read by the YAML core schema, as
+validation reads them, so `"80"` is a string and `80` an integer. The
+`yaml+lsp.infer.*` settings adjust the guesses:
+
+| Setting | Default | Does |
+|---|---|---|
+| `yaml+lsp.infer.required` | `true` | list the members every object has in `required` |
+| `yaml+lsp.infer.additionalProperties` | `true` | `false` closes every object schema with `additionalProperties: false` |
+| `yaml+lsp.infer.enumLimit` | `0` | an `enum` of a location's strings when there are at most this many distinct ones, each seen twice on average; 0 for none |
+| `yaml+lsp.infer.formats` | `true` | infer `format` |
+| `yaml+lsp.infer.integers` | `true` | tell `integer` from `number` |
+
+yamllsp infers the schema (`nimyaml/inferSchema`); `yaml schema` does the
+same on the command line:
+
+```bash
+$ yaml schema --enum:5 people.yaml people.jsonl > person.schema.yaml
+```
+
 ## Commands and Settings
 
 | Command | Does |
@@ -570,6 +616,7 @@ $ yaml diff config.yaml config.json
 | *YAML+: Open in Grid* | opens the file in the [Grid](#grid) |
 | *YAML+: Copy JSON Pointer* / *Copy JSON Path* / *Copy URL Fragment* / *Go to Path…* | see [Paths](#paths) |
 | *YAML+: Compare Semantically …* | see [Semantic Diff](#semantic-diff) |
+| *YAML+: Generate Schema from Document* / *from Selected Files* | see [Generate Schema](#generate-schema) |
 | *YAML+: Show / Format / Open Projection of / Delete Projections of Embedded Language Region(s)* | see [Embedded Languages](docs/embedded-langs.md) |
 
 `yaml+lsp.path` and `yaml+lsp.args` set the command that starts the server
@@ -578,6 +625,9 @@ $ yaml diff config.yaml config.json
 between VS Code and yamllsp in the "yaml+lsp Trace" output channel. The
 `yaml+lsp.paths.*` settings are described under [Paths](#paths) and the
 `yaml+lsp.embedded.*` ones in [docs/embedded-langs.md](docs/embedded-langs.md).
+
+The `yaml+lsp.infer.*` settings are described under [Generate
+Schema](#generate-schema).
 
 ## Workspace Trust
 

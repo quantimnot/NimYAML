@@ -1012,6 +1012,65 @@ $ echo '*.yaml diff=yaml' >> .gitattributes   # git diff is now semantic
  * **Hexadecimal and octal integers** (`0x10`) are compared as the strings
    that the JSON reading of the graph makes of them.
 
+## Schema Inference
+
+`yaml/schemainfer` writes a JSON Schema (draft 2020-12) that describes a
+set of example documents, as a starting point for one written by hand.
+Documents are added one at a time and summarized per location, so a long
+stream is described in the memory of its largest document:
+
+```nim
+import yaml, yaml/[dom, schemainfer]
+
+var inference = initSchemaInference()
+inference.add(loadAs[YamlNode]("{name: Ada, born: 1815-12-10, tags: [math]}"))
+inference.add(loadAs[YamlNode]("{name: Alan, tags: []}"))
+echo schemaText(inference.toSchema())
+# type: object, properties name (string), born (string, format: date) and
+# tags (array of strings), required: [name, tags]
+```
+
+Each location's schema has the `type` of every value seen there (a list
+where they differ; `integer` within `number` where both occur), the
+`properties` of its objects with `required` listing the members every
+object has, one `items` schema merged from the items of all its arrays,
+and a `format` (`date-time`, `date`, `time`, `email`, `uuid`, or `uri` with
+`://`) that all its strings satisfy. Options turn `required`, formats and
+the integer/number distinction off, close objects with
+`additionalProperties: false`, and make an `enum` of a location's strings
+when there are at most `enumLimit` distinct ones that repeat (off by
+default, since an enum is the guess most likely to reject the next
+document). Scalars are read as `yaml/jsonschema` reads instances, by the
+core schema, so the schema validates every document it was made from.
+
+`yaml schema FILE...` (or `yaml infer`) infers one schema from all
+documents of all files, YAML, JSON, JSONC or JSON Lines, and writes it as
+YAML, or with `--to:json` as JSON:
+
+```bash
+$ yaml schema people.yaml more-people.jsonl
+$schema: "https://json-schema.org/draft/2020-12/schema"
+type: object
+properties:
+  name:
+    type: [string, "null"]
+  born:
+    type: string
+    format: date
+  score: {type: number}
+required: [name]
+```
+
+### Caveats
+
+ * **Bounds and patterns** (`minimum`, `maxLength`, `pattern`, ...) are
+   never inferred, nor tuples (`prefixItems`): the sample's extremes and
+   lengths are accidents of the sample.
+ * **Members whose keys are not strings** (`1:`, `[a, b]:`) are invisible
+   to JSON Schema, and left out.
+ * **A cycle** made with aliases is described once; where it closes, only
+   by its type.
+
 ## `%SCHEMA` and `%GLOBAL` Directives
 
 NimYAML gives meaning to two directive names that YAML 1.2 reserves:
@@ -1195,6 +1254,7 @@ yaml '$.servers[*].port' [FILE...]                     # the same
 yaml '$.servers[*].port = 8080' [-i] [FILE...]         # replace, -i in place
 yaml expand [--modeline] [FILE]                        # portable %GLOBAL
 yaml diff [--patch | --merge-patch] OLD NEW           # semantic diff
+yaml schema [--closed] [--enum:N] [--to:json] [FILE...]  # infer a JSON Schema
 yaml config [--config:FILE] [--print] [--force] [DIR]  # write .yaml.yaml
 yaml index [--mode:all|recent] [--print | --drop] FILE...  # node index
 yaml lsp                                               # language server, stdio
@@ -1205,7 +1265,8 @@ Commands read standard input when no file is given. Exit codes: 0 on
 success, 1 if an input is invalid, has error diagnostics or (with
 `format --check`) is not formatted, 2 for usage, I/O and config errors.
 `diff` exits like `diff(1)`: 0 if the files mean the same, 1 if they
-differ, 2 for errors, invalid inputs included.
+differ, 2 for errors, invalid inputs included. `schema` exits with 1 if there
+are no documents.
 
 `validate` reports only what makes a file invalid (syntax errors, duplicate
 keys, undefined aliases, directive errors, schema violations); `lint` adds

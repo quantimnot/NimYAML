@@ -465,8 +465,50 @@ suite "yaml":
         "~ /server/port: 80 -> 8080\n+ /tags/1: z\n- /debug: true\n" &
         "+ /note: \"a\\nb\"\n", 0)
 
+  test "schema: inferred from all documents of all files":
+    writeFile(dir / "people.yaml", "name: Ada\nborn: 1815-12-10\n" &
+        "---\nname: Alan\nscore: 1.5\n")
+    writeFile(dir / "people.jsonl", "{\"name\": \"Grace\", \"score\": 2}\n" &
+        "{\"name\": null}\n")
+    let r = cli("schema", "people.yaml", "people.jsonl")
+    check r == ("$schema: \"https://json-schema.org/draft/2020-12/schema\"\n" &
+        "type: object\nproperties:\n  name:\n    type: [string, \"null\"]\n" &
+        "  born:\n    type: string\n    format: date\n" &
+        "  score: {type: number}\nrequired: [name]\n", 0)
+    # the schema validates the files it was made from
+    writeFile(dir / "people.schema.yaml", r.output)
+    writeFile(dir / "people-checked.yaml", "%SCHEMA people.schema.yaml\n---\n" &
+        readFile(dir / "people.yaml"))
+    check cli("validate", "people-checked.yaml").exitCode == 0
+    # infer is the same command
+    check cli("infer", "people.yaml", "people.jsonl") == r
+
+  test "schema options, formats and standard input":
+    check cli(@["schema", "--to:json", "--closed", "--no-required",
+        "--enum:2", "--no-integers"], input = "[on, on, off, off, 1]") == ("{\n" &
+        "  \"$schema\": \"https://json-schema.org/draft/2020-12/schema\",\n" &
+        "  \"type\": \"array\",\n  \"items\": {\n" &
+        "    \"type\": [\n      \"string\",\n      \"number\"\n    ]\n  }\n}\n", 0)
+    check cli(@["schema", "--enum:2", "-"], input = "[on, on, off, off]") ==
+        ("$schema: \"https://json-schema.org/draft/2020-12/schema\"\n" &
+        "type: array\nitems:\n  type: string\n  enum: [on, off]\n", 0)
+    # strings that would read as other types stay strings
+    check cli(@["schema", "--enum:1", "--to:json"], input = "['1', '1']").output.
+        endsWith("\"enum\": [\n      \"1\"\n    ]\n  }\n}\n")
+    check cli(@["schema", "--from:json", "--no-formats"],
+        input = "\"2024-01-02\"").output.endsWith("type: string\n")
+
+  test "schema errors":
+    check cli(@["schema"], input = "") ==
+        ("no documents to infer a schema from\n", 1)
+    check cli(@["schema"], input = "a: [").exitCode == 1
+    check cli("schema", "missing.yaml").exitCode == 2
+    check cli("schema", "--enum:x", "a.yaml").exitCode == 2
+    check cli("schema", "--nope", "a.yaml").exitCode == 2
+    check cli("help", "schema").output.startsWith("usage: yaml schema")
+
   test "lsp":
-    let body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"," &
+    let body ="{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"," &
         "\"params\":{}}"
     let exitMsg = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\"}"
     let r = cli(@["lsp", "--stdio"], input = "Content-Length: " & $body.len &

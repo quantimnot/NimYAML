@@ -43,6 +43,8 @@
 ## node at a position as a JSON Pointer and a JSON Path, and
 ## ``nimyaml/paths`` lists every node by its paths, for navigating by them.
 ## ``nimyaml/diff`` compares two texts by meaning, for a semantic diff.
+## ``nimyaml/inferSchema`` writes the JSON Schema of the documents of some
+## texts.
 ## The server asks the client for the schemas only it has (VS Code's
 ## ``vscode://schemas/...``) with ``nimyaml/schemaContent``.
 ##
@@ -56,7 +58,7 @@ when defined(nimPreviewSlimSystem):
   import std/syncio
 import ../yaml/[data, parser, stream, lint, jsonschema, documentschema,
     schemavalidation, toolconfig, dom, edit, jsonpath, loading, native, diff,
-    dumping]
+    dumping, schemainfer]
 import ../yaml/private/[lex, jsonmodel]
 import ../yaml/schemacache
 from ../yaml/hints import guessType, TypeHint
@@ -1146,6 +1148,85 @@ proc diffOf(params: JsonNode): JsonNode =
         text.add(dumper.dump(patch))
     result["patch"] = %text
 
+# Schema inference
+# ============================================================================
+#
+# ``nimyaml/inferSchema`` writes the JSON Schema that the documents of one
+# or more texts have in common, as ``yaml schema`` does (see
+# `yaml/schemainfer <../yaml/schemainfer.html>`_). Like ``nimyaml/diff``
+# it takes texts, not URIs, so unsaved editors and files that are not open
+# work alike: ``inputs`` is a list of ``{text, json, lines}``, ``lines``
+# for JSON Lines. ``options`` has the fields of ``InferenceOptions``
+# (``required``, ``additionalProperties``, ``enumLimit``, ``formats``,
+# ``integers``), each optional, and ``json`` asks for the schema as JSON
+# instead of YAML. The answer is ``{schema, documents}``, the schema's
+# text and how many documents it was made from, or ``{error}`` with the
+# position, message and ``input`` (its index) of a text that does not
+# load.
+
+proc toJsonValue(node: YamlNode): JsonNode =
+  ## The schema ``node`` as a std/json value, read as JSON as everywhere
+  ## else (see private/jsonmodel); the presenter's JSON style would write a
+  ## quoted ``"1"`` of an enum as the number 1 once tags are dropped.
+  case node.kind
+  of yScalar:
+    let value = node.jsonScalar
+    case value.kind
+    of jkNull: newJNull()
+    of jkBool: %value.boolean
+    of jkNumber:
+      if value.number.isInteger: %value.number.integer
+      else: %value.number.float
+    of jkString: %value.str
+    of jkArray, jkObject: newJNull() # not of a scalar
+  of ySequence:
+    var items = newJArray()
+    for item in node.elems: items.add(item.toJsonValue)
+    items
+  of yMapping:
+    var members = newJObject()
+    for (name, value) in node.orderedMembers: members[name] = value.toJsonValue
+    members
+
+proc inferenceOptions(params: JsonNode): InferenceOptions =
+  # (an implicit result would have none of the fields' defaults)
+  result = InferenceOptions()
+  let given = params{"options"}
+  if given.isNil or given.kind != JObject: return
+  result.required = given{"required"}.getBool(result.required)
+  result.additionalProperties =
+      given{"additionalProperties"}.getBool(result.additionalProperties)
+  result.enumLimit = max(0, given{"enumLimit"}.getInt(result.enumLimit))
+  result.formats = given{"formats"}.getBool(result.formats)
+  result.integers = given{"integers"}.getBool(result.integers)
+
+proc inferSchemaOf(params: JsonNode): JsonNode =
+  var inference = initSchemaInference(inferenceOptions(params))
+  let inputs = params{"inputs"}
+  if not inputs.isNil and inputs.kind == JArray:
+    for i, input in inputs.elems:
+      let text = input{"text"}.getStr()
+      var documents: seq[YamlNode]
+      try:
+        if input{"lines"}.getBool(): loadJsonLines(text, documents)
+        elif input{"json"}.getBool():
+          loadMultiDoc(stripJsonComments(text), documents)
+        else: loadMultiDoc(text, documents)
+      except YamlLoadingError as e:
+        let error = errorPosition(text, e.mark)
+        error["message"] = %e.msg
+        error["input"] = %i
+        return %*{"error": error}
+      for document in documents: inference.add(document)
+  let schema = inference.toSchema()
+  var text: string
+  if params{"json"}.getBool(): text = schema.toJsonValue.pretty & "\n"
+  else:
+    var dumper = Dumper()
+    dumper.serialization.tagStyle = tsNone
+    text = dumper.dump(schema)
+  %*{"schema": text, "documents": inference.documents}
+
 # Schemas from the client
 #
 # Some schemas exist only in the client: VS Code serves the schemas of its
@@ -1365,6 +1446,8 @@ proc handle*(s: var Server, msg: JsonNode): seq[JsonNode] =
         params{"json"}.getBool())))
   of "nimyaml/diff":
     result.add(respond(id, diffOf(params)))
+  of "nimyaml/inferSchema":
+    result.add(respond(id, inferSchemaOf(params)))
   of "nimyaml/schemaChanged":
     if not s.clientSchemas.isNil:
       let changed = params["uri"].getStr()

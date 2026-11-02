@@ -29,6 +29,9 @@
 // And diff (diff/): a semantic diff of two YAML or JSON texts, which
 // yamllsp computes and a quick pick lists.
 //
+// And schema inference (infer/): the JSON Schema of the documents of an
+// editor or of files selected in the explorer, which yamllsp infers.
+//
 // And comments (comments/): Enter in a comment continues it.
 //
 // And schemas (schemas/): VS Code's own `vscode://schemas/...`, which
@@ -42,7 +45,8 @@
 // until trust is granted, then reports them changed, which restarts the
 // server below. Embedded languages (config.js) and schema downloads
 // (schemas/) wait for trust too; the grid, paths, the semantic diff and
-// comments touch nothing outside the editor and work as usual.
+// comments touch nothing outside the editor and work as usual, and so
+// does schema inference, which only reads the files the user selects.
 
 const vscode = require("vscode");
 const { LanguageClient, TransportKind } = require("vscode-languageclient/node");
@@ -50,6 +54,7 @@ const { activateEmbedded } = require("./embedded");
 const { registerGrid } = require("./grid");
 const { registerPaths } = require("./paths");
 const { registerDiff } = require("./diff");
+const { registerInfer } = require("./infer");
 const { registerComments } = require("./comments");
 const { registerSchemas, initializationOptions } = require("./schemas");
 
@@ -166,10 +171,11 @@ async function activate(context) {
     traceOutputChannel,
     vscode.commands.registerCommand("yaml+lsp.restart", restart),
     // A different server command only takes effect in a new process; the
-    // settings of paths/ are the client's alone.
+    // settings of paths/ and infer/ are the client's alone.
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration("yaml+lsp") &&
-          !event.affectsConfiguration("yaml+lsp.paths")) restart();
+          !event.affectsConfiguration("yaml+lsp.paths") &&
+          !event.affectsConfiguration("yaml+lsp.infer")) restart();
     }),
   );
   embedded = await activateEmbedded(context, documentSelector, () => client);
@@ -178,6 +184,7 @@ async function activate(context) {
   paths = registerPaths(() => client);
   context.subscriptions.push(paths.disposable);
   context.subscriptions.push(registerDiff(() => client));
+  context.subscriptions.push(registerInfer(() => client));
   context.subscriptions.push(registerComments());
   schemas = registerSchemas(() => client);
   context.subscriptions.push(schemas.disposable);

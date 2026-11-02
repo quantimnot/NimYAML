@@ -25,6 +25,8 @@
 ## * ``canonical`` (or ``jcs``): writes the RFC 8785 canonical JSON form
 ## * ``diff``: the semantic differences between two files, or the JSON
 ##   Patch or JSON Merge Patch that makes them
+## * ``schema`` (or ``infer``): the JSON Schema inferred from the documents
+##   (see `yaml/schemainfer <../yaml/schemainfer.html>`_)
 ## * ``expand``: makes ``%GLOBAL`` directives portable
 ## * ``config``: writes the config in effect, with all defaults, to
 ##   ``.yaml.yaml``
@@ -41,7 +43,8 @@
 ##
 ## Exit code: 0 on success, 1 if an input is invalid or has error
 ## diagnostics (or, with ``format --check``, is not formatted, or with
-## ``diff``, the files differ), 2 for usage, I/O and config errors (and with
+## ``diff``, the files differ, or with ``schema``, there are no documents), 2
+## for usage, I/O and config errors (and with
 ## ``diff``, invalid inputs), 3 if the memory limit is exceeded.
 ##
 ## Every command takes ``--memory-limit:SIZE`` (like ``64MiB``, or
@@ -54,7 +57,7 @@ when defined(nimPreviewSlimSystem):
   import std/syncio
 import ../yaml/[data, dom, dumping, loading, parser, presenter, stream, cbor,
     jsonpath, toolconfig, edit, jsonpatch, mergepatch, merge, jcs, diff,
-    nodeindex, spans, memory, source]
+    nodeindex, spans, memory, source, schemainfer]
 import ../yaml/private/lex
 from ../yaml/hints import guessType, TypeHint
 import yamllint, yamlexpand, yamllsp
@@ -85,6 +88,7 @@ commands:
             (also: jcs)
   diff      the semantic differences between two files, or the JSON Patch
             or JSON Merge Patch that makes them
+  schema    infer a JSON Schema from the documents (also: infer)
   expand    expand %GLOBAL directives into the documents
   config    write the config in effect, with all defaults, to .yaml.yaml
   index     build, print or drop the index that query reads nodes through
@@ -263,6 +267,28 @@ changes of PATH under a heading; its exit code is then 0. Set it up with
   git config diff.yaml.command 'yaml diff'
   echo '*.yaml diff=yaml' >> .gitattributes"""
 
+  schemaUsage = """usage: yaml schema [--from:FORMAT] [--to:FORMAT] [--no-required] [--closed]
+                   [--enum:N] [--no-formats] [--no-integers] [FILE...]
+       yaml infer ...
+
+Writes a JSON Schema (draft 2020-12) that every document of the files
+validates against, inferred from all of them together: the types of each
+location (a list where they differ), the members of its objects and, in
+required, those that every object has, and one schema for the items of
+its arrays. Strings that are all dates, times, e-mail addresses, UUIDs or
+URLs get a format. Scalars are read by the YAML core schema, as yaml
+validate reads them. The schema is written in YAML, or in the format --to
+(json, jsonc, jsonl or cbor; see yaml help convert).
+
+--no-required   leave out required
+--closed        additionalProperties: false in every object schema
+--enum:N        an enum of the strings of a location that has at most N
+                distinct ones, each seen twice on average (default 0: none)
+--no-formats    infer no format
+--no-integers   every number is a number, not an integer
+
+Exit code 1 if an input is invalid or there are no documents."""
+
   expandUsage = """usage: yaml expand [--modeline] [FILE]
 
 Writes FILE (or standard input) with every %GLOBAL directive expanded into
@@ -333,6 +359,7 @@ proc usageOf(command: string): string =
   of "merge": mergeUsage
   of "canonical", "jcs": canonicalUsage
   of "diff": diffUsage
+  of "schema", "infer": schemaUsage
   of "expand": expandUsage
   of "lsp": lspUsage
   of "help": helpUsage
@@ -1531,6 +1558,56 @@ proc diffCommand(args: seq[string]): int =
     return max(2, failed(inputs[side].name, getCurrentException()))
   if gitDriver: result = 0
 
+# schema
+#
+# Each document is folded into the inference and released before the next
+# is read (see yaml/schemainfer), so that inferring from many files, or one
+# long stream, needs the memory of the largest document, not of them all.
+
+proc schemaCommand(args: seq[string]): int =
+  var
+    files: seq[string]
+    source, target = none(DataFormat)
+    inferenceOptions = InferenceOptions()
+  for kind, key, val in options(args):
+    case kind
+    of cmdArgument: files.add(key)
+    of cmdLongOption, cmdShortOption:
+      case key
+      of "": files.add("-") # a lone - is standard input
+      of "from": source = some(parseFormat("schema", val))
+      of "to": target = some(parseFormat("schema", val))
+      of "no-required": inferenceOptions.required = false
+      of "closed": inferenceOptions.additionalProperties = false
+      of "enum":
+        try: inferenceOptions.enumLimit = parseInt(val)
+        except ValueError: fail("schema")
+        if inferenceOptions.enumLimit < 0: fail("schema")
+      of "no-formats": inferenceOptions.formats = false
+      of "no-integers": inferenceOptions.integers = false
+      else: fail("schema")
+    of cmdEnd: discard
+  var inference = initSchemaInference(inferenceOptions)
+  for input in inputSources(files):
+    let format = source.get(
+        if files.len == 0: dfYaml else: formatOf(input.name))
+    try:
+      for root in eachDocument(input, format): inference.add(root)
+    except YamlStreamError, YamlParserError, YamlConstructionError:
+      return failed(input.name, getCurrentException())
+  if inference.documents == 0:
+    stderr.writeLine("no documents to infer a schema from")
+    return 1
+  let output = newStream()
+  # tsAll keeps the tags that make "null" and "80" strings
+  output.collect(represent(inference.toSchema(),
+      SerializationOptions(tagStyle: tsAll)))
+  try:
+    stdout.write(output, target.get(dfYaml), toolConfigFor(
+        configFile(if files.len > 0: files[0] else: "")).format)
+  except YamlPresenterJsonError, YamlPresenterCborError, YamlStreamError:
+    return max(2, failed("<output>", getCurrentException()))
+
 proc configCommand(args: seq[string]): int =
   var
     dir = ""
@@ -1690,6 +1767,7 @@ proc run*(args: seq[string]): int =
     of "merge": mergeCommand(rest)
     of "canonical", "jcs": canonicalCommand(rest)
     of "diff": diffCommand(rest)
+    of "schema", "infer": schemaCommand(rest)
     of "expand": yamlexpand.run(rest, stdin, stdout, randomInput)
     of "config": configCommand(rest)
     of "index": indexCommand(rest)
