@@ -813,3 +813,39 @@ suite "LSP semantic diff":
     check r["changes"].len == 0
     check r["error"]["side"].getStr() == "new"
     check r["error"]["message"].getStr().len > 0
+
+suite "LSP schema inference":
+  proc inferred(inputs: JsonNode, options = newJObject(), json = false): JsonNode =
+    var s: Server
+    s.handle(request(1, "nimyaml/inferSchema", %*{"inputs": inputs,
+        "options": options, "json": json}))[0]["result"]
+
+  test "from the documents of several texts, YAML, JSONC and JSON Lines":
+    let r = inferred(%*[{"text": "name: Ada\n---\nname: Alan\nage: 41\n"},
+        {"text": "{\"name\": \"Grace\", // c\n}", "json": true},
+        {"text": "{\"name\": null, \"age\": 1.5}\n", "lines": true}])
+    check r["documents"].getInt() == 4
+    check r["schema"].getStr() ==
+        "$schema: \"https://json-schema.org/draft/2020-12/schema\"\n" &
+        "type: object\nproperties:\n  name:\n    type: [string, \"null\"]\n" &
+        "  age: {type: number}\nrequired: [name]\n"
+
+  test "options, and JSON":
+    let r = inferred(%*[{"text": "[on, on, off, off, '1', '1']"}],
+        %*{"enumLimit": 3, "additionalProperties": false, "required": false},
+        json = true)
+    let schema = parseJson(r["schema"].getStr())
+    check schema["items"] == %*{"type": "string", "enum": ["on", "off", "1"]}
+    let closed = parseJson(inferred(%*[{"text": "{a: 1}"}],
+        %*{"additionalProperties": false, "required": false, "integers": false},
+        json = true)["schema"].getStr())
+    check closed["additionalProperties"] == %false
+    check not closed.hasKey("required")
+    check closed["properties"]["a"] == %*{"type": "number"}
+
+  test "without texts, and a text that does not load":
+    check inferred(newJArray())["documents"].getInt() == 0
+    let r = inferred(%*[{"text": "a: 1\n"}, {"text": "a: [\n"}])
+    check not r.hasKey("schema")
+    check r["error"]["input"].getInt() == 1
+    check r["error"]["message"].getStr().len > 0
