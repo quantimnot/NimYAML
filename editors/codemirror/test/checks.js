@@ -50,8 +50,51 @@ try {
   const view = viewOf(config());
   const portAt = view.state.doc.toString().indexOf("80800");
   view.dispatch({ selection: { anchor: portAt } });
-  await check("the panel names the node at the cursor",
-    () => inside(".cm-yamllsp-path")?.textContent === "/port");
+  yaml.pathFormat = "pointer";
+  const shown = () => inside(".cm-yamllsp-path output")?.textContent;
+  await check("the panel names the node at the cursor by its JSON Pointer",
+    () => shown() === "/port");
+
+  // the other formats, picked from the panel's menu as a person would
+  const menu = inside(".cm-yamllsp-path select");
+  const pick = (format) => {
+    menu.value = format;
+    menu.dispatchEvent(new Event("change"));
+  };
+  pick("path");
+  await check("…by its JSON Path", () => shown() === "$.port" && yaml.pathFormat === "path");
+  pick("fragment");
+  await check("…by a relative URL fragment", () => shown() === "config.yaml#/port");
+  pick("absoluteFragment");
+  await check("…by an absolute URL fragment",
+    () => shown() === "file:///project/config.yaml#/port");
+  await check("the format picked is the page's to keep",
+    () => localStorage.getItem("yamllsp-demo.pathFormat") === "absoluteFragment");
+  pick("pointer");
+
+  view.dispatch({ selection: { anchor: view.state.doc.toString().indexOf("internal") } });
+  await check("pathText gives each format of the node at the cursor", async () =>
+    JSON.stringify(await Promise.all(["pointer", "path", "fragment", "absoluteFragment"]
+      .map((format) => yaml.pathText(view, format)))) === JSON.stringify(
+      ["/tags/1", "$.tags[1]", "config.yaml#/tags/1", "file:///project/config.yaml#/tags/1"]));
+  await check("the copy commands run in an editor of the server",
+    () => [yaml.copyPointer, yaml.copyPath, yaml.copyFragment, yaml.copyAbsoluteFragment]
+      .every((command) => command(view) === true));
+
+  // the panel's words, in the page's language (?lang=), as the editor's are
+  const lang = document.documentElement.lang;
+  const words = {
+    en: ["Path format", "JSON Pointer", "JSON Path", "URL Fragment", "Absolute URL Fragment"],
+    fr: ["Format du chemin", "Pointeur JSON", "Chemin JSON", "Fragment d’URL", "Fragment d’URL absolue"],
+    ja: ["パスの形式", "JSON ポインター", "JSON パス", "URL フラグメント", "絶対 URL フラグメント"],
+    ar: ["صيغة المسار", "مؤشر JSON", "مسار JSON", "جزء عنوان URL", "جزء عنوان URL مطلق"],
+  }[lang] ?? null;
+  if (words) {
+    await check(`the panel's words are in the page's language (${lang})`, () =>
+      JSON.stringify([menu.getAttribute("aria-label"), ...[...menu.options].map((o) => o.text)])
+        === JSON.stringify(words)
+      && inside(".cm-yamllsp-path output").title !== "" );
+  }
 
   // the schema edited in its own editor: config.yaml is validated against the new one
   show("/project/schema.yaml");

@@ -22,7 +22,13 @@ What the editor gets:
 * the server's **highlighting**: keys, scalars by the type they resolve to,
   tags, anchors, aliases and directives, as NimYAML's lexer reads them, drawn
   over the YAML grammar's colours;
-* the **JSON Pointer** of the node at the cursor, in a panel (click to copy);
+* the **path** of the node at the cursor, in a panel, as the VS Code
+  extension shows it in its status bar: a [JSON Pointer](https://www.rfc-editor.org/rfc/rfc6901)
+  (`/servers/0/host`), a [JSON Path](https://www.rfc-editor.org/rfc/rfc9535)
+  (`$.servers[0].host`) or a [URL fragment](https://www.rfc-editor.org/rfc/rfc9512#section-1.2),
+  relative (`config.yaml#/servers/0/host`) or absolute
+  (`file:///project/config.yaml#/servers/0/host`), picked from the panel's
+  menu; clicking the path copies it, and commands copy each format;
 * `https:` **schemas**, fetched by the page (the server never touches the
   network) when the config's `validate.remote-schemas` allows them;
 * **schema inference** and a **semantic diff** as functions, for the page to
@@ -48,11 +54,34 @@ const editor = document.querySelector("code-editor[language=yaml]");
 editor.extensions = yaml.extensions("file:///project/config.yaml");
 ```
 
-`yamlLanguageServer` also takes `fetchSchema(uri)` (default: `fetch`; `null`
-serves no `https:` schemas), `openLink(target)` (default: web pages in a new
-tab), `pathPanel` (default `true`) and `rootUri`. It returns the `client`,
-`extensions(uri)`, `pathAt(view)`, `inferSchema(texts, options)` and
-`diff(oldText, newText)`.
+`yamlLanguageServer` also takes:
+
+| option | |
+|---|---|
+| `fetchSchema(uri)` | answers the server's requests for `https:` schemas; default `fetch`, `null` for none |
+| `openLink(target)` | opens a document link; default: web pages in a new tab |
+| `pathPanel` | show the path panel; default `true` |
+| `pathFormat` | the panel's format: `pointer` (default), `path`, `fragment` or `absoluteFragment` |
+| `onPathFormatChange(format)` | called when a reader picks another format, for the page to keep it |
+| `locale` | a BCP 47 tag or a list, for the panel's words; default the page's `lang`, then the browser's |
+| `rootUri` | the project's root |
+
+It returns the `client`, `extensions(uri)`, `pathAt(view)` (the node:
+`pointer`, `path`, `document`, `documents`), `pathText(view, format)`, a
+settable `pathFormat`, the commands `copyPointer`, `copyPath`,
+`copyFragment` and `copyAbsoluteFragment` (for a keymap or a menu, as the
+VS Code extension's context menu has them), `inferSchema(texts, options)`
+and `diff(oldText, newText)`:
+
+```js
+editor.extensions = [yaml.extensions(uri),
+  cm.keymap.of([{ key: "Mod-Alt-c", run: yaml.copyPointer }])];
+```
+
+A URL fragment follows the rules of the VS Code extension: the pointer is
+percent-encoded where a fragment cannot hold it (`#/a%20b/0`), the relative
+URL is the file's name from its own directory, and a document without a
+location (`untitled:`) has only the fragment (`#/a/0`).
 
 The server reads a file once and keeps it. When the page changes a file
 that is not open in an editor, or one that other documents read (a schema, a
@@ -91,14 +120,19 @@ UI_COMPONENTS=... node editors/codemirror/test/browser.mjs   # the demo in headl
 
 The browser test opens the demo with `?test`, which runs
 [`test/checks.js`](test/checks.js) in the page: diagnostics, highlighting,
-links, the cursor's path, revalidation after a schema edit, formatting and
-schema inference, end to end. Without a Chromium (`$CHROMIUM`) or a
+links, the cursor's path in each format, revalidation after a schema
+edit, formatting and schema inference, end to end, once per language in `$LANGS` (default
+`en fr ja ar`). Without a Chromium (`$CHROMIUM`) or a
 collection it is skipped.
 
 ## Words
 
-The panel's label and tooltip ("JSON Pointer", "Click to copy") are asked
-of the editor with `EditorState.phrase`, so a host that translates
-CodeMirror's phrases can translate them too. `<code-editor>` translates
-lsp-client's own words, and its lint panel's, in its catalogs. These two it
-does not yet.
+The path panel's words (its menu, the names of the formats, "Click to
+copy", "(root)") are asked of the editor with `EditorState.phrase` and
+translated in [`phrases.js`](phrases.js) into the languages of
+`<code-editor>`: French, Arabic, Simplified Chinese, Japanese and Hindi,
+besides English. `<code-editor>` translates CodeMirror's, lsp-client's and
+the lint panel's words in its own catalogs. A path is written left to right
+in a right-to-left page, as code is. The demo takes `?lang=fr` (or `ar`,
+`zh-Hans`, `ja`, `hi`), and the browser test visits it in English, French,
+Japanese and Arabic.

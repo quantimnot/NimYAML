@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 // The demo page in a real browser: serves it as serve.mjs does, opens it with
 // ?test in headless Chromium, and fails unless every check of test/checks.js
-// holds — diagnostics, highlighting, links, the cursor's path, schema edits,
-// formatting and schema inference, from the worker's server through
-// lsp-client into <code-editor>.
+// holds — diagnostics, highlighting, links, the cursor's path in each format,
+// schema edits, formatting and schema inference, from the worker's server
+// through lsp-client into <code-editor>. It visits once per language in
+// $LANGS (default "en fr ja ar"), with ?lang=, a fresh profile each time, so
+// the panel's words are checked in each and Arabic lays out right to left.
 //
 //   UI_COMPONENTS=../ui-web-component/packages/ui-components node editors/codemirror/test/browser.mjs
 //
@@ -45,8 +47,7 @@ if (!existsSync(join(components, "code-editor", "codemirror.js"))) {
   process.exit(1);
 }
 
-let deliver;
-const reported = new Promise((resolve) => { deliver = resolve; });
+let deliver = () => {};
 const server = await serve({
   components,
   answer(req, res) {
@@ -57,24 +58,36 @@ const server = await serve({
     return true;
   },
 });
-const profile = mkdtempSync(join(tmpdir(), "yamllsp-codemirror-"));
-const child = spawn(browser, ["--headless=new", "--no-first-run", "--no-default-browser-check",
-  `--user-data-dir=${profile}`, `${server.url}?test`], { stdio: "ignore" });
-const timeout = setTimeout(() =>
-  deliver([{ name: "the page reports within 120 s", ok: false }]), 120000);
+
+/** Opens the demo with ?test in `lang` and resolves to what its checks report. */
+async function visit(lang) {
+  const reported = new Promise((resolve) => { deliver = resolve; });
+  const profile = mkdtempSync(join(tmpdir(), "yamllsp-codemirror-"));
+  const child = spawn(browser, ["--headless=new", "--no-first-run", "--no-default-browser-check",
+    `--user-data-dir=${profile}`, `${server.url}?test&lang=${lang}`], { stdio: "ignore" });
+  const timeout = setTimeout(() =>
+    deliver([{ name: "the page reports within 120 s", ok: false }]), 120000);
+  try {
+    return await reported;
+  } finally {
+    clearTimeout(timeout);
+    child.kill();
+    await new Promise((resolve) => child.on("exit", resolve));
+    rmSync(profile, { recursive: true, force: true });
+  }
+}
 
 let failed = 0;
 try {
-  for (const { name, ok, detail } of await reported) {
-    console.log(`${ok ? "ok  " : "FAIL"} ${name}${detail ? ` (${detail})` : ""}`);
-    if (!ok) failed++;
+  for (const lang of (process.env.LANGS ?? "en fr ja ar").split(/\s+/).filter(Boolean)) {
+    console.log(`-- ${lang}`);
+    for (const { name, ok, detail } of await visit(lang)) {
+      console.log(`${ok ? "ok  " : "FAIL"} ${name}${detail ? ` (${detail})` : ""}`);
+      if (!ok) failed++;
+    }
   }
 } finally {
-  clearTimeout(timeout);
-  child.kill();
   server.close();
-  await new Promise((resolve) => child.on("exit", resolve));
-  rmSync(profile, { recursive: true, force: true });
 }
 console.log(failed ? `${failed} check(s) failed` : `browser test passed: ${browser}`);
 process.exit(failed ? 1 : 0);

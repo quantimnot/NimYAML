@@ -1,13 +1,16 @@
 // The parts of yamllsp.js and serve.mjs that need no browser: decoding the
 // server's highlighting, the classes it is drawn with, answering the server's
-// schema requests, and what the demo server will and will not serve.
-// test/browser.mjs checks the rest, in the page.
+// schema requests, the path formats, the panel's words in each language, and
+// what the demo server will and will not serve. test/browser.mjs checks the
+// rest, in the page.
 //
 //   node --test editors/codemirror/test/
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decodeSemanticTokens, tokenClass, answeringSchemas, TOKEN_CLASSES } from "../yamllsp.js";
+import { decodeSemanticTokens, tokenClass, answeringSchemas, TOKEN_CLASSES,
+         fragmentOf, fragmentFile, pathText, displayText, PATH_FORMATS } from "../yamllsp.js";
+import { PHRASES, phrasesFor } from "../phrases.js";
 import { serve } from "../serve.mjs";
 
 const legend = { tokenTypes: ["comment", "keyword", "string", "number", "property"],
@@ -92,4 +95,52 @@ test("the demo server serves its mounts and nothing above them", async (t) => {
   assert.equal(await status("/ui/yamllsp.test.mjs"), 200);
   assert.equal(await status("/%2e%2e/%2e%2e/yaml.nim"), 404);
   assert.equal(await status("/nimyaml/%2e%2e/yaml.nim"), 404);
+});
+
+const node = { pointer: "/a b/0", path: "$['a b'][0]", document: 1, documents: 2 };
+
+test("fragments percent-encode what a fragment cannot hold, as the VS Code extension does", () => {
+  assert.equal(fragmentOf("/a b/0"), "#/a%20b/0");
+  assert.equal(fragmentOf("/k:v/x?y/é"), "#/k:v/x?y/%C3%A9");
+  assert.equal(fragmentOf(""), "#");
+});
+
+test("a fragment follows the file's name, or its URI, or nothing without a location", () => {
+  assert.equal(fragmentFile("file:///home/me/my%20config.yaml", false), "my%20config.yaml");
+  assert.equal(fragmentFile("file:///home/me/a:b.yaml", false), "a%3Ab.yaml");
+  assert.equal(fragmentFile("file:///home/me/config.yaml?x#y", true), "file:///home/me/config.yaml");
+  assert.equal(fragmentFile("untitled:Untitled-1", false), "");
+  assert.equal(fragmentFile("untitled:Untitled-1", true), "");
+});
+
+test("a node's text in each format", () => {
+  const uri = "file:///p/my%20config.yaml";
+  assert.deepEqual(Object.keys(PATH_FORMATS).map((format) => pathText(node, format, uri)), [
+    "/a b/0", "$['a b'][0]", "my%20config.yaml#/a%20b/0", "file:///p/my%20config.yaml#/a%20b/0"]);
+  assert.equal(pathText(node, "unknown", uri), "/a b/0");
+});
+
+test("the panel numbers documents when there are several, and names the root", () => {
+  assert.equal(displayText(node, "pointer", ""), "#2 /a b/0");
+  const root = { pointer: "", path: "$", document: 0, documents: 1 };
+  assert.equal(displayText(root, "pointer", "", (t) => phrasesFor("fr")[t] ?? t), "(racine)");
+  assert.equal(displayText(root, "path", ""), "$");
+});
+
+test("every table translates every phrase the panel asks for", () => {
+  const asked = ["Path format", "Click to copy", "(root)",
+                 ...Object.values(PATH_FORMATS).map((f) => f.name)];
+  for (const [lang, table] of Object.entries(PHRASES)) {
+    assert.deepEqual(Object.keys(table).sort(), [...asked].sort(), lang);
+  }
+});
+
+test("a locale finds its table, shortened tag by tag, or English", () => {
+  assert.equal(phrasesFor("fr-CA"), PHRASES.fr);
+  assert.equal(phrasesFor(["de", "ja-JP"]), PHRASES.ja);
+  assert.equal(phrasesFor("zh-CN"), PHRASES["zh-Hans"]);
+  assert.equal(phrasesFor("zh-Hans-CN"), PHRASES["zh-Hans"]);
+  assert.deepEqual(phrasesFor("zh-Hant-TW"), {});
+  assert.deepEqual(phrasesFor(["en-GB", "fr"]), {});
+  assert.deepEqual(phrasesFor([]), {});
 });

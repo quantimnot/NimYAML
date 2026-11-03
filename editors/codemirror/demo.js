@@ -57,10 +57,19 @@ rules:
 const pathOf = (uri) => decodeURIComponent(new URL(uri).pathname);
 const uriOf = (path) => new URL(path.replace(/^\//, ""), "file:///").href;
 
+// The path panel's format is the reader's choice, kept in this browser.
+const FORMAT_KEY = "yamllsp-demo.pathFormat";
+const storage = {
+  get: () => { try { return localStorage.getItem(FORMAT_KEY); } catch { return null; } },
+  set: (format) => { try { localStorage.setItem(FORMAT_KEY, format); } catch { /* not kept */ } },
+};
+
 const server = startServer({ readFile: async (path) => files.get(path) ?? null });
 const status = document.getElementById("status");
 const yaml = yamlLanguageServer({
   cm, transport: server.transport, rootUri: ROOT,
+  pathFormat: storage.get() ?? "pointer",
+  onPathFormatChange: storage.set,
   openLink: (target) => {
     if (target.startsWith("file:") && files.has(pathOf(target))) show(pathOf(target));
     else if (/^https?:/.test(target)) open(target, "_blank", "noopener");
@@ -78,7 +87,11 @@ let current = null;
 
 function fileButton(path) {
   const button = document.createElement("button");
-  button.textContent = path.slice("/project/".length);
+  // a file name reads in its own direction (".yaml" keeps its dot first),
+  // isolated so that the button keeps the page's alignment
+  const name = document.createElement("bdi");
+  name.textContent = path.slice("/project/".length);
+  button.append(name);
   button.dataset.path = path;
   button.addEventListener("click", () => show(path));
   nav.append(button);

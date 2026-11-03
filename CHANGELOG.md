@@ -5,8 +5,11 @@ Features:
  * CodeMirror: `editors/codemirror` connects CodeMirror 6 and the
    `<code-editor>` web component to the language server in a browser worker.
    `yamllsp.js` adds to `@codemirror/lsp-client` what it lacks: the server's
-   semantic highlighting, document links, the JSON Pointer at the cursor, and
-   `https:` schemas fetched by the page for `nimyaml/schemaContent`. A demo
+   semantic highlighting, document links, the path at the cursor as a JSON
+   Pointer, a JSON Path or a relative or absolute URL fragment (with commands
+   that copy each, as in VS Code), and `https:` schemas fetched by the page
+   for `nimyaml/schemaContent`. Its words are translated into the languages
+   of `<code-editor>`. A demo
    page, its server and a headless browser test come with it.
 
  * `yamllsp` formats documents (`textDocument/formatting`) as `yaml format`
