@@ -1,4 +1,6 @@
 // yamllsp for CodeMirror 6: NimYAML's language server, connected to an editor.
+// <yaml-editor> (yaml-editor.html) is this in a component; the module also
+// serves any CodeMirror 6 editor on its own.
 //
 // The server is NimYAML's own, compiled to JavaScript and run in a worker by
 // js/lsp/transport.mjs; @codemirror/lsp-client speaks LSP to it. Most of what
@@ -13,10 +15,10 @@
 //   and the server a moment later;
 // * document links (`textDocument/documentLink`), the schema references of
 //   `%SCHEMA` and its kin, opened with Ctrl/Cmd+click;
-// * the path of the node at the cursor (`nimyaml/pathAt`), in a panel, as a
-//   JSON Pointer (`/a/0`), a JSON Path (`$.a[0]`) or a URL fragment
-//   (`config.yaml#/a/0`, or absolute, `file:///…/config.yaml#/a/0`), as the
-//   VS Code extension shows it in its status bar, and commands that copy each;
+// * the path of the node at the cursor (`nimyaml/pathAt`) as a JSON Pointer
+//   (`/a/0`), a JSON Path (`$.a[0]`) or a URL fragment (`config.yaml#/a/0`, or
+//   absolute, `file:///…/config.yaml#/a/0`), by the VS Code extension's rules,
+//   and commands that copy each; <yaml-editor> shows it under the text;
 // * the schemas the server may not read itself. yamllsp never touches the
 //   network: it asks its client for the schemas of the URI schemes the client
 //   says it serves (`nimyaml/schemaContent`). lsp-client answers every request
@@ -26,9 +28,8 @@
 // Everything is made from the CodeMirror the editor itself was made from,
 // passed in as `cm`: an extension made from a second copy of @codemirror/state
 // is refused by the editor. For <code-editor> that is the codemirror.js beside
-// it, which exports lsp-client too. The module imports nothing of CodeMirror's,
-// only its own words (phrases.js), so it runs unbundled in a page, and its pure
-// parts in Node (test/yamllsp.test.mjs).
+// it, which exports lsp-client too. The module imports nothing, so it runs
+// unbundled in a page, and its pure parts in Node (yamllsp.test.mjs).
 //
 //   import * as cm from "<components>/code-editor/codemirror.js";
 //   import { startServer } from "<nimyaml>/js/lsp/transport.mjs";
@@ -38,16 +39,13 @@
 //   const yaml = yamlLanguageServer({ cm, transport: server.transport });
 //   editor.extensions = yaml.extensions("file:///project/config.yaml");
 //
-// Its words, few as they are, are asked of the editor (EditorState.phrase), and
-// translated by phrases.js in the languages of <code-editor>, for the locale
-// the page names; a host can add its own phrases over them as for any other.
+// It shows no words of its own: the ones a person reads around the editor are
+// the component's, in its catalogs.
 //
 // Rejected: semantic tokens instead of the grammar, which would leave the text
 // uncoloured until the worker has loaded and answered; a client of our own
 // rather than lsp-client, which would repeat its document syncing, completion
 // and tooltips to add four features.
-
-import { phrasesFor } from "./phrases.js";
 
 /**
  * The server's token types → the classes they are drawn with: classHighlighter's
@@ -128,12 +126,6 @@ export async function fetchHttpsSchema(uri) {
   return response.text();
 }
 
-/** The page's language, then the browser's, best first. */
-function pageLocales() {
-  return [globalThis.document?.documentElement?.lang, ...(globalThis.navigator?.languages ?? [])]
-    .filter(Boolean);
-}
-
 /** Opens a link target in a new tab when it is a web page; others are the host's to open. */
 function openWebLink(target) {
   if (/^https?:/i.test(target)) globalThis.open?.(target, "_blank", "noopener");
@@ -147,31 +139,19 @@ function openWebLink(target) {
  *   transport    {send, subscribe, unsubscribe}, as js/lsp/transport.mjs gives it
  *   fetchSchema  answers the server's requests for https: schemas; null: none
  *                are served, and the server reports them unavailable
- *   openLink     opens a document link's target; default: web pages in a tab
- *   pathPanel    show the path of the node at the cursor; default true
- *   pathFormat   how the panel shows it: "pointer" (default), "path", "fragment"
- *                or "absoluteFragment"; the panel's menu changes it
- *   onPathFormatChange  called with the format picked in a panel, to keep it
- *   locale       a BCP 47 tag, or a list, best first, for the panel's words;
- *                default: the page's, then the browser's
+ *   openLink     opens a document link: (target, view); default: web pages in a tab
  *   rootUri      the project's root, if it has one
  */
 export function yamlLanguageServer({ cm, transport, fetchSchema = fetchHttpsSchema,
-                                     openLink = openWebLink, pathPanel = true,
-                                     pathFormat = "pointer", onPathFormatChange = () => {},
-                                     locale = pageLocales(), rootUri = null,
+                                     openLink = openWebLink, rootUri = null,
                                      timeout = 10000 }) {
-  const paths = { format: formatOf(pathFormat).key, panels: new Set(),
-                  changed: onPathFormatChange };
   const client = new cm.LSPClient({
     rootUri,
     timeout,
     initializationOptions: { schemaContentSchemes: fetchSchema ? ["https"] : [] },
     extensions: [
       ...cm.languageServerExtensions(),
-      { editorExtension: [serverHighlighting(cm), documentLinks(cm, openLink),
-                          pathPanel ? cursorPath(cm, paths) : [],
-                          cm.EditorState.phrases.of(phrasesFor(locale))] },
+      { editorExtension: [serverHighlighting(cm), documentLinks(cm, openLink)] },
     ],
   }).connect(fetchSchema ? answeringSchemas(transport, fetchSchema) : transport);
 
@@ -192,13 +172,10 @@ export function yamlLanguageServer({ cm, transport, fetchSchema = fetchHttpsSche
     /** The path of the node at `pos` in `view`: {pointer, path, document, documents} or null. */
     pathAt: (view, pos = view.state.selection.main.head) => pathAt(client, view, pos),
     /** The path of the node at `pos` in `view` as text in `format`, or null outside every node. */
-    pathText: async (view, format = paths.format, pos = view.state.selection.main.head) => {
+    pathText: async (view, format = "pointer", pos = view.state.selection.main.head) => {
       const node = await pathAt(client, view, pos);
       return node && pathText(node, format, cm.LSPPlugin.get(view)?.uri ?? "");
     },
-    /** The format the panels show; setting it redraws them. */
-    get pathFormat() { return paths.format; },
-    set pathFormat(format) { setPathFormat(paths, format); },
     /** Commands (view → boolean) for a keymap or a menu: each copies the path at the cursor. */
     copyPointer: copying("pointer"),
     copyPath: copying("path"),
@@ -317,12 +294,12 @@ function documentLinks(cm, openLink) {
     return cm.Decoration.set(ranges, true);
   });
   const opening = cm.EditorView.domEventHandlers({
-    mousedown(event) {
+    mousedown(event, view) {
       if (!(event.ctrlKey || event.metaKey) || event.button !== 0) return false;
       const link = event.target.closest?.(".cm-yamllsp-link[data-target]");
       if (!link) return false;
       event.preventDefault();
-      openLink(link.getAttribute("data-target"));
+      openLink(link.getAttribute("data-target"), view);
       return true;
     },
   });
@@ -354,15 +331,10 @@ async function pathAt(client, view, pos) {
 // whose URI has no location (`untitled:`) has neither URL, and its fragments
 // are only `#/a/0`, which refer into the same document.
 
-/** The formats, in the order the panel's menu lists them, each with its name as a phrase. */
-export const PATH_FORMATS = {
-  pointer: { key: "pointer", name: "JSON Pointer" },
-  path: { key: "path", name: "JSON Path" },
-  fragment: { key: "fragment", name: "URL Fragment" },
-  absoluteFragment: { key: "absoluteFragment", name: "Absolute URL Fragment" },
-};
+/** The formats; an unknown one is a JSON Pointer. */
+export const PATH_FORMATS = ["pointer", "path", "fragment", "absoluteFragment"];
 
-const formatOf = (name) => PATH_FORMATS[name] ?? PATH_FORMATS.pointer;
+const formatOf = (name) => (PATH_FORMATS.includes(name) ? name : "pointer");
 
 // what encodeURIComponent escapes but a URI fragment may hold (RFC 3986:
 // fragment = *( pchar / "/" / "?" ))
@@ -394,7 +366,7 @@ export function fragmentFile(uri, absolute) {
 
 /** The text of `node` (an answer of `nimyaml/pathAt`) in `format`, for the document `uri`. */
 export function pathText(node, format, uri) {
-  const { key } = formatOf(format);
+  const key = formatOf(format);
   if (key === "fragment" || key === "absoluteFragment") {
     return fragmentFile(uri, key === "absoluteFragment") + fragmentOf(node.pointer);
   }
@@ -402,91 +374,10 @@ export function pathText(node, format, uri) {
 }
 
 /**
- * How the panel shows `node`: the root's empty pointer as "(root)", in the
- * editor's words (`phrase`), and the number of its document when there are several.
+ * How `node` is shown: the root's empty pointer as `root`, the host's word for
+ * it, and the number of its document when there are several.
  */
-export function displayText(node, format, uri, phrase = (text) => text) {
-  const text = pathText(node, format, uri) || phrase("(root)");
+export function displayText(node, format, uri, root = "(root)") {
+  const text = pathText(node, format, uri) || root;
   return node.documents > 1 ? `#${node.document + 1} ${text}` : text;
-}
-
-function setPathFormat(paths, format) {
-  paths.format = formatOf(format).key;
-  for (const redraw of paths.panels) redraw();
-}
-
-// A panel under the text naming the node at the cursor, as a status bar
-// would: the path in the format picked from the menu beside it, which every
-// panel of the server shares, copied when clicked. Asked a quiet moment after
-// the cursor or the text last moved, since every request sends the text.
-function cursorPath(cm, paths) {
-  const look = cm.EditorView.baseTheme({
-    ".cm-yamllsp-path": { display: "flex", alignItems: "center", gap: "8px",
-                          padding: "2px 8px", minHeight: "1.5em" },
-    ".cm-yamllsp-path output": { flex: "1", minWidth: "0", cursor: "copy", whiteSpace: "pre",
-                                 overflow: "hidden", textOverflow: "ellipsis" },
-    ".cm-yamllsp-path select": { font: "inherit", fontSize: "90%", color: "inherit",
-                                 background: "transparent", border: "0" },
-  });
-  return [look, cm.showPanel.of((view) => {
-    const phrase = (text) => view.state.phrase(text);
-    const dom = document.createElement("div");
-    dom.className = "cm-yamllsp-path";
-    const output = document.createElement("output");
-    output.setAttribute("role", "status");
-    output.title = phrase("Click to copy");
-    output.translate = false;   // a path is data, like the text
-    // and written left to right, as code is, even in a right-to-left page,
-    // where `#2 /a` or `$.a` would otherwise be reordered around its neutral
-    // characters: isolated in a bdi, so that the output keeps the panel's
-    // direction and the path its place at the panel's start
-    const text = document.createElement("bdi");
-    text.dir = "ltr";
-    output.append(text);
-    const menu = document.createElement("select");
-    menu.setAttribute("aria-label", phrase("Path format"));
-    for (const { key, name } of Object.values(PATH_FORMATS)) {
-      menu.append(new Option(phrase(name), key));
-    }
-    dom.append(output, menu);
-
-    let node = null, timer = 0, asked = 0, destroyed = false;
-    const draw = () => {
-      const uri = cm.LSPPlugin.get(view)?.uri ?? "";
-      menu.value = paths.format;
-      output.setAttribute("aria-label", phrase(formatOf(paths.format).name));
-      text.textContent = node ? displayText(node, paths.format, uri, phrase) : "";
-      output.dataset.path = node ? pathText(node, paths.format, uri) : "";
-    };
-    const refresh = async () => {
-      const plugin = cm.LSPPlugin.get(view);
-      if (!plugin || destroyed) return;
-      const asking = ++asked;
-      let found;
-      try { found = await pathAt(plugin.client, view, view.state.selection.main.head); }
-      catch { return; }
-      if (destroyed || asking !== asked) return;
-      node = found;
-      draw();
-    };
-    output.addEventListener("click", () => {
-      if (output.dataset.path) navigator.clipboard?.writeText(output.dataset.path).catch(() => {});
-    });
-    menu.addEventListener("change", () => {
-      setPathFormat(paths, menu.value);
-      paths.changed(paths.format);
-    });
-    paths.panels.add(draw);
-    draw();
-    timer = setTimeout(refresh, QUIET_MS);
-    return {
-      dom,
-      update(update) {
-        if (!update.docChanged && !update.selectionSet) return;
-        clearTimeout(timer);
-        timer = setTimeout(refresh, QUIET_MS);
-      },
-      destroy() { destroyed = true; clearTimeout(timer); paths.panels.delete(draw); },
-    };
-  })];
 }

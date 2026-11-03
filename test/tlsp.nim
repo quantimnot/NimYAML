@@ -85,6 +85,18 @@ suite "LSP server":
         "end": {"line": 0, "character": 6}}
     check diags[0]["severity"].getInt() == 2
 
+  test "positions stay within a text without a final line break":
+    var s: Server
+    let text = "a: 1\na: 2\nk: v"
+    let diags = s.handle(didOpen("untitled:a", text)).diagnosticsOf("untitled:a")
+    check diags.len >= 2  # the duplicate key, and the missing line break
+    let lines = text.split('\n')
+    for d in diags:
+      for side in ["start", "end"]:
+        let p = d["range"][side]
+        check p["line"].getInt() < lines.len
+        check p["character"].getInt() <= lines[p["line"].getInt()].len
+
   test "didChange replaces the text, didClose clears":
     var s: Server
     discard s.handle(didOpen("untitled:a", "a: 1\na: 2\n"))

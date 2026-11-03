@@ -1,15 +1,21 @@
 {
-  "name": "yamllsp-codemirror",
-  "version": "0.0.0",
-  "description": "NimYAML's language server in CodeMirror 6 and the <code-editor> web component",
-  "license": "MIT",
+  "name": "@nimyaml/yaml-editor",
+  "version": "0.1.0",
   "private": true,
+  "description": "<yaml-editor>: YAML in <code-editor>, checked as it is typed by NimYAML's language server in a worker, with the path of the node at the cursor.",
+  "license": "MIT",
   "type": "module",
   "exports": {
-    ".": "./yamllsp.js"
+    ".": "./yaml-editor.html",
+    "./yamllsp": "./yamllsp.js"
   },
   "scripts": {
-    "serve": "node serve.mjs",
-    "test": "node --test test/ && node test/browser.mjs"
+    "serve": "node node_modules/ui-web-component-workspace/packages/webcomponents/serve.mjs",
+    "test": "node --test yamllsp.test.mjs && node node_modules/ui-web-component-workspace/packages/webcomponents/run-tests.mjs",
+    "unit": "node --test yamllsp.test.mjs"
+  },
+  "dependencies": {
+    "nimyaml": "link:nimyaml",
+    "ui-web-component-workspace": "link:ui-web-component-workspace"
   }
 }

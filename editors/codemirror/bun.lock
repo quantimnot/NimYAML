@@ -1,0 +1,18 @@
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "@nimyaml/yaml-editor",
+      "dependencies": {
+        "nimyaml": "link:nimyaml",
+        "ui-web-component-workspace": "link:ui-web-component-workspace",
+      },
+    },
+  },
+  "packages": {
+    "nimyaml": ["nimyaml@link:nimyaml", { "bin": { "yaml": "./bin/yaml.mjs", "yamllsp": "./lsp/stdio.mjs" } }],
+
+    "ui-web-component-workspace": ["ui-web-component-workspace@link:ui-web-component-workspace", {}],
+  }
+}

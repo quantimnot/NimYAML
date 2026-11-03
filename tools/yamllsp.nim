@@ -168,8 +168,18 @@ proc byteColumn*(line: string, utf16: int): int =
   result = min(i, line.len) + 1 + max(utf16 - units, 0)
 
 proc lspPosition(lines: seq[string], m: Mark): JsonNode =
-  let text = if m.line <= lines.len: lines[m.line - 1] else: ""
-  %*{"line": m.line - 1, "character": utf16Column(text, m.column)}
+  ## The LSP position of ``m``, within the text: a mark past the end of its
+  ## line, or past the last line (where diagnostics about a missing final
+  ## line break point), is the end of that line, or of the last. LSP lets a
+  ## client clamp such positions, but not every client does: CodeMirror's
+  ## drops every diagnostic of a document when one is out of range.
+  if lines.len == 0: return %*{"line": 0, "character": 0}
+  if m.line > lines.len:
+    let last = lines[^1]
+    return %*{"line": lines.len - 1, "character": utf16Column(last, last.len + 1)}
+  let text = lines[m.line - 1]
+  %*{"line": m.line - 1,
+     "character": utf16Column(text, min(m.column, text.len + 1))}
 
 proc toLsp*(d: Diagnostic, lines: seq[string]): JsonNode =
   ## ``d`` as an LSP diagnostic; ``lines`` are the lines of the document.

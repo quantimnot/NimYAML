@@ -1,51 +1,462 @@
 <!doctype html>
 <!--
-  yamllsp in <code-editor>: a small project of YAML files edited in the browser,
-  checked by NimYAML's language server running in a worker. demo.js wires it up;
-  serve.mjs serves it, with the component collection at /ui/ and NimYAML's
-  JavaScript build at /nimyaml/. With ?test, test/checks.js runs against it
-  and reports to the browser test (test/browser.mjs).
+  Developer page for <yaml-editor>: its documentation, examples, guided tour and tests. The
+  component itself is yaml-editor.html beside this page, named below by <link rel="component">;
+  it is the file a host page imports, and the preview imports it the same way, so this page runs
+  what ships. Nothing in this file ships.
+
+  Served by the framework's server from this folder, with the ui-web-component workspace this
+  package links mounted beside it (../code-editor/, ../locale-switcher/) and NimYAML's JavaScript
+  build at ../js/:  bun run serve   (see README.md)
 -->
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>yamllsp in CodeMirror</title>
-  <!-- ?lang=fr (ar, zh-Hans, ja, hi): the editor's words and the path panel's
-       follow the page's language, so it is set before the components load. -->
-  <script>
-    const lang = new URLSearchParams(location.search).get("lang");
-    if (lang) {
-      document.documentElement.lang = lang;
-      document.documentElement.dir = /^ar\b/.test(lang) ? "rtl" : "ltr";
-    }
-  </script>
-  <link rel="html-import" href="/ui/code-editor/code-editor.html">
-  <script type="module" src="/ui/html-import.js"></script>
+  <title>__MSG_page_title__</title>
+  <link rel="component" href="yaml-editor.html">
+  <link rel="locales" hreflang="en fr ar zh-Hans ja hi">
+  <link rel="locale-switcher" href="../locale-switcher/locale-switcher.html">
+  <!-- Pictures of the examples, and of the tour played (made by screenshots.mjs: ninja). -->
+  <link rel="screenshot" href="screenshots/yaml-editor.en.png" hreflang="en" type="image/png">
+  <link rel="screenshot" href="screenshots/yaml-editor.ar.png" hreflang="ar" type="image/png">
+  <link rel="screenshot" href="screenshots/yaml-editor.tour.en.png" hreflang="en" type="image/apng">
+  <link rel="stylesheet" href="../html-template-preview.css">
   <style>
-    :root { color-scheme: light dark; font: 14px/1.4 system-ui, sans-serif; }
-    body { margin: 0; display: grid; grid-template: auto 1fr / 14rem 1fr; block-size: 100vh; }
-    header { grid-column: 1 / -1; display: flex; gap: .75rem; align-items: center;
-             padding: .5rem 1rem; border-block-end: 1px solid color-mix(in srgb, currentColor 20%, transparent); }
-    header h1 { font-size: 1rem; margin: 0 auto 0 0; }
-    nav { padding: .5rem; overflow: auto; border-inline-end: 1px solid color-mix(in srgb, currentColor 20%, transparent); }
-    nav button { display: block; inline-size: 100%; text-align: start; font: 13px ui-monospace, monospace;
-                 padding: .3rem .5rem; border: 0; border-radius: 4px; background: none; color: inherit; cursor: pointer; }
-    nav button[aria-current="true"] { background: color-mix(in srgb, currentColor 14%, transparent); }
-    main { min-block-size: 0; display: flex; flex-direction: column; padding: .5rem; }
-    main code-editor { flex: 1; min-block-size: 0; }
-    #status { font-size: 12px; opacity: .75; }
+    .project { display: grid; grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr)); gap: .75rem; }
+    .project yaml-editor, #paths-editor { block-size: 16rem; }
   </style>
 </head>
 <body>
-  <header>
-    <h1>yamllsp in CodeMirror</h1>
-    <span id="status">starting the server…</span>
-    <button id="format" title="Shift+Alt+F">Format</button>
-    <button id="infer">Infer schema</button>
-  </header>
-  <nav id="files" aria-label="Files"></nav>
-  <main id="editors"></main>
-  <script type="module" src="demo.js"></script>
+
+<header class="component-doc">
+  <!-- The component's icon: a window of YAML, keys and values, with a check mark for the server
+       that reads it. Decorative: the heading names the component. -->
+  <h1><svg class="component-icon" data-scheme="light" viewBox="0 0 48 48" aria-hidden="true" focusable="false">
+      <rect x="3" y="3" width="42" height="42" rx="9" fill="#fdecec"/>
+      <rect x="7" y="9" width="34" height="30" rx="4" fill="#fcfcfd" stroke="#d0d7de" stroke-width="1.5"/>
+      <path d="M12 16h7M12 22h5M15 28h8" stroke="#0550ae" stroke-width="2.4" stroke-linecap="round"/>
+      <path d="M22 16h8M20 22h6" stroke="#0a6b2d" stroke-width="2.4" stroke-linecap="round"/>
+      <path d="M7 34h34" stroke="#d0d7de" stroke-width="1.5"/>
+      <path d="M29 28l3 3 6-7" stroke="#c0262d" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg><svg class="component-icon" data-scheme="dark" viewBox="0 0 48 48" aria-hidden="true" focusable="false">
+      <rect x="3" y="3" width="42" height="42" rx="9" fill="#3b1416"/>
+      <rect x="7" y="9" width="34" height="30" rx="4" fill="#0d1117" stroke="#30363d" stroke-width="1.5"/>
+      <path d="M12 16h7M12 22h5M15 28h8" stroke="#79c0ff" stroke-width="2.4" stroke-linecap="round"/>
+      <path d="M22 16h8M20 22h6" stroke="#7ee787" stroke-width="2.4" stroke-linecap="round"/>
+      <path d="M7 34h34" stroke="#30363d" stroke-width="1.5"/>
+      <path d="M29 28l3 3 6-7" stroke="#ff7b72" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>&lt;yaml-editor&gt;</h1>
+  <div data-doc-translations>
+    <div lang="en">
+      <p>YAML in a <code>&lt;code-editor&gt;</code>, checked as it is typed by NimYAML's language
+         server, which runs in a worker of the page: lint and JSON Schema diagnostics, completion of
+         directives, hovers, formatting (<kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>F</kbd>), the server's
+         highlighting, and schema references as links (<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+click).</p>
+      <p>Its own UI is one line: the path of the node at the cursor, as a JSON Pointer, a JSON Path
+         or a URL fragment, copied when clicked. The page's files stay the page's: when the server
+         needs one, a config or a schema, the editor asks with <code>fileread</code>, and a file
+         open in another <code>&lt;yaml-editor&gt;</code> is read from it, as it is typed.</p>
+    </div>
+    <div lang="fr">
+      <p>Du YAML dans un <code>&lt;code-editor&gt;</code>, vérifié pendant la frappe par le serveur
+         de langage de NimYAML, qui tourne dans un worker de la page : diagnostics de lint et de
+         schéma JSON, complétion des directives, survols, mise en forme
+         (<kbd>Maj</kbd>+<kbd>Alt</kbd>+<kbd>F</kbd>), coloration du serveur, et références de
+         schéma en liens (<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+clic).</p>
+      <p>Son interface propre tient en une ligne : le chemin du nœud sous le curseur, en pointeur
+         JSON, en chemin JSON ou en fragment d’URL, copié d’un clic. Les fichiers de la page restent
+         ceux de la page : quand le serveur en a besoin, une configuration ou un schéma, l’éditeur
+         les demande par <code>fileread</code>, et un fichier ouvert dans un autre
+         <code>&lt;yaml-editor&gt;</code> y est lu, pendant la frappe.</p>
+    </div>
+    <div lang="ar">
+      <p>YAML داخل <code>&lt;code-editor&gt;</code>، يُفحص أثناء الكتابة بخادم لغة NimYAML الذي
+         يعمل في عامل (worker) من الصفحة: تشخيصات التدقيق ومخطط JSON، وإكمال التوجيهات، والتلميحات،
+         والتنسيق (<kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>F</kbd>)، وتلوين الخادم، ومراجع المخططات
+         روابطَ (<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+نقرة).</p>
+      <p>واجهته الخاصة سطر واحد: مسار العقدة عند المؤشر، مؤشرَ JSON أو مسار JSON أو جزءَ عنوان URL،
+         يُنسخ بنقرة. وتبقى ملفات الصفحة للصفحة: حين يحتاج الخادم ملفًا، إعدادًا أو مخططًا، يطلبه
+         المحرر بالحدث <code>fileread</code>، والملف المفتوح في <code>&lt;yaml-editor&gt;</code>
+         آخر يُقرأ منه أثناء كتابته.</p>
+    </div>
+    <div lang="zh-Hans">
+      <p>在 <code>&lt;code-editor&gt;</code> 中编辑 YAML，由在页面 worker 中运行的 NimYAML
+         语言服务器边输入边检查：代码检查和 JSON Schema 诊断、指令补全、悬停提示、格式化
+         （<kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>F</kbd>）、服务器的语法着色，以及以链接呈现的
+         Schema 引用（<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+点击）。</p>
+      <p>它自己的界面只有一行：光标所在节点的路径，可显示为 JSON 指针、JSON 路径或 URL 片段，
+         点击即可复制。页面的文件仍归页面所有：服务器需要某个文件（配置或 Schema）时，编辑器通过
+         <code>fileread</code> 事件请求；在另一个 <code>&lt;yaml-editor&gt;</code> 中打开的文件则
+         在输入时直接从中读取。</p>
+    </div>
+    <div lang="ja">
+      <p><code>&lt;code-editor&gt;</code> で編集する YAML を、ページの worker で動く NimYAML の
+         言語サーバーが入力中にチェックします。リントと JSON Schema の診断、ディレクティブの補完、
+         ホバー、整形（<kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>F</kbd>）、サーバーによる色分け、
+         リンクになったスキーマ参照（<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+クリック）に対応します。</p>
+      <p>独自の UI は 1 行だけです。カーソル位置のノードのパスを JSON ポインター、JSON パス、
+         URL フラグメントのいずれかで表示し、クリックでコピーします。ページのファイルはページの
+         ものです。サーバーが設定やスキーマを必要とすると、エディターは <code>fileread</code>
+         で求め、別の <code>&lt;yaml-editor&gt;</code> で開いているファイルは入力に合わせてそこから
+         読み取ります。</p>
+    </div>
+    <div lang="hi">
+      <p><code>&lt;code-editor&gt;</code> में YAML, जिसे पेज के worker में चलने वाला NimYAML का
+         लैंग्वेज सर्वर टाइप करते समय जाँचता है: लिंट और JSON Schema निदान, डायरेक्टिव का
+         स्वतः-पूरण, होवर, फ़ॉर्मैटिंग (<kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>F</kbd>), सर्वर
+         का रंगांकन, और लिंक के रूप में स्कीमा संदर्भ (<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+क्लिक)।</p>
+      <p>इसका अपना UI एक पंक्ति है: कर्सर वाले नोड का पाथ, JSON पॉइंटर, JSON पाथ या URL
+         फ़्रैगमेंट के रूप में, जो क्लिक करने पर कॉपी होता है। पेज की फ़ाइलें पेज की ही रहती हैं:
+         जब सर्वर को कोई कॉन्फ़िग या स्कीमा चाहिए, एडिटर <code>fileread</code> से माँगता है, और
+         किसी दूसरे <code>&lt;yaml-editor&gt;</code> में खुली फ़ाइल टाइप होते-होते वहीं से पढ़ी जाती है।</p>
+    </div>
+  </div>
+</header>
+
+<ol data-tour data-title="__MSG_tour_title__" hidden>
+  <li data-on="#config-editor">__MSG_tour_diagnostics__</li>
+  <li data-on="#schema-editor">__MSG_tour_schema__</li>
+  <li data-on="#paths-editor" data-do="set" data-name="path-format" data-value="path" data-expect='#paths-editor[path-format="path"]'>__MSG_tour_path__</li>
+</ol>
+
+<script type="application/json" data-doc-catalog lang="en">
+{
+  "page_title":     { "message": "YAML Editor UI Component", "description": "Browser tab title of this developer page." },
+  "ex_project":     { "message": "A document and its schema — edit the schema, and the document is checked against the new one; Ctrl/Cmd+click %SCHEMA" },
+  "ex_paths":       { "message": "The path at the cursor — pick a format under the text, click the path to copy it" },
+  "tour_title":     { "message": "Diagnostics, schemas and paths", "description": "Name of the guided tour of this page." },
+  "tour_diagnostics": { "message": "The server checks the text as it is typed: the lint config the page serves makes yes an error, and the schema rejects the port.", "description": "Tour step, on the document's editor. Keep yes as written." },
+  "tour_schema":    { "message": "The schema is open here, so the server reads it from this editor: raise maximum, and the document's error goes.", "description": "Tour step, on the schema's editor. Keep maximum as written." },
+  "tour_path":      { "message": "The line under the text names the node at the cursor; path-format=path writes it as a JSON Path.", "description": "Tour step: the tour sets path-format=\"path\". Keep path-format=path as written." },
+  "api_attribute_uri":         { "message": "The document's URI. A file: URI finds its config and relative schemas beside it, and gives its URL fragments a file name. Default: an untitled: one. Unique on a page." },
+  "api_attribute_path_format": { "message": "How the node at the cursor is named: pointer (default), path, fragment or absolute-fragment. The menu under the text sets it." },
+  "api_attribute_readonly":    { "message": "The text can be read, searched and navigated, not changed." },
+  "api_attribute_label":       { "message": "The editor's accessible name. Default: the catalog's \"YAML editor\"." },
+  "api_property_value":        { "message": "The text. Until set, the element's own text content." },
+  "api_method_format":         { "message": "Formats the text as yaml format would, in the style of its config." },
+  "api_method_infer_schema":   { "message": "Resolves to the JSON Schema of the text's documents: { schema, documents }." },
+  "api_method_path_text":      { "message": "Resolves to the path of the node at the cursor in a format (default: path-format's), or null." },
+  "api_method_files_changed":  { "message": "Tells the server files changed: { path: text, or null for none }. Files open in a yaml-editor need no telling." },
+  "api_event_valuechange":     { "message": "The person changed the text: { value }, a getter." },
+  "api_event_fileread":        { "message": "The server needs a file the page has: { path, respondWith(text, null or a promise) }, answered during the event. Unanswered, there is no such file." },
+  "api_event_linkopen":        { "message": "A link was Ctrl/Cmd+clicked: { target }. Cancel it to open the target yourself; otherwise a yaml-editor with that uri is focused, or a web page opens." },
+  "api_event_pathchange":      { "message": "The cursor moved to another node: { pointer, path, document, documents }." },
+  "api_event_pathformatchange": { "message": "The person picked another format from the menu: { format }, for the page to keep." },
+  "api_part_editor":           { "message": "The <code-editor> inside: its frame, border and background." },
+  "api_part_status":           { "message": "The line under the text, with the path and the menu." },
+  "api_css_code_editor_dim":   { "message": "Colour of the line under the text, as of the editor's line numbers." },
+  "api_css_code_editor_font":  { "message": "Font of the line under the text, as of the editor's text." },
+  "api_css_code_editor_line":  { "message": "Border of the format menu, as of the editor's borders." }
+}
+</script>
+<script type="application/json" data-doc-catalog lang="fr">
+{
+  "page_title":     { "message": "Composant d’interface YAML Editor" },
+  "ex_project":     { "message": "Un document et son schéma — modifiez le schéma, et le document est vérifié selon le nouveau ; Ctrl/Cmd+clic sur %SCHEMA" },
+  "ex_paths":       { "message": "Le chemin sous le curseur — choisissez un format sous le texte, cliquez le chemin pour le copier" },
+  "tour_title":     { "message": "Diagnostics, schémas et chemins" },
+  "tour_diagnostics": { "message": "Le serveur vérifie le texte pendant la frappe : la configuration de lint que sert la page fait de yes une erreur, et le schéma refuse le port." },
+  "tour_schema":    { "message": "Le schéma est ouvert ici, donc le serveur le lit dans cet éditeur : augmentez maximum, et l’erreur du document disparaît." },
+  "tour_path":      { "message": "La ligne sous le texte nomme le nœud sous le curseur ; path-format=path l’écrit en chemin JSON." },
+  "api_attribute_uri":         { "message": "L’URI du document. Une URI file: trouve sa configuration et ses schémas relatifs à côté de lui, et donne un nom de fichier à ses fragments d’URL. Par défaut : une URI untitled:. Unique dans une page." },
+  "api_attribute_path_format": { "message": "Comment le nœud sous le curseur est nommé : pointer (par défaut), path, fragment ou absolute-fragment. Le menu sous le texte le définit." },
+  "api_attribute_readonly":    { "message": "Le texte se lit, se cherche et se parcourt, sans se modifier." },
+  "api_attribute_label":       { "message": "Le nom accessible de l’éditeur. Par défaut : « Éditeur YAML » du catalogue." },
+  "api_property_value":        { "message": "Le texte. Tant qu’il n’est pas défini, le contenu textuel de l’élément." },
+  "api_method_format":         { "message": "Met le texte en forme comme yaml format, dans le style de sa configuration." },
+  "api_method_infer_schema":   { "message": "Se résout en schéma JSON des documents du texte : { schema, documents }." },
+  "api_method_path_text":      { "message": "Se résout en chemin du nœud sous le curseur dans un format (par défaut celui de path-format), ou null." },
+  "api_method_files_changed":  { "message": "Signale au serveur des fichiers modifiés : { chemin: texte, ou null s’il n’existe plus }. Les fichiers ouverts dans un yaml-editor n’ont pas à l’être." },
+  "api_event_valuechange":     { "message": "La personne a modifié le texte : { value }, un accesseur." },
+  "api_event_fileread":        { "message": "Le serveur a besoin d’un fichier de la page : { path, respondWith(texte, null ou une promesse) }, à appeler pendant l’événement. Sans réponse, le fichier n’existe pas." },
+  "api_event_linkopen":        { "message": "Un lien a été ouvert par Ctrl/Cmd+clic : { target }. Annulez-le pour ouvrir la cible vous-même ; sinon le yaml-editor de cette uri prend le focus, ou une page web s’ouvre." },
+  "api_event_pathchange":      { "message": "Le curseur est passé à un autre nœud : { pointer, path, document, documents }." },
+  "api_event_pathformatchange": { "message": "La personne a choisi un autre format dans le menu : { format }, que la page peut garder." },
+  "api_part_editor":           { "message": "Le <code-editor> intérieur : son cadre, sa bordure et son fond." },
+  "api_part_status":           { "message": "La ligne sous le texte, avec le chemin et le menu." },
+  "api_css_code_editor_dim":   { "message": "Couleur de la ligne sous le texte, comme des numéros de ligne de l’éditeur." },
+  "api_css_code_editor_font":  { "message": "Police de la ligne sous le texte, comme du texte de l’éditeur." },
+  "api_css_code_editor_line":  { "message": "Bordure du menu des formats, comme des bordures de l’éditeur." }
+}
+</script>
+<script type="application/json" data-doc-catalog lang="ar">
+{
+  "page_title":     { "message": "مكوّن واجهة YAML Editor" },
+  "ex_project":     { "message": "مستند ومخططه — عدّل المخطط فيُفحص المستند وفق الجديد؛ Ctrl/Cmd+نقرة على \u2066%SCHEMA\u2069" },
+  "ex_paths":       { "message": "المسار عند المؤشر — اختر صيغة تحت النص، وانقر المسار لنسخه" },
+  "tour_title":     { "message": "التشخيصات والمخططات والمسارات" },
+  "tour_diagnostics": { "message": "يفحص الخادم النص أثناء كتابته: إعداد التدقيق الذي تقدّمه الصفحة يجعل yes خطأً، والمخطط يرفض المنفذ." },
+  "tour_schema":    { "message": "المخطط مفتوح هنا، فيقرؤه الخادم من هذا المحرر: ارفع maximum فيزول خطأ المستند." },
+  "tour_path":      { "message": "السطر تحت النص يسمّي العقدة عند المؤشر؛ وpath-format=path يكتبه مسارَ JSON." },
+  "api_attribute_uri":         { "message": "معرّف URI للمستند. معرّف file: يجد إعداده ومخططاته النسبية بجانبه، ويعطي أجزاء عناوينه اسم ملف. الافتراضي: معرّف untitled:. فريد في الصفحة." },
+  "api_attribute_path_format": { "message": "كيف تُسمّى العقدة عند المؤشر: pointer (الافتراضي) أو path أو fragment أو absolute-fragment. تعيّنه القائمة تحت النص." },
+  "api_attribute_readonly":    { "message": "يُقرأ النص ويُبحث فيه ويُتنقّل، ولا يُغيَّر." },
+  "api_attribute_label":       { "message": "الاسم الذي تقرؤه التقنيات المساعدة. الافتراضي: \"محرر YAML\" من الكتالوج." },
+  "api_property_value":        { "message": "النص. وقبل تعيينه، المحتوى النصي للعنصر." },
+  "api_method_format":         { "message": "ينسّق النص كما يفعل yaml format، بأسلوب إعداده." },
+  "api_method_infer_schema":   { "message": "يُرجع وعدًا بمخطط JSON لمستندات النص: { schema, documents }." },
+  "api_method_path_text":      { "message": "يُرجع وعدًا بمسار العقدة عند المؤشر بصيغة (الافتراضي صيغة path-format)، أو null." },
+  "api_method_files_changed":  { "message": "يخبر الخادم بملفات تغيّرت: { المسار: النص، أو null إن لم يعد موجودًا }. ولا حاجة لذلك مع الملفات المفتوحة في yaml-editor." },
+  "api_event_valuechange":     { "message": "غيّر الشخص النص: { value }، دالة جلب." },
+  "api_event_fileread":        { "message": "يحتاج الخادم ملفًا لدى الصفحة: { path, respondWith(نص أو null أو وعد) }، يُجاب أثناء الحدث. وبلا إجابة لا يوجد الملف." },
+  "api_event_linkopen":        { "message": "فُتح رابط بـCtrl/Cmd+نقرة: { target }. ألغِه لتفتح الهدف بنفسك؛ وإلا انتقل التركيز إلى yaml-editor ذي هذا الـuri، أو فُتحت صفحة الويب." },
+  "api_event_pathchange":      { "message": "انتقل المؤشر إلى عقدة أخرى: { pointer, path, document, documents }." },
+  "api_event_pathformatchange": { "message": "اختار الشخص صيغة أخرى من القائمة: { format }، لتحتفظ بها الصفحة." },
+  "api_part_editor":           { "message": "عنصر <code-editor> الداخلي: إطاره وحدّه وخلفيته." },
+  "api_part_status":           { "message": "السطر تحت النص، بالمسار والقائمة." },
+  "api_css_code_editor_dim":   { "message": "لون السطر تحت النص، كلون أرقام أسطر المحرر." },
+  "api_css_code_editor_font":  { "message": "خط السطر تحت النص، كخط نص المحرر." },
+  "api_css_code_editor_line":  { "message": "حدّ قائمة الصيغ، كحدود المحرر." }
+}
+</script>
+<script type="application/json" data-doc-catalog lang="zh-Hans">
+{
+  "page_title":     { "message": "YAML 编辑器界面组件" },
+  "ex_project":     { "message": "一个文档及其 Schema——修改 Schema，文档即按新的 Schema 检查；Ctrl/Cmd+点击 %SCHEMA" },
+  "ex_paths":       { "message": "光标处的路径——在文本下方选择格式，点击路径即可复制" },
+  "tour_title":     { "message": "诊断、Schema 与路径" },
+  "tour_diagnostics": { "message": "服务器边输入边检查文本：页面提供的代码检查配置把 yes 视为错误，Schema 拒绝该端口。" },
+  "tour_schema":    { "message": "Schema 在这里打开，因此服务器从这个编辑器读取它：调高 maximum，文档的错误随即消失。" },
+  "tour_path":      { "message": "文本下方的一行显示光标处的节点；path-format=path 将其写成 JSON 路径。" },
+  "api_attribute_uri":         { "message": "文档的 URI。file: URI 会在其旁边查找配置和相对 Schema，并为其 URL 片段提供文件名。默认：一个 untitled: URI。在页面中必须唯一。" },
+  "api_attribute_path_format": { "message": "光标处节点的命名方式：pointer（默认）、path、fragment 或 absolute-fragment。由文本下方的菜单设置。" },
+  "api_attribute_readonly":    { "message": "文本可以阅读、搜索和浏览，但不能修改。" },
+  "api_attribute_label":       { "message": "编辑器的无障碍名称。默认：目录中的“YAML 编辑器”。" },
+  "api_property_value":        { "message": "文本。在设置之前，它是元素自身的文本内容。" },
+  "api_method_format":         { "message": "像 yaml format 那样按配置的风格格式化文本。" },
+  "api_method_infer_schema":   { "message": "解析为文本中各文档的 JSON Schema：{ schema, documents }。" },
+  "api_method_path_text":      { "message": "解析为光标处节点在某种格式下的路径（默认采用 path-format 的格式），或 null。" },
+  "api_method_files_changed":  { "message": "告知服务器文件已更改：{ 路径: 文本，若已不存在则为 null }。在 yaml-editor 中打开的文件无需告知。" },
+  "api_event_valuechange":     { "message": "用户修改了文本：{ value }，一个 getter。" },
+  "api_event_fileread":        { "message": "服务器需要页面拥有的文件：{ path, respondWith(文本、null 或 Promise) }，须在事件期间回应。未回应即视为文件不存在。" },
+  "api_event_linkopen":        { "message": "通过 Ctrl/Cmd+点击打开了链接：{ target }。取消该事件可自行打开目标；否则聚焦具有该 uri 的 yaml-editor，或打开网页。" },
+  "api_event_pathchange":      { "message": "光标移到了另一个节点：{ pointer, path, document, documents }。" },
+  "api_event_pathformatchange": { "message": "用户从菜单中选择了另一种格式：{ format }，供页面保存。" },
+  "api_part_editor":           { "message": "内部的 <code-editor>：其框架、边框和背景。" },
+  "api_part_status":           { "message": "文本下方的一行，包含路径和菜单。" },
+  "api_css_code_editor_dim":   { "message": "文本下方一行的颜色，与编辑器行号相同。" },
+  "api_css_code_editor_font":  { "message": "文本下方一行的字体，与编辑器文本相同。" },
+  "api_css_code_editor_line":  { "message": "格式菜单的边框，与编辑器的边框相同。" }
+}
+</script>
+<script type="application/json" data-doc-catalog lang="ja">
+{
+  "page_title":     { "message": "YAML エディター UI コンポーネント" },
+  "ex_project":     { "message": "ドキュメントとそのスキーマ — スキーマを編集すると、ドキュメントは新しいスキーマでチェックされます。%SCHEMA を Ctrl/Cmd+クリック" },
+  "ex_paths":       { "message": "カーソル位置のパス — テキストの下で形式を選び、パスをクリックしてコピー" },
+  "tour_title":     { "message": "診断、スキーマ、パス" },
+  "tour_diagnostics": { "message": "サーバーは入力中のテキストをチェックします。ページが提供するリント設定は yes をエラーにし、スキーマはポートを拒否します。" },
+  "tour_schema":    { "message": "スキーマはここで開いているので、サーバーはこのエディターから読み取ります。maximum を上げると、ドキュメントのエラーは消えます。" },
+  "tour_path":      { "message": "テキストの下の行はカーソル位置のノードを示します。path-format=path にすると JSON パスで書きます。" },
+  "api_attribute_uri":         { "message": "ドキュメントの URI。file: URI なら設定と相対スキーマをその隣で探し、URL フラグメントにファイル名を付けます。既定は untitled: の URI。ページ内で一意です。" },
+  "api_attribute_path_format": { "message": "カーソル位置のノードの表し方：pointer（既定）、path、fragment、absolute-fragment。テキストの下のメニューで設定されます。" },
+  "api_attribute_readonly":    { "message": "テキストは読む、検索する、移動することはできますが、変更はできません。" },
+  "api_attribute_label":       { "message": "エディターのアクセシブルな名前。既定はカタログの「YAML エディター」です。" },
+  "api_property_value":        { "message": "テキスト。設定されるまでは要素自身のテキスト内容です。" },
+  "api_method_format":         { "message": "yaml format と同じく、設定のスタイルでテキストを整形します。" },
+  "api_method_infer_schema":   { "message": "テキストのドキュメントの JSON Schema に解決されます：{ schema, documents }。" },
+  "api_method_path_text":      { "message": "カーソル位置のノードのパスを指定の形式（既定は path-format の形式）で返す Promise。ノードがなければ null。" },
+  "api_method_files_changed":  { "message": "ファイルの変更をサーバーに伝えます：{ パス: テキスト、なくなったなら null }。yaml-editor で開いているファイルは伝える必要がありません。" },
+  "api_event_valuechange":     { "message": "ユーザーがテキストを変更しました：{ value }（ゲッター）。" },
+  "api_event_fileread":        { "message": "サーバーがページのファイルを必要としています：{ path, respondWith(テキスト、null、または Promise) }。イベント中に応答します。応答がなければファイルは存在しません。" },
+  "api_event_linkopen":        { "message": "リンクが Ctrl/Cmd+クリックされました：{ target }。キャンセルすれば自分で開けます。そうでなければその uri の yaml-editor にフォーカスするか、Web ページを開きます。" },
+  "api_event_pathchange":      { "message": "カーソルが別のノードに移りました：{ pointer, path, document, documents }。" },
+  "api_event_pathformatchange": { "message": "ユーザーがメニューから別の形式を選びました：{ format }。ページが保存するためのものです。" },
+  "api_part_editor":           { "message": "内側の <code-editor>：その枠、境界線、背景。" },
+  "api_part_status":           { "message": "テキストの下の行。パスとメニューを含みます。" },
+  "api_css_code_editor_dim":   { "message": "テキストの下の行の色。エディターの行番号と同じです。" },
+  "api_css_code_editor_font":  { "message": "テキストの下の行のフォント。エディターのテキストと同じです。" },
+  "api_css_code_editor_line":  { "message": "形式メニューの境界線。エディターの境界線と同じです。" }
+}
+</script>
+<script type="application/json" data-doc-catalog lang="hi">
+{
+  "page_title":     { "message": "YAML एडिटर UI कंपोनेंट" },
+  "ex_project":     { "message": "एक दस्तावेज़ और उसका स्कीमा — स्कीमा बदलें, और दस्तावेज़ नए स्कीमा से जाँचा जाता है; %SCHEMA पर Ctrl/Cmd+क्लिक करें" },
+  "ex_paths":       { "message": "कर्सर का पाथ — टेक्स्ट के नीचे प्रारूप चुनें, कॉपी करने के लिए पाथ पर क्लिक करें" },
+  "tour_title":     { "message": "निदान, स्कीमा और पाथ" },
+  "tour_diagnostics": { "message": "सर्वर टाइप करते समय टेक्स्ट जाँचता है: पेज की दी हुई लिंट कॉन्फ़िग yes को त्रुटि बनाती है, और स्कीमा पोर्ट को अस्वीकार करता है।" },
+  "tour_schema":    { "message": "स्कीमा यहाँ खुला है, इसलिए सर्वर इसे इसी एडिटर से पढ़ता है: maximum बढ़ाएँ, और दस्तावेज़ की त्रुटि हट जाती है।" },
+  "tour_path":      { "message": "टेक्स्ट के नीचे की पंक्ति कर्सर वाले नोड का नाम बताती है; path-format=path उसे JSON पाथ के रूप में लिखता है।" },
+  "api_attribute_uri":         { "message": "दस्तावेज़ का URI। file: URI अपनी कॉन्फ़िग और सापेक्ष स्कीमा बगल में ढूँढता है, और अपने URL फ़्रैगमेंट को फ़ाइल नाम देता है। डिफ़ॉल्ट: एक untitled: URI। पेज पर अद्वितीय।" },
+  "api_attribute_path_format": { "message": "कर्सर वाले नोड का नाम कैसे लिखा जाए: pointer (डिफ़ॉल्ट), path, fragment या absolute-fragment। टेक्स्ट के नीचे का मेनू इसे सेट करता है।" },
+  "api_attribute_readonly":    { "message": "टेक्स्ट पढ़ा, खोजा और नेविगेट किया जा सकता है, बदला नहीं जा सकता।" },
+  "api_attribute_label":       { "message": "एडिटर का सुलभ नाम। डिफ़ॉल्ट: कैटलॉग का \"YAML एडिटर\"।" },
+  "api_property_value":        { "message": "टेक्स्ट। सेट होने तक, एलिमेंट की अपनी टेक्स्ट सामग्री।" },
+  "api_method_format":         { "message": "टेक्स्ट को yaml format की तरह, उसकी कॉन्फ़िग की शैली में फ़ॉर्मैट करता है।" },
+  "api_method_infer_schema":   { "message": "टेक्स्ट के दस्तावेज़ों के JSON Schema पर रिज़ॉल्व होता है: { schema, documents }।" },
+  "api_method_path_text":      { "message": "कर्सर वाले नोड के पाथ पर किसी प्रारूप में (डिफ़ॉल्ट: path-format का) रिज़ॉल्व होता है, या null।" },
+  "api_method_files_changed":  { "message": "सर्वर को बदली फ़ाइलें बताता है: { पाथ: टेक्स्ट, या न रहने पर null }। yaml-editor में खुली फ़ाइलों को बताने की ज़रूरत नहीं।" },
+  "api_event_valuechange":     { "message": "व्यक्ति ने टेक्स्ट बदला: { value }, एक गेटर।" },
+  "api_event_fileread":        { "message": "सर्वर को पेज की कोई फ़ाइल चाहिए: { path, respondWith(टेक्स्ट, null या promise) }, इवेंट के दौरान जवाब दें। जवाब न मिले तो फ़ाइल नहीं है।" },
+  "api_event_linkopen":        { "message": "Ctrl/Cmd+क्लिक से एक लिंक खोला गया: { target }। लक्ष्य खुद खोलने के लिए इसे रद्द करें; वरना उस uri वाले yaml-editor पर फ़ोकस जाता है, या वेब पेज खुलता है।" },
+  "api_event_pathchange":      { "message": "कर्सर दूसरे नोड पर गया: { pointer, path, document, documents }।" },
+  "api_event_pathformatchange": { "message": "व्यक्ति ने मेनू से दूसरा प्रारूप चुना: { format }, पेज के सहेजने के लिए।" },
+  "api_part_editor":           { "message": "अंदर का <code-editor>: उसका फ़्रेम, सीमा और पृष्ठभूमि।" },
+  "api_part_status":           { "message": "टेक्स्ट के नीचे की पंक्ति, पाथ और मेनू के साथ।" },
+  "api_css_code_editor_dim":   { "message": "टेक्स्ट के नीचे की पंक्ति का रंग, एडिटर के लाइन नंबरों जैसा।" },
+  "api_css_code_editor_font":  { "message": "टेक्स्ट के नीचे की पंक्ति का फ़ॉन्ट, एडिटर के टेक्स्ट जैसा।" },
+  "api_css_code_editor_line":  { "message": "प्रारूप मेनू की सीमा, एडिटर की सीमाओं जैसी।" }
+}
+</script>
+
+<section class="example" data-title="__MSG_ex_project__">
+  <div class="project">
+<yaml-editor id="config-editor" uri="file:///project/config.yaml">
+%SCHEMA schema.yaml
+---
+# A service, checked against schema.yaml beside it and linted
+# by the .nimyaml-lint.yaml the page serves (fileread).
+name: inventory
+port: 80800        # the schema allows at most 65535
+enabled: yes       # a string in YAML 1.2; the lint config makes it an error
+tags: [api,   internal]
+owner: &amp;team platform
+backup: *team
+</yaml-editor>
+<yaml-editor id="schema-editor" uri="file:///project/schema.yaml">
+$schema: https://json-schema.org/draft/2020-12/schema
+type: object
+required: [name, port]
+properties:
+  name: {type: string}
+  port: {type: integer, minimum: 1, maximum: 65535}
+  enabled: {type: boolean}
+  tags: {type: array, items: {type: string}}
+</yaml-editor>
+  </div>
+  <!-- Preview-only: the page's files, as a site would keep them; the server asks for them. -->
+  <script>
+    const pageFiles = { '/project/.nimyaml-lint.yaml': 'rules:\n  truthy: {level: error}\n' };
+    document.addEventListener('fileread', e => {
+      if (e.detail.path in pageFiles) e.detail.respondWith(pageFiles[e.detail.path]);
+    });
+  </script>
+</section>
+
+<section class="example" data-title="__MSG_ex_paths__">
+<yaml-editor id="paths-editor">
+servers:
+  - host: example.org
+    ports: [80, 443]
+    "a key with spaces": true
+---
+second: document
+</yaml-editor>
+</section>
+
+<!-- Preview mode: localizes this page, then imports the component it names and decorates both. -->
+<script type="module">
+  import preview from "../html-template-preview.js";
+  preview();
+</script>
+
+<!-- Tests: also preview-only. They mount their own off-screen editors, all at once, since each
+     check waits on the server, which answers a quiet moment after each change, and a page has
+     ten seconds; then each check waits for its own condition. -->
+<script type="module">
+  import { runTests, mount, settle, lintProblems, docProblems } from "../html-template-test.js";
+  import { messages } from "../template-pipeline.js";
+  import { EditorView } from "../code-editor/codemirror.js";
+
+  await customElements.whenDefined('yaml-editor');
+  const bundle = messages('yaml-editor');
+  const inner = el => el.shadowRoot.querySelector('code-editor').shadowRoot;
+  const viewOf = el => EditorView.findFromDOM(inner(el).querySelector('.cm-editor'));
+  const shown = el => el.shadowRoot.querySelector('.path bdi').textContent;
+  const until = async (condition, ms = 6000) => {
+    for (const end = Date.now() + ms; Date.now() < end; await new Promise(r => setTimeout(r, 50))) {
+      try { const value = await condition(); if (value) return value; } catch {}
+    }
+    return false;
+  };
+  const cursorAt = (el, text) => {
+    const view = viewOf(el);
+    view.dispatch({ selection: { anchor: view.state.doc.toString().indexOf(text) } });
+  };
+
+  // the test files the page serves, beside the examples'
+  const files = { '/t/.nimyaml-lint.yaml': 'rules:\n  truthy: {level: error}\n' };
+  const asked = [];
+  document.addEventListener('fileread', e => {
+    asked.push(e.detail.path);
+    if (e.detail.path in files) e.detail.respondWith(files[e.detail.path]);
+  });
+
+  runTests(async eq => {
+    const doc = mount('<yaml-editor uri="file:///t/doc.yaml">\na: 1\na: 2\nb: [x, y]\nflag: yes\n</yaml-editor>');
+    const config = mount('<yaml-editor uri="file:///t/config.yaml">%SCHEMA schema.yaml\n---\nport: 80800\n</yaml-editor>');
+    const schema = mount('<yaml-editor uri="file:///t/schema.yaml">properties: {port: {maximum: 65535}}\n</yaml-editor>');
+    const plain = mount('<yaml-editor readonly>\nk: v\n</yaml-editor>');
+    await settle();
+
+    eq('Y1', 'the text is the element\'s content, less the newlines inside its tags', doc.value, 'a: 1\na: 2\nb: [x, y]\nflag: yes');
+    const heard = [];
+    doc.addEventListener('pathchange', e => heard.push(e.detail.pointer));
+    cursorAt(doc, 'y]');
+
+    const [lint, highlighting, pointer, truthy, schemaError] = await Promise.all([
+      until(() => inner(doc).querySelector('.cm-lintRange-error')),
+      until(() => inner(doc).querySelector('.yamllsp-property.tok-propertyName')),
+      until(() => shown(doc) === '/b/1'),
+      until(() => asked.includes('/t/.nimyaml-lint.yaml') && inner(doc).querySelectorAll('.cm-lintRange-error').length >= 2),
+      until(() => inner(config).querySelector('.cm-lintRange-error')),
+    ]);
+    eq('Y2', 'the server\'s diagnostics are drawn', !!lint, true);
+    eq('Y3', 'and its highlighting', !!highlighting, true);
+    eq('Y4', 'the line under the text names the node at the cursor by its JSON Pointer', !!pointer, true);
+    eq('Y5', 'and pathchange says so', heard.at(-1), '/b/1');
+    eq('Y6', 'a config the page serves through fileread is read and used', !!truthy, true);
+    eq('Y7', 'a schema open in another editor is read from it', !!schemaError, true);
+
+    doc.setAttribute('path-format', 'path');
+    eq('Y8', 'path-format=path writes a JSON Path', !!await until(() => shown(doc) === '$.b[1]'), true);
+    const picked = [];
+    doc.addEventListener('pathformatchange', e => picked.push(e.detail.format));
+    const menu = doc.shadowRoot.querySelector('select');
+    menu.value = 'fragment';
+    menu.dispatchEvent(new Event('change'));
+    eq('Y9', 'the menu sets path-format, and says so', [doc.getAttribute('path-format'), picked], ['fragment', ['fragment']]);
+    eq('Y10', 'a fragment follows the file\'s name', !!await until(() => shown(doc) === 'doc.yaml#/b/1'), true);
+    eq('Y11', 'pathText gives any format', await doc.pathText('absolute-fragment'), 'file:///t/doc.yaml#/b/1');
+
+    const schemaView = viewOf(schema);
+    const at = schemaView.state.doc.toString().indexOf('65535');
+    schemaView.dispatch({ changes: { from: at, to: at + 5, insert: '100000' }, userEvent: 'input.type' });
+    eq('Y12', 'an edit of the schema revalidates the document that names it',
+       !!await until(() => !inner(config).querySelector('.cm-lintRange-error')), true);
+
+    const opened = [];
+    config.addEventListener('linkopen', e => { opened.push(e.detail.target); e.preventDefault(); });
+    const link = await until(() => inner(config).querySelector('.cm-yamllsp-link'));
+    link?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, ctrlKey: true, metaKey: true }));
+    eq('Y13', 'Ctrl/Cmd+click on a schema reference is a linkopen', opened, ['file:///t/schema.yaml']);
+
+    const changes = [];
+    plain.addEventListener('valuechange', e => changes.push(e.detail.value));
+    plain.removeAttribute('readonly');
+    await settle();
+    const view = viewOf(plain);
+    view.dispatch({ changes: { from: view.state.doc.length, insert: '\nlist: [1,   2]' }, userEvent: 'input.type' });
+    eq('Y14', 'a person\'s edit is this element\'s valuechange', changes, ['k: v\nlist: [1,   2]']);
+    plain.format();
+    eq('Y15', 'format() rewrites the text as yaml format would',
+       !!await until(() => plain.value === 'k: v\nlist: [1, 2]\n'), true);
+    const { schema: inferred } = await plain.inferSchema();
+    eq('Y16', 'inferSchema() writes the schema of the text', /list:/.test(inferred ?? ''), true);
+
+    const ce = plain.shadowRoot.querySelector('code-editor');
+    plain.toggleAttribute('readonly', true);
+    await settle();
+    eq('Y17', 'readonly and label reach the editor; label defaults to the catalog\'s',
+       [ce.hasAttribute('readonly'), ce.getAttribute('label')], [true, bundle.getMessage('editor_label')]);
+    eq('Y18', 'the menu speaks the catalog',
+       [menu.getAttribute('aria-label'), ...[...menu.options].map(o => o.text)],
+       ['path_format', 'format_pointer', 'format_path', 'format_fragment', 'format_absolute_fragment'].map(n => bundle.getMessage(n)));
+
+    eq('Y19', 'template lints clean (a11y)', lintProblems('yaml-editor'), []);
+    eq('Y20', 'this page reads fully in the UI locale', await docProblems(), []);
+  });
+</script>
 </body>
 </html>

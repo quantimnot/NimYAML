@@ -1,0 +1,129 @@
+<!doctype html>
+<meta charset="utf-8">
+<!--
+  <yaml-editor>, the component: what a host page imports,
+    <link rel="html-import" href="yaml-editor/yaml-editor.html">
+  and nothing else, so it is served as it is written, with no build. html-import.js reads all of
+  it: the component it builds on (<code-editor>, from the ui-web-component workspace this package
+  links), its catalogs and its template, whose data-module is its behaviour. Its documentation,
+  examples, tour and tests are its developer page, index.html beside it.
+
+  It has little UI of its own: the editor is <code-editor>'s, and what the server adds to it
+  (diagnostics, completion, hovers, highlighting, links) is drawn by CodeMirror. Its own is the
+  line under the text naming the node at the cursor, and the menu of the formats it names it in.
+-->
+
+<link rel="html-import" href="../code-editor/code-editor.html">
+
+<!-- i18n catalogs (WebExtensions messages.json format). First is the default locale.
+     Paths themselves are data, never translated; these are the words around them. -->
+<script type="application/json" data-i18n-catalog lang="en">
+{
+  "editor_label":             { "message": "YAML editor", "description": "Accessible name of the editor when the page gives it no label." },
+  "path_format":              { "message": "Path format", "description": "Accessible name of the menu that picks how the path of the node at the cursor is written." },
+  "format_pointer":           { "message": "JSON Pointer", "description": "Menu choice: a path such as /servers/0/host (RFC 6901). A standard's name; translate as your language names it." },
+  "format_path":              { "message": "JSON Path", "description": "Menu choice: a path such as $.servers[0].host (RFC 9535). A standard's name." },
+  "format_fragment":          { "message": "URL Fragment", "description": "Menu choice: the file's name and a pointer, such as config.yaml#/servers/0." },
+  "format_absolute_fragment": { "message": "Absolute URL Fragment", "description": "Menu choice: the file's whole URL and a pointer, such as file:///home/config.yaml#/servers/0." },
+  "click_to_copy":            { "message": "Click to copy", "description": "Tooltip of the path of the node at the cursor: clicking it copies the path." },
+  "path_root":                { "message": "(root)", "description": "Shown instead of a path when the cursor is on a document's top-level node, whose JSON Pointer is empty." }
+}
+</script>
+<script type="application/json" data-i18n-catalog lang="fr">
+{
+  "editor_label":             { "message": "Éditeur YAML" },
+  "path_format":              { "message": "Format du chemin" },
+  "format_pointer":           { "message": "Pointeur JSON" },
+  "format_path":              { "message": "Chemin JSON" },
+  "format_fragment":          { "message": "Fragment d’URL" },
+  "format_absolute_fragment": { "message": "Fragment d’URL absolue" },
+  "click_to_copy":            { "message": "Cliquer pour copier" },
+  "path_root":                { "message": "(racine)" }
+}
+</script>
+<script type="application/json" data-i18n-catalog lang="ar">
+{
+  "editor_label":             { "message": "محرر YAML" },
+  "path_format":              { "message": "صيغة المسار" },
+  "format_pointer":           { "message": "مؤشر JSON" },
+  "format_path":              { "message": "مسار JSON" },
+  "format_fragment":          { "message": "جزء عنوان URL" },
+  "format_absolute_fragment": { "message": "جزء عنوان URL مطلق" },
+  "click_to_copy":            { "message": "انقر للنسخ" },
+  "path_root":                { "message": "(الجذر)" }
+}
+</script>
+<script type="application/json" data-i18n-catalog lang="zh-Hans">
+{
+  "editor_label":             { "message": "YAML 编辑器" },
+  "path_format":              { "message": "路径格式" },
+  "format_pointer":           { "message": "JSON 指针" },
+  "format_path":              { "message": "JSON 路径" },
+  "format_fragment":          { "message": "URL 片段" },
+  "format_absolute_fragment": { "message": "绝对 URL 片段" },
+  "click_to_copy":            { "message": "点击复制" },
+  "path_root":                { "message": "（根）" }
+}
+</script>
+<script type="application/json" data-i18n-catalog lang="ja">
+{
+  "editor_label":             { "message": "YAML エディター" },
+  "path_format":              { "message": "パスの形式" },
+  "format_pointer":           { "message": "JSON ポインター" },
+  "format_path":              { "message": "JSON パス" },
+  "format_fragment":          { "message": "URL フラグメント" },
+  "format_absolute_fragment": { "message": "絶対 URL フラグメント" },
+  "click_to_copy":            { "message": "クリックしてコピー" },
+  "path_root":                { "message": "（ルート）" }
+}
+</script>
+<script type="application/json" data-i18n-catalog lang="hi">
+{
+  "editor_label":             { "message": "YAML एडिटर" },
+  "path_format":              { "message": "पाथ का प्रारूप" },
+  "format_pointer":           { "message": "JSON पॉइंटर" },
+  "format_path":              { "message": "JSON पाथ" },
+  "format_fragment":          { "message": "URL फ़्रैगमेंट" },
+  "format_absolute_fragment": { "message": "निरपेक्ष URL फ़्रैगमेंट" },
+  "click_to_copy":            { "message": "कॉपी करने के लिए क्लिक करें" },
+  "path_root":                { "message": "(रूट)" }
+}
+</script>
+
+<!-- The editor fills the element; the status line under it is the component's own. Its colours
+     and font are <code-editor>'s custom properties, so a page that restyles the editor restyles
+     this line with it. The path is written left to right, as code is, in any page: a bdi keeps
+     `$.a` or `#2 /a` from being reordered in a right-to-left one, while the line itself follows
+     the page's direction. -->
+<template data-element="yaml-editor" data-i18n data-module="yaml-editor.js" data-delegates-focus>
+  <style>
+    :host { display: flex; flex-direction: column; }
+    :host([hidden]) { display: none; }
+    code-editor { flex: 1; min-block-size: 0; }
+    .status {
+      display: flex; align-items: center; gap: .5rem; padding-block: 2px; padding-inline: 4px;
+      color: var(--code-editor-dim, #6e7781); font-size: 12px;
+      font-family: var(--code-editor-font, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+    }
+    .path {
+      flex: 1; min-inline-size: 0; text-align: start; cursor: copy;
+      font: inherit; color: inherit; background: none; border: 0; padding: 2px 4px; border-radius: 4px;
+      white-space: pre; overflow: hidden; text-overflow: ellipsis;
+    }
+    .path:hover, .path:focus-visible { background: color-mix(in srgb, currentColor 12%, transparent); }
+    select {
+      font: inherit; color: inherit; background: transparent; border-radius: 4px;
+      border: 1px solid var(--code-editor-line, #d0d7de);
+    }
+  </style>
+  <code-editor data-ref="editor" part="editor" language="yaml"></code-editor>
+  <div class="status" part="status">
+    <button class="path" type="button" data-ref="path" data-on="click:copyShown" title="__MSG_click_to_copy__"><bdi dir="ltr" translate="no" data-ref="pathText"></bdi></button>
+    <select data-ref="format" data-on="change:pickFormat" aria-label="__MSG_path_format__">
+      <option value="pointer">__MSG_format_pointer__</option>
+      <option value="path">__MSG_format_path__</option>
+      <option value="fragment">__MSG_format_fragment__</option>
+      <option value="absolute-fragment">__MSG_format_absolute_fragment__</option>
+    </select>
+  </div>
+</template>

@@ -1237,11 +1237,11 @@ binary there or point them at it:
 * **Helix**: merge `editors/helix/languages.toml` into
   `~/.config/helix/languages.toml`, or copy it to `.helix/languages.toml` in a
   project. `hx --health yaml` shows whether `yaml` was found.
-* **CodeMirror** (in a browser): `editors/codemirror` connects CodeMirror 6,
-  through the `<code-editor>` web component, to the language server compiled
-  to JavaScript and running in a worker, with the server's highlighting,
-  schema links and the JSON Pointer at the cursor on top; see
-  [editors/codemirror/README.md](editors/codemirror/README.md).
+* **CodeMirror** (in a browser): `editors/codemirror` is `<yaml-editor>`, a
+  web component built on the ui-web-component collection's `<code-editor>`,
+  checked by the language server compiled to JavaScript and running in a
+  worker, with the server's highlighting, schema links and the path at the
+  cursor; see [editors/codemirror/README.md](editors/codemirror/README.md).
 
 ## The `yaml` Command
 
