@@ -53,7 +53,7 @@
 ## JSON has no tags.
 
 import std/[algorithm, math, sets, strutils, tables, unicode]
-import dom, private/jsonmodel
+import dom, private/[jsonmodel, refidentity]
 
 when defined(nimPreviewSlimSystem):
   import std/formatfloat
@@ -194,7 +194,7 @@ proc cmpUnits(a, b: seq[uint16]): int =
 # ============================================================================
 
 proc addCanonical(output: var string, node: YamlNode,
-    ancestors: var HashSet[pointer]) {.raises: [YamlJcsError].} =
+    ancestors: var HashSet[Identity]) {.raises: [YamlJcsError].} =
   if node.kind == yScalar:
     let scalar = node.jsonScalar
     case scalar.kind
@@ -207,7 +207,7 @@ proc addCanonical(output: var string, node: YamlNode,
     of jkString: output.addEcmaString(scalar.str)
     of jkArray, jkObject: discard # not scalars
     return
-  if ancestors.containsOrIncl(cast[pointer](node)):
+  if ancestors.containsOrIncl(identity(node)):
     raise jcsError("a cyclic graph has no JSON value")
   case node.kind
   of ySequence:
@@ -236,11 +236,11 @@ proc addCanonical(output: var string, node: YamlNode,
       output.addCanonical(member.value, ancestors)
     output.add('}')
   of yScalar: discard # handled above
-  ancestors.excl(cast[pointer](node))
+  ancestors.excl(identity(node))
 
 proc canonicalJson*(node: YamlNode): string {.raises: [YamlJcsError].} =
   ## Returns the JCS canonical form of ``node``, read as JSON. Raises
   ## ``YamlJcsError`` where the graph has no faithful JSON value, as listed
   ## in the module documentation.
-  var ancestors = initHashSet[pointer]()
+  var ancestors = initHashSet[Identity]()
   result.addCanonical(node, ancestors)

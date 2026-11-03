@@ -52,13 +52,20 @@
 ## ``seek`` or ``stream``), which override the ``memory`` section of the
 ## config, and ``--verbose``, which prints how each input is read.
 
-import std/[options, os, parseopt, streams, strutils, terminal]
-when defined(nimPreviewSlimSystem):
-  import std/syncio
+import std/[options, parseopt, strutils]
+when defined(js):
+  # jshost opens files by path, has ``isatty``, and stands in for std/os;
+  # std/streams would open files through syncio, std/terminal needs a tty
+  import std/streams except newFileStream, openFileStream
+  import ../yaml/private/jshost
+else:
+  import std/[os, streams, terminal]
+  when defined(nimPreviewSlimSystem):
+    import std/syncio
 import ../yaml/[data, dom, dumping, loading, parser, presenter, stream, cbor,
     jsonpath, toolconfig, edit, jsonpatch, mergepatch, merge, jcs, diff,
     nodeindex, spans, memory, source, schemainfer]
-import ../yaml/private/lex
+import ../yaml/private/[lex, charcopy]
 from ../yaml/hints import guessType, TypeHint
 import yamllint, yamlexpand, yamllsp
 
@@ -631,9 +638,7 @@ proc commit(b: DocumentBuffer) =
 
 proc documentBufferWrite(s: Stream, buffer: pointer, bufLen: int) =
   let b = DocumentBuffer(s)
-  let old = b.data.len
-  b.data.setLen(old + bufLen)
-  if bufLen > 0: copyMem(addr b.data[old], buffer, bufLen)
+  b.data.addStreamBuffer(buffer, bufLen)
   if b.data.len > documentBufferSize: b.commit()
 
 proc normalizing(s: YamlStream, resolveTags: bool,
@@ -667,15 +672,14 @@ type TrimmingStream = ref object of StreamObj
 
 proc trimmingWrite(s: Stream, buffer: pointer, bufLen: int) =
   let t = TrimmingStream(s)
-  let data = cast[ptr UncheckedArray[char]](buffer)
   var last = bufLen - 1
-  while last >= 0 and data[last] in Whitespace: dec last
+  while last >= 0 and streamBufferChar(buffer, last) in Whitespace: dec last
   if last >= 0:
     if t.held.len > 0:
       t.target.write(t.held)
       t.held.setLen(0)
     t.target.writeData(buffer, last + 1)
-  for i in last + 1 ..< bufLen: t.held.add(data[i])
+  for i in last + 1 ..< bufLen: t.held.add(streamBufferChar(buffer, i))
 
 proc writeStream(target: Stream, events: YamlStream, format: DataFormat,
     yamlStyle: FormatConfig, budget: MemoryBudget) =
@@ -854,9 +858,17 @@ proc comparingWrite(s: Stream, buffer: pointer, bufLen: int) =
   if c.differs or bufLen == 0: return
   c.buffer.setLen(bufLen)
   var n: int
-  {.cast(tags: []).}: n = c.expected.readData(addr c.buffer[0], bufLen)
-  if n != bufLen or not equalMem(addr c.buffer[0], buffer, bufLen):
+  {.cast(tags: []).}: n = c.expected.readDataStr(c.buffer, 0 ..< bufLen)
+  if n != bufLen:
     c.differs = true
+    return
+  when defined(js):
+    for i in 0 ..< bufLen:
+      if c.buffer[i] != streamBufferChar(buffer, i):
+        c.differs = true
+        return
+  else:
+    if not equalMem(addr c.buffer[0], buffer, bufLen): c.differs = true
 
 proc differs(c: ComparingStream): bool =
   ## Whether what was written differs from all of ``expected``.
@@ -871,10 +883,10 @@ proc sameContent(a: string, b: YamlSource): bool =
   defer: fa.close()
   var x, y = newString(65536)
   while true:
-    let n = fa.readData(addr x[0], x.len)
-    if fb.readData(addr y[0], y.len) != n: return false
+    let n = fa.readDataStr(x, 0 ..< x.len)
+    if fb.readDataStr(y, 0 ..< y.len) != n: return false
     if n == 0: return true
-    if not equalMem(addr x[0], addr y[0], n): return false
+    if not sameChars(x, y, n): return false
 
 proc hasComments(src: YamlSource): bool =
   ## Whether ``src`` has a comment. False if the lexer fails, which

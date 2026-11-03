@@ -109,7 +109,7 @@
 
 import std/[base64, json, sets, strutils, tables, unicode]
 import dom, data, loading, fragment,
-    private/[jsonmodel, decimal, uri, ecmaregex, formats]
+    private/[jsonmodel, decimal, uri, ecmaregex, formats, refidentity]
 
 when defined(nimPreviewSlimSystem):
   import std/[assertions, formatfloat]
@@ -211,8 +211,8 @@ type
     ## each compiled schema has one on top of its registry's.
     parent: Store
     resources: Table[string, Resource]
-    nodes: Table[pointer, NodeInfo]
-    compiled: Table[pointer, Schema]
+    nodes: Table[Identity, NodeInfo]
+    compiled: Table[Identity, Schema]
     documents: seq[YamlNode] ## keeps discovered nodes alive
 
   SchemaRegistry* = ref object
@@ -434,9 +434,9 @@ proc isMultipleOf(a, b: Num): bool =
   result = q == float64(int64(q))
 
 proc instanceEquals(a, b: YamlNode,
-    assumed: var HashSet[(pointer, pointer)]): bool =
+    assumed: var HashSet[(Identity, Identity)]): bool =
   ## JSON equality with exact numbers.
-  if cast[pointer](a) == cast[pointer](b): return true
+  if identity(a) == identity(b): return true
   let (ka, kb) = (a.jsonKind, b.jsonKind)
   if ka != kb: return false
   case ka
@@ -446,12 +446,12 @@ proc instanceEquals(a, b: YamlNode,
   of jkString: a.content == b.content
   of jkArray:
     if a.elems.len != b.elems.len: return false
-    if assumed.containsOrIncl((cast[pointer](a), cast[pointer](b))): return true
+    if assumed.containsOrIncl((identity(a), identity(b))): return true
     for i in 0 ..< a.elems.len:
       if not instanceEquals(a.elems[i], b.elems[i], assumed): return false
     true
   of jkObject:
-    if assumed.containsOrIncl((cast[pointer](a), cast[pointer](b))): return true
+    if assumed.containsOrIncl((identity(a), identity(b))): return true
     var count = 0
     for name, value in a.members:
       inc(count)
@@ -461,7 +461,7 @@ proc instanceEquals(a, b: YamlNode,
     count == 0
 
 proc instanceEquals(a, b: YamlNode): bool =
-  var assumed = initHashSet[(pointer, pointer)]()
+  var assumed = initHashSet[(Identity, Identity)]()
   result = instanceEquals(a, b, assumed)
 
 proc jsonTypeOf(node: YamlNode): JsonType =
@@ -491,8 +491,8 @@ proc describe(node: YamlNode): string =
 
 proc newStore(parent: Store = nil): Store =
   Store(parent: parent, resources: initTable[string, Resource](),
-      nodes: initTable[pointer, NodeInfo](),
-      compiled: initTable[pointer, Schema]())
+      nodes: initTable[Identity, NodeInfo](),
+      compiled: initTable[Identity, Schema]())
 
 proc locationOf(resource: Resource, pointer: string): string =
   resource.uri & "#" & encodeFragment(pointer)
@@ -522,8 +522,8 @@ proc findLocal(store: Store, uri: string): Resource =
 proc infoOf(store: Store, node: YamlNode, info: var NodeInfo): bool =
   var s = store
   while not s.isNil:
-    if s.nodes.hasKey(cast[pointer](node)):
-      info = s.nodes.getOrDefault(cast[pointer](node))
+    if s.nodes.hasKey(identity(node)):
+      info = s.nodes.getOrDefault(identity(node))
       return true
     s = s.parent
   result = false
@@ -581,13 +581,13 @@ proc subschemaKeywords(dialect: Dialect): tuple[single, list, map: seq[string]] 
 proc discover(d: Discovery, node: YamlNode, resource: Resource,
     pointer, docPointer: string, dialect: Dialect, isRoot: bool)
     {.raises: [JsonSchemaError].} =
-  if d.store.nodes.hasKey(cast[pointer](node)): return
+  if d.store.nodes.hasKey(identity(node)): return
   var
     resource = resource
     pointer = pointer
     dialect = dialect
   if node.kind != yMapping:
-    d.store.nodes[cast[pointer](node)] = NodeInfo(resource: resource,
+    d.store.nodes[identity(node)] = NodeInfo(resource: resource,
         pointer: pointer, docPointer: docPointer)
     return
   let
@@ -631,7 +631,7 @@ proc discover(d: Discovery, node: YamlNode, resource: Resource,
         recursive.jsonKind == jkBool and recursive.jsonScalar.boolean and
         resource.node == node:
       resource.recursiveAnchor = true
-  d.store.nodes[cast[pointer](node)] = NodeInfo(resource: resource,
+  d.store.nodes[identity(node)] = NodeInfo(resource: resource,
       pointer: pointer, docPointer: docPointer)
 
   template sub(child: YamlNode, suffix: string) =
@@ -985,7 +985,7 @@ proc compileKeyword(c: Compiler, s: Schema, name: string, value: YamlNode,
           c.subschemaAt(s, subschema, "/" & name / pattern)))
 
 proc compileSchema(c: Compiler, node: YamlNode): Schema =
-  let key = cast[pointer](node)
+  let key = identity(node)
   var store = c.discovery.scope
   while not store.isNil:
     if store.compiled.hasKey(key): return store.compiled.getOrDefault(key)
@@ -1106,7 +1106,7 @@ type
     options: ValidationOptions
     collect: bool
     dynamicScope: seq[Resource]
-    active: Table[(pointer, pointer), int]
+    active: Table[(Identity, Identity), int]
       ## (schema, instance) pairs being evaluated, with the instance depth
       ## at which they were entered
     instanceDepth: int
@@ -1720,7 +1720,7 @@ proc evalSchema(e: var Evaluator, s: Schema, instance: YamlNode,
   # descending into it would never finish. Reaching the same pair after
   # descending means the instance is cyclic (aliases); it is assumed to be
   # valid there, as equality does for cyclic graphs.
-  let key = (cast[pointer](s), cast[pointer](instance))
+  let key = (identity(s), identity(instance))
   let entered = e.active.getOrDefault(key, -1)
   if entered == e.instanceDepth:
     raise schemaError("infinite recursion: " & s.location &

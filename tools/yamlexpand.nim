@@ -20,9 +20,13 @@
 ## Exit code: 0 on success, 1 if the input is not valid YAML, 2 for usage and
 ## I/O errors.
 
-import std/[os, parseopt]
-when defined(nimPreviewSlimSystem):
-  import std/syncio
+import std/parseopt
+when defined(js):
+  import ../yaml/private/jshost
+else:
+  import std/os
+  when defined(nimPreviewSlimSystem):
+    import std/syncio
 import ../yaml/[parser, stream, portable, source, memory]
 import std/streams
 
@@ -37,10 +41,10 @@ proc run*(args: seq[string], input: File, output: File,
   var
     options = ExpandOptions()
     files: seq[string]
-    p = initOptParser(args)
-  # the parser of an empty command line reads the process's own instead
+  # the parser of an empty command line reads the process's own instead,
+  # as soon as it is made
   if args.len > 0:
-    for kind, key, val in p.getopt():
+    for kind, key, val in getopt(args):
       case kind
       of cmdArgument: files.add(key)
       of cmdLongOption, cmdShortOption:

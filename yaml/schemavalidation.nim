@@ -35,9 +35,13 @@
 ## This module needs the DOM (``YamlNode``) and therefore, like
 ## `jsonschema <jsonschema.html>`_, ORC.
 
-import std/[os, strutils, tables, uri]
-when defined(nimPreviewSlimSystem):
-  import std/syncio
+import std/[strutils, tables, uri]
+when defined(js):
+  import private/jshost
+else:
+  import std/os
+  when defined(nimPreviewSlimSystem):
+    import std/syncio
 import data, dom, loading, native, parser, stream, diagnostics, fragment,
     jsonschema, documentschema, source, memory
 import std/streams

@@ -79,9 +79,13 @@
 ## holds; it is still found, as a config with defaults for the other
 ## sections.
 
-import std/[options, os, strutils]
-when defined(nimPreviewSlimSystem):
-  import std/syncio
+import std/[options, strutils]
+when defined(js):
+  import private/jshost
+else:
+  import std/os
+  when defined(nimPreviewSlimSystem):
+    import std/syncio
 import annotations, presenter, dumping, loading, lint, nodeindex, schemacache,
     memory, source
 export options, lint, SchemaCacheLocation, IndexMode, IndexFormat,

@@ -5,7 +5,7 @@
 #    distribution, for details about the copyright.
 
 import streams, strutils, unicode
-import ../data, ../memory
+import ../data, ../memory, charcopy
 when defined(yamlDebug):
   import terminal
   export terminal
@@ -177,7 +177,9 @@ const
 
 proc `=destroy`(c: BufferCharge) =
   if not c.budget.isNil and c.amount > 0: c.budget.release(c.amount)
-  `=destroy`(c.budget)
+  # On JavaScript a ref is the engine's garbage to collect, and there is no
+  # destroy hook of a ref to call.
+  when not defined(js): `=destroy`(c.budget)
 
 proc `=copy`(dest: var BufferCharge, src: BufferCharge) {.error.}
 
@@ -1103,8 +1105,7 @@ proc feed*(lex: var Lexer, data: openArray[char]) {.raises: [ValueError].} =
     b.charge.budget = b.budget
     b.charge.amount = oldLen + data.len
   lex.source.buf.data.setLen(oldLen + data.len)
-  if data.len > 0:
-    copyMem(addr lex.source.buf.data[oldLen], unsafeAddr data[0], data.len)
+  copyChars(lex.source.buf.data, oldLen, data, 0, data.len)
 
 proc finish*(lex: var Lexer) {.raises: [].} =
   ## Signals that no more input will be fed.
@@ -1137,7 +1138,7 @@ proc compactBuffer(lex: var Lexer) {.noinline, raises: [].} =
     lex.source.compactAt = lex.source.bufpos + threshold div 4
     return
   let rest = b.data.len - keep
-  if rest > 0: moveMem(addr b.data[0], addr b.data[keep], rest)
+  b.data.shiftChars(keep, 0, rest)
   b.data.setLen(rest)
   b.release(rest)
   b.base += keep

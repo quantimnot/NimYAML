@@ -74,7 +74,7 @@
 ## fails (409 or 422, see `RFC 5789 <https://www.rfc-editor.org/rfc/rfc5789#section-2.2>`_).
 
 import std/[sets, strutils, tables]
-import dom, fragment, private/jsonmodel
+import dom, fragment, private/[jsonmodel, refidentity]
 
 type
   JsonPatchErrorKind* = enum
@@ -172,7 +172,7 @@ proc parseJsonPatch*(patch: YamlNode): JsonPatch
 
 type Patcher = object
   root: YamlNode
-  owned: HashSet[pointer]
+  owned: HashSet[Identity]
   kept: seq[YamlNode]
   index: int ## of the operation being applied
 
@@ -182,7 +182,7 @@ proc fail(p: Patcher, msg: string) {.noreturn.} =
 proc own(p: var Patcher, node: YamlNode): YamlNode =
   ## ``node`` if this patch made it, otherwise a shallow copy of it that the
   ## patch may change.
-  if node.kind == yScalar or cast[pointer](node) in p.owned: return node
+  if node.kind == yScalar or identity(node) in p.owned: return node
   case node.kind
   of ySequence:
     result = YamlNode(kind: ySequence, tag: node.tag, elems: node.elems,
@@ -193,7 +193,7 @@ proc own(p: var Patcher, node: YamlNode): YamlNode =
         startPos: node.startPos, endPos: node.endPos)
     for key, value in node.fields.pairs: result.fields[key] = value
   of yScalar: discard
-  p.owned.incl(cast[pointer](result))
+  p.owned.incl(identity(result))
   p.kept.add(result)
 
 proc disown(p: var Patcher, node: YamlNode) =
@@ -201,7 +201,7 @@ proc disown(p: var Patcher, node: YamlNode) =
   ## and the owned collections in it must be copied before being changed.
   ## Owned collections are only ever reachable through owned parents, so
   ## the walk stops at the first node the patch does not own.
-  if node.kind == yScalar or not p.owned.missingOrExcl(cast[pointer](node)):
+  if node.kind == yScalar or not p.owned.missingOrExcl(identity(node)):
     return
   case node.kind
   of ySequence:
@@ -330,7 +330,7 @@ proc applyJsonPatch*(document: YamlNode, patch: JsonPatch): YamlNode
   ## Raises ``YamlJsonPatchError`` of kind ``jpeInvalidLocation`` if an
   ## operation's location does not exist or cannot be changed, and of kind
   ## ``jpeTestFailed`` if a ``test`` operation fails.
-  var p = Patcher(root: document, owned: initHashSet[pointer]())
+  var p = Patcher(root: document, owned: initHashSet[Identity]())
   for index, op in patch.operations:
     p.index = index
     p.apply(op)

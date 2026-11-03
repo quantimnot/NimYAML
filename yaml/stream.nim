@@ -55,20 +55,19 @@ proc basicInit*(s: YamlStream, lastTokenContextImpl:
   s.peeked = false
   s.lastTokenContextImpl = lastTokenContextImpl
 
-when not defined(JS):
-  type IteratorYamlStream = ref object of YamlStream
-    backend: iterator(): Event {.gcSafe, raises: [CatchableError].}
+type IteratorYamlStream = ref object of YamlStream
+  backend: iterator(): Event {.gcSafe, raises: [CatchableError].}
 
-  proc initYamlStream*(
-    backend: iterator(): Event {.gcSafe, raises: [CatchableError].}
-  ): YamlStream {.raises: [].} =
-    ## Creates a new ``YamlStream`` that uses the given iterator as backend.
-    result = new(IteratorYamlStream)
-    result.basicInit()
-    IteratorYamlStream(result).backend = backend
-    result.nextImpl = proc(s: YamlStream, e: var Event): bool {.gcsafe, raises: [CatchableError], closure.} =
-      e = IteratorYamlStream(s).backend()
-      result = true
+proc initYamlStream*(
+  backend: iterator(): Event {.gcSafe, raises: [CatchableError].}
+): YamlStream {.raises: [].} =
+  ## Creates a new ``YamlStream`` that uses the given iterator as backend.
+  result = new(IteratorYamlStream)
+  result.basicInit()
+  IteratorYamlStream(result).backend = backend
+  result.nextImpl = proc(s: YamlStream, e: var Event): bool {.gcsafe, raises: [CatchableError], closure.} =
+    e = IteratorYamlStream(s).backend()
+    result = true
 
 type
   BufferYamlStream* = ref object of YamlStream

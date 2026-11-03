@@ -35,7 +35,9 @@
 ## reads; its lexer keeps only a sliding window of it.
 
 import std/streams
-import memory
+import memory, private/charcopy
+when defined(js):
+  import private/jshost
 const hasFiles = defined(posix) or defined(windows)
 when hasFiles:
   import std/[memfiles, os, strutils, times]
@@ -260,7 +262,7 @@ proc read*(src: YamlSource, offset: int64, dest: var openArray[char]): int
   if n == 0: return 0
   case src.tier
   of stInMemory:
-    copyMem(addr dest[0], addr src.content[int(offset)], n)
+    copyChars(dest, 0, src.content, int(offset), n)
     result = n
   of stMapped:
     when hasFiles:
@@ -282,7 +284,7 @@ proc read*(src: YamlSource, offset: int64, dest: var openArray[char]): int
       let
         inPage = int(at mod pageSize)
         count = min(n - done, pageSize - inPage)
-      copyMem(addr dest[done], addr src.pages[slot].data[inPage], count)
+      copyChars(dest, done, src.pages[slot].data, inPage, count)
       done += count
     result = done
   of stSequential:
@@ -564,6 +566,57 @@ when hasFiles:
     elif randomAccess:
       result = result.spooled(policy)
 
+when defined(js):
+  # On JavaScript a file is what the installed host (see
+  # `private/jshost <private/jshost.html>`_) returns for it: there is no
+  # mapping and no pipe, so a file is in memory, charged to the budget like
+  # one, or, if the host reads ranges and the file is large, read by
+  # seeking; standard input is read whole.
+
+  proc createPrivate*(dir, prefix: string): tuple[path: string, file: File]
+      {.raises: [IOError].} =
+    ## A new file in ``dir`` (the temporary directory for ""); never one
+    ## that exists.
+    let base = if dir.len > 0: dir else: getTempDir()
+    var serial {.global.} = 0
+    for attempt in 0 ..< 100:
+      inc(serial)
+      let path = base / (prefix & $serial)
+      if fileExists(path): continue
+      return (path, open(path, fmWrite))
+    raise newException(IOError, base & ": cannot create a temporary file")
+
+  proc openSource*(path: string, budget: MemoryBudget = nil,
+      policy = SourcePolicy(), randomAccess = false): YamlSource
+      {.raises: [IOError, YamlMemoryLimitError].} =
+    ## A source of the file ``path``: in memory if it takes at most a
+    ## quarter of the limit of ``budget``, else read by seeking, if the
+    ## host can (see `hostCanSeek`); a forced tier other than memory is
+    ## seeking too.
+    if not hostCanSeek(): return sourceOf(readFile(path), path, budget)
+    let size = getFileSize(path)
+    let seek = case policy.choice
+      of tcAuto: size > limitOf(budget) div 4
+      of tcMemory: false
+      of tcMmap, tcSeek, tcStream: true
+    if not seek: return sourceOf(readFile(path), path, budget)
+    let reader = proc (offset: int64, dest: var openArray[char]): int
+        {.closure, gcsafe, raises: [IOError].} =
+      {.cast(gcsafe).}: readAt(path, offset, dest)
+    openSource(reader, size, path, budget, randomAccess = true)
+
+  proc openSource*(f: File, name: string, budget: MemoryBudget = nil,
+      policy = SourcePolicy(), randomAccess = false): YamlSource
+      {.raises: [IOError, YamlMemoryLimitError].} =
+    ## A source of the rest of the open file ``f``, like standard input,
+    ## read whole: the host has no streams to read in parts.
+    let content = f.readAll()
+    result = YamlSource(tier: stInMemory, size: content.len, name: name,
+        budget: budget, random: true)
+    result.charge(content.len, "reading " & name & " into memory" &
+        (if randomAccess: " (needs random access; it is a stream)" else: ""))
+    result.content = content
+
 proc close*(src: YamlSource) =
   ## Releases what ``src`` holds: memory, mapping, file and spool file.
   src.budget.release(src.charged)
@@ -582,8 +635,13 @@ proc ssReadData(s: Stream, buffer: pointer, bufLen: int): int =
   let ss = SourceStream(s)
   if bufLen <= 0: return 0
   {.cast(tags: []).}:
-    result = ss.src.read(ss.pos,
-        cast[ptr UncheckedArray[char]](buffer).toOpenArray(0, bufLen - 1))
+    when defined(js):
+      # std/streams passes the address of a string on JavaScript
+      result = ss.src.read(ss.pos,
+          cast[ptr string](buffer)[].toOpenArray(0, bufLen - 1))
+    else:
+      result = ss.src.read(ss.pos,
+          cast[ptr UncheckedArray[char]](buffer).toOpenArray(0, bufLen - 1))
   ss.pos += result
 
 proc ssReadDataStr(s: Stream, buffer: var string, slice: Slice[int]): int =

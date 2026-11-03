@@ -16,13 +16,22 @@ let
   dir = tmp / "files"
 
 createDir(dir)
-let (compileOutput, compileCode) = execCmdEx("nim c --hints:off -o:" &
-    quoteShell(bin) & " " & quoteShell(root / "tools" / "yamlcli.nim"))
-doAssert compileCode == 0, compileOutput
+
+# The command under test: the native build, or the command line in
+# YAML_CLI_COMMAND, like ``node js/bin/yaml.mjs`` for the JavaScript build,
+# which must behave the same.
+let command = getEnv("YAML_CLI_COMMAND")
+if command.len == 0:
+  let (compileOutput, compileCode) = execCmdEx("nim c --hints:off -o:" &
+      quoteShell(bin) & " " & quoteShell(root / "tools" / "yamlcli.nim"))
+  doAssert compileCode == 0, compileOutput
+
+let yamlCommand = if command.len > 0: command else: quoteShell(bin)
+  ## the shell command line that runs the command under test
 
 proc cli(args: seq[string], input = "", workingDir = dir):
     tuple[output: string, exitCode: int] =
-  var cmd = quoteShell(bin)
+  var cmd = yamlCommand
   for arg in args: cmd.add(" " & quoteShell(arg))
   cmd.add(" 2>&1")
   execCmdEx(cmd, input = input, workingDir = workingDir)
@@ -177,7 +186,7 @@ suite "yaml":
 
   test "cbor round trip":
     # through a file, since execCmdEx reads the output line by line
-    check execCmd(quoteShell(bin) & " to cbor " & quoteShell(dir / "a.yaml") &
+    check execCmd(yamlCommand & " to cbor " & quoteShell(dir / "a.yaml") &
         " > " & quoteShell(dir / "a.cbor")) == 0
     check cli("to", "json", "a.cbor") == cli("to", "json", "a.yaml")
 
@@ -302,7 +311,7 @@ suite "yaml":
         "{\n  // c\n  \"a\": {\"x\": \"y\"},\n}\n"
     check readFile(dir / "t.jsonl") ==
         "{\"a\": {\"x\": \"y\"}}\n\n{\"b\": 2}\n{\"a\": {\"x\": \"y\"}}\n"
-    check execCmd(quoteShell(bin) & " as cbor " & quoteShell(dir / "t.yaml") &
+    check execCmd(yamlCommand & " as cbor " & quoteShell(dir / "t.yaml") &
         " > " & quoteShell(dir / "t.cbor")) == 0
     check cli("$.a = 6", "-i", "t.cbor") == ("", 0)
     check cli("as", "yaml", "t.cbor") == ("a: 6\nb: x\n", 0)
@@ -712,7 +721,7 @@ suite "memory cli":
     var yaml = ""
     for i in 0 ..< 12000: yaml.add("key" & $i & ": value " & $i & "\n")
     writeFile(huge, yaml)
-    check execCmd(quoteShell(bin) & " to cbor " & quoteShell(huge) & " > " &
+    check execCmd(yamlCommand & " to cbor " & quoteShell(huge) & " > " &
         quoteShell(dir / "big.cbor")) == 0
     for file in [huge, dir / "big.jsonc", dir / "big.jsonl", dir / "big.cbor"]:
       check getFileSize(file) > 128 * 1024

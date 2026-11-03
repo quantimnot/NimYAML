@@ -63,7 +63,7 @@
 ## their tags, styles and positions.
 
 import std/[strutils, unicode, sets, tables]
-import dom, data, stream, native, memory, private/[jsonmodel, iregexp]
+import dom, data, stream, native, memory, private/[jsonmodel, iregexp, refidentity]
 
 when defined(nimPreviewSlimSystem):
   import std/assertions
@@ -834,23 +834,23 @@ proc select(ctx: Context, s: Selector, input: LocatedNode,
     of yScalar: discard
 
 proc selectDescendants(ctx: Context, segment: Segment, input: LocatedNode,
-    ancestors: var HashSet[pointer], output: var seq[LocatedNode]) =
+    ancestors: var HashSet[Identity], output: var seq[LocatedNode]) =
   ## Applies the selectors of a descendant segment to ``input`` and then to
   ## each of its descendants, parents before children and array items in
   ## order. ``ancestors`` guards against cycles created by aliases.
   for s in segment.selectors: ctx.select(s, input, output)
   let node = input.node
   if node.kind == yScalar: return
-  ancestors.incl(cast[pointer](node))
+  ancestors.incl(identity(node))
   var children: seq[LocatedNode]
   if node.kind == ySequence:
     for i, item in node.elems: children.add(ctx, item, input.path, i)
   else:
     for name, value in node.members: children.add(ctx, value, input.path, name)
   for child in children:
-    if cast[pointer](child.node) notin ancestors:
+    if identity(child.node) notin ancestors:
       ctx.selectDescendants(segment, child, ancestors, output)
-  ancestors.excl(cast[pointer](node))
+  ancestors.excl(identity(node))
 
 proc evaluate(ctx: Context, query: Query, start: LocatedNode): seq[LocatedNode] =
   result = @[start]
@@ -858,7 +858,7 @@ proc evaluate(ctx: Context, query: Query, start: LocatedNode): seq[LocatedNode] 
     var output: seq[LocatedNode]
     for input in result:
       if segment.descendant:
-        var ancestors = initHashSet[pointer]()
+        var ancestors = initHashSet[Identity]()
         ctx.selectDescendants(segment, input, ancestors, output)
       else:
         for s in segment.selectors: ctx.select(s, input, output)
@@ -1137,7 +1137,7 @@ iterator queryStream*(s: YamlStream, path: JsonPath,
           let target = cctx.refs.getOrDefault(e.aliasTarget).p
           if not target.isNil:
             for found in ctx.evaluate(segments.rest(state),
-                LocatedNode(path: nodePath, node: cast[YamlNode](target))):
+                LocatedNode(path: nodePath, node: toRef[YamlNode](target))):
               yield found
       elif state == segments.len or s.holdsAnchors:
         var node: YamlNode

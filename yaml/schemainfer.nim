@@ -107,7 +107,7 @@
 ## never inferred: the sample's extremes are an accident of the sample.
 
 import std/[sets, strutils, tables]
-import data, dom, dumping, native, private/[jsonmodel, formats]
+import data, dom, dumping, native, private/[jsonmodel, formats, refidentity]
 from hints import guessType, TypeHint
 
 type
@@ -156,7 +156,7 @@ type
     options: InferenceOptions
     root: Shape
     documents: int
-    onPath: HashSet[pointer] ## collections being described, against cycles
+    onPath: HashSet[Identity] ## collections being described, against cycles
 
 const draft2020Uri = "https://json-schema.org/draft/2020-12/schema"
 
@@ -212,7 +212,7 @@ proc addValue(inference: var SchemaInference, shape: Shape, node: YamlNode) =
     of jkArray, jkObject: discard # not of a scalar
   of ySequence:
     shape.types.incl(itArray)
-    let id = cast[pointer](node)
+    let id = identity(node)
     if inference.onPath.containsOrIncl(id): return
     for item in node.elems:
       if shape.items.isNil: shape.items = newShape()
@@ -221,7 +221,7 @@ proc addValue(inference: var SchemaInference, shape: Shape, node: YamlNode) =
   of yMapping:
     shape.types.incl(itObject)
     inc shape.objects
-    let id = cast[pointer](node)
+    let id = identity(node)
     if inference.onPath.containsOrIncl(id):
       # where a cycle closes, the object counts as one without members,
       # so that none of them is required of it

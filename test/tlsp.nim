@@ -849,3 +849,55 @@ suite "LSP schema inference":
     check not r.hasKey("schema")
     check r["error"]["input"].getInt() == 1
     check r["error"]["message"].getStr().len > 0
+
+suite "LSP batches":
+  proc didChange(uri, text: string): JsonNode =
+    notification("textDocument/didChange", %*{"textDocument": {"uri": uri,
+        "version": 2}, "contentChanges": [{"text": text}]})
+
+  proc hoverAt(id: int, uri: string): JsonNode =
+    request(id, "textDocument/hover", %*{"textDocument": {"uri": uri},
+        "position": {"line": 0, "character": 0}})
+
+  proc publishes(replies: seq[JsonNode], uri: string): int =
+    for r in replies:
+      if r{"method"}.getStr() == "textDocument/publishDiagnostics" and
+          r["params"]["uri"].getStr() == uri: inc(result)
+
+  test "a document is checked once, after its last change":
+    var s: Server
+    let uri = "untitled:batch"
+    let replies = s.handleBatch([didOpen(uri, "a: [\n"),
+        didChange(uri, "a: [1\n"), didChange(uri, "a: 1\n")])
+    check replies.publishes(uri) == 1
+    check replies.diagnosticsOf(uri).len == 0
+    check s.documentText(uri) == (true, "a: 1\n")
+
+  test "a request that a later change makes stale is ContentModified":
+    var s: Server
+    let uri = "untitled:stale"
+    let replies = s.handleBatch([didOpen(uri, "a: 1\n"), hoverAt(1, uri),
+        didChange(uri, "b: 2\n"), hoverAt(2, uri)])
+    var answered: seq[int]
+    for r in replies:
+      if r.hasKey("id"):
+        answered.add(r["id"].getInt())
+        if r["id"].getInt() == 1:
+          check r["error"]["code"].getInt() == -32801
+        else:
+          check not r.hasKey("error")
+    check answered == @[1, 2]
+    check replies.publishes(uri) == 1
+
+  test "a message that raises answers its request, the rest go on":
+    var s: Server
+    let replies = s.handleBatch([request(1, "textDocument/hover", newJObject()),
+        didOpen("untitled:after", "a: 1\n")])
+    check replies[0]["error"]["code"].getInt() == -32603
+    check replies.publishes("untitled:after") == 1
+
+  test "nimyaml/filesChanged republishes the open documents":
+    var s: Server
+    discard s.handle(didOpen("untitled:one", "a: 1\n"))
+    let replies = s.handle(notification("nimyaml/filesChanged"))
+    check replies.publishes("untitled:one") == 1

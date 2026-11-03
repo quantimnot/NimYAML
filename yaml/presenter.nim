@@ -12,7 +12,7 @@
 
 import std / [streams, deques, strutils, options]
 import data, taglib, stream, private/internal, hints, parser, memory, source
-import private/lex
+import private/[lex, charcopy]
 
 type
 

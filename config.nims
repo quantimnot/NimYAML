@@ -222,6 +222,10 @@ task annotationTests, "Run annotation tests":
   --verbosity:0
   setCommand "c", "test/tannotations"
 
+task jsModules, "Build js/dist/nimyaml.mjs, the JavaScript ES modules' NimYAML (not `js`, which is the compiler's command)":
+  exec "node js/build.mjs"
+  setCommand "nop"
+
 task bench, "Benchmarking":
   --r
   --w:off

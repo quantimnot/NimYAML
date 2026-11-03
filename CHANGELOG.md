@@ -2,6 +2,20 @@
 
 Features:
 
+ * JavaScript: the library and the tools compile with the JavaScript
+   backend, and `js/` makes ES modules of them (`node js/build.mjs`, or
+   `nim jsModules`): `yaml.mjs` (load, dump, lint, validate, query, patches, diff,
+   schema inference, canonical JSON, directive expansion, `assign`),
+   `cli.mjs` and `bin/yaml.mjs` (the `yaml` command, which passes
+   `test/tyamlcli.nim` with `YAML_CLI_COMMAND="node js/bin/yaml.mjs"`), and
+   the language server: a step core (`lsp/core.mjs`), drivers for stdio and
+   for a browser's dedicated worker, which keeps open documents in OPFS, and
+   the page's transport for `@codemirror/lsp-client`. Files and streams go
+   through a host the embedder installs (`yaml/private/jshost`); hosts over
+   memory and over `node:fs` come with it. `yamllsp` has `handleBatch`,
+   which checks a document once per batch of messages and answers stale
+   requests `ContentModified`, and `nimyaml/filesChanged`.
+
  * input of any size within a memory limit: new module `yaml/memory`
    (`MemoryBudget`, sizes, host memory detection, `YamlMemoryLimitError`)
    and `yaml/source` (`YamlSource` read in memory, through an mmap window,

@@ -51,3 +51,4 @@ test/tmerge
 test/tjcs
 test/tnodeindex
 test/tschemainfer
+js/dist/

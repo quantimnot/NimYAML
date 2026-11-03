@@ -33,10 +33,14 @@
 ## ``syntax``, these rules have no hooks of their own: `lint` hands them
 ## what the parser and the schema collector found.
 
-import std/[algorithm, options, os, sets, strutils, tables]
+import std/[algorithm, options, sets, strutils, tables]
 from std/unicode import runeLen, runeOffset
-when defined(nimPreviewSlimSystem):
-  import std/syncio
+when defined(js):
+  import private/jshost
+else:
+  import std/os
+  when defined(nimPreviewSlimSystem):
+    import std/syncio
 import data, parser, stream, loading, annotations, diagnostics, documentschema,
     source
 import std/streams

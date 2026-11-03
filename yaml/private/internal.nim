@@ -5,7 +5,7 @@
 #    distribution, for details about the copyright.
 
 import tables
-import ../data
+import ../data, refidentity
 
 template internalError*(s: string) =
   # Note: to get the internal stacktrace that caused the error
@@ -44,6 +44,17 @@ template yAssert*(e: typed) =
       echo "[NimYAML] Please report this bug."
       quit 1
 
+template moveParam*(x: typed): untyped =
+  ## ``move(x)`` of a ``var`` parameter ``x``, which the caller goes on
+  ## assigning to. On JavaScript a copy instead: there, the move rebinds the
+  ## parameter to a new object rather than resetting the caller's (Nim's
+  ## JavaScript backend, 2.3.1), so the moved value *is* the caller's
+  ## object, and every later assignment to ``x`` misses the caller. The
+  ## parser's events, moved into its key cache that way, came out as the
+  ## same event twice.
+  when defined(js): x
+  else: move(x)
+
 proc nextAnchor*(s: var string, i: int) =
   if s[i] == 'z':
     s[i] = 'a'
@@ -76,7 +87,7 @@ type
 proc initAnchorContext*(): AnchorContext =
   return AnchorContext(nextAnchorId: "a", mapping: initTable[Anchor, Anchor]())
 
-proc referencedAnchors*(refs: Table[pointer, tuple[a: Anchor, referenced: bool]]):
+proc referencedAnchors*(refs: Table[Identity, tuple[a: Anchor, referenced: bool]]):
     Table[Anchor, bool] =
   ## For each anchor of ``refs``, whether it is referenced; for `process`.
   for val in refs.values:

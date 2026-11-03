@@ -40,7 +40,7 @@
 import std/[algorithm, strutils, tables, sets, options, streams]
 import data, dom, hints, jsonpath, loading, native, parser, presenter, spans,
     stream, source, memory
-import private/jsonmodel
+import private/[jsonmodel, refidentity, charcopy]
 
 type
   YamlEditError* = object of ValueError
@@ -311,11 +311,11 @@ proc edits(src: string, t: Target, value: YamlNode, valueEvents: seq[Event],
     else: result.add((t.content, t.stop, text))
   else: result.add((t.content, t.stop, text))
 
-proc hasNil(node: YamlNode, visited: var HashSet[pointer]): bool =
+proc hasNil(node: YamlNode, visited: var HashSet[Identity]): bool =
   ## Whether the graph of ``node`` has a nil node, as an alias of an anchor
   ## that is not defined gives.
   if isNil(node): return true
-  if visited.containsOrIncl(cast[pointer](node)): return false
+  if visited.containsOrIncl(identity(node)): return false
   case node.kind
   of yScalar: false
   of ySequence:
@@ -392,7 +392,7 @@ proc verify(text: string, json: bool, docs: seq[Document], op: Operation,
   if edited.len != docs.len:
     fail("the edited text has other documents", op)
   for i, doc in docs:
-    var visited: HashSet[pointer]
+    var visited: HashSet[Identity]
     if edited[i].hasNil(visited):
       fail("the edited text has an alias of an anchor it does not define",
           op)
@@ -497,7 +497,7 @@ proc copy(src: YamlSource, first, last: int64, output: Stream) =
     let n = src.read(pos, buffer.toOpenArray(0, int(min(int64(buffer.len),
         last - pos)) - 1))
     if n <= 0: break
-    output.writeData(addr buffer[0], n)
+    output.writeChars(buffer, n)
     pos += n
 
 proc doAssign(src: YamlSource, path: JsonPath, value: string,

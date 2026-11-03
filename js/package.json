@@ -1,0 +1,30 @@
+{
+  "name": "nimyaml",
+  "version": "0.0.0",
+  "description": "NimYAML compiled to JavaScript: the library, the yaml command and the language server, as ES modules",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./yaml.mjs",
+    "./yaml": "./yaml.mjs",
+    "./cli": "./cli.mjs",
+    "./hosts/memory": "./hosts/memory.mjs",
+    "./hosts/node": "./hosts/node.mjs",
+    "./lsp/core": "./lsp/core.mjs",
+    "./lsp/driver": "./lsp/driver.mjs",
+    "./lsp/transport": "./lsp/transport.mjs",
+    "./lsp/server-worker": "./lsp/server-worker.mjs",
+    "./lsp/opfs": "./lsp/opfs.mjs"
+  },
+  "bin": {
+    "yaml": "./bin/yaml.mjs",
+    "yamllsp": "./lsp/stdio.mjs"
+  },
+  "files": ["*.mjs", "bin/", "hosts/", "lsp/", "dist/"],
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test test/ && node test/browser/run.mjs",
+    "test:worker": "deno test -A test/worker.test.mjs"
+  }
+}

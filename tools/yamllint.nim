@@ -20,9 +20,13 @@
 ## location. Prints one line per diagnostic. Exit code: 0 without error
 ## diagnostics, 1 with, 2 for usage, I/O or config errors.
 
-import std/[os, parseopt, tables]
-when defined(nimPreviewSlimSystem):
-  import std/syncio
+import std/[parseopt, tables]
+when defined(js):
+  import ../yaml/private/jshost
+else:
+  import std/os
+  when defined(nimPreviewSlimSystem):
+    import std/syncio
 import ../yaml/[lint, jsonschema, schemavalidation, toolconfig, schemacache,
     source, memory]
 
@@ -59,10 +63,10 @@ proc run*(args: seq[string], mode = lmLint, usage = usage,
     configPath = ""
     files: seq[string]
     validate = true
-    p = initOptParser(args)
-  # the parser of an empty command line reads the process's own instead
+  # the parser of an empty command line reads the process's own instead,
+  # as soon as it is made
   if args.len > 0:
-    for kind, key, val in p.getopt():
+    for kind, key, val in getopt(args):
       case kind
       of cmdArgument: files.add(key)
       of cmdLongOption, cmdShortOption:

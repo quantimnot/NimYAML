@@ -67,6 +67,7 @@
 ## taken as equal there.
 
 import std/[algorithm, hashes, options, sets, strutils, tables]
+import private/refidentity
 import data, dom, dumping, jsonpath, native, presenter, stream,
     private/jsonmodel
 from hints import guessType, TypeHint
@@ -93,7 +94,7 @@ type
 
   Differ = object
     changes: seq[DiffChange]
-    comparing: HashSet[(pointer, pointer)]
+    comparing: HashSet[(Identity, Identity)]
 
 const
   # tags that say no more than the JSON type of the node
@@ -211,10 +212,10 @@ proc sameItems(d: var Differ, a, b: YamlNode): bool =
   of yScalar: discard
 
 proc same(d: var Differ, a, b: YamlNode): bool {.raises: [].} =
-  if cast[pointer](a) == cast[pointer](b): return true
+  if identity(a) == identity(b): return true
   if a.kind != b.kind or a.specificTag != b.specificTag: return false
   if a.kind == yScalar: return a.jsonScalar == b.jsonScalar
-  let pair = (cast[pointer](a), cast[pointer](b))
+  let pair = (identity(a), identity(b))
   if d.comparing.containsOrIncl(pair): return true
   result = d.sameItems(a, b)
   d.comparing.excl(pair)
@@ -381,7 +382,7 @@ proc diffNodes(d: var Differ, a, b: YamlNode, oldPath, newPath: DiffPath)
   if a.kind == yScalar or a.kind != b.kind or a.specificTag != b.specificTag:
     d.add(dkChanged, oldPath, newPath, a, b)
     return
-  let pair = (cast[pointer](a), cast[pointer](b))
+  let pair = (identity(a), identity(b))
   if d.comparing.containsOrIncl(pair): return
   if a.kind == yMapping: d.diffMapping(a, b, oldPath, newPath)
   else: d.diffSequence(a, b, oldPath, newPath)

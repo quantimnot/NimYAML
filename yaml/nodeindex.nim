@@ -98,13 +98,21 @@
 ## Mode, format, location and limit are set in the ``index`` section of the
 ## ``.yaml`` config, see `toolconfig <toolconfig.html>`_.
 
-import std/[algorithm, options, os, sets, strutils, tables, times]
-when defined(nimPreviewSlimSystem):
-  import std/syncio
+import std/[algorithm, options, sets, strutils, tables, times]
+when defined(js):
+  import private/jshost
+else:
+  import std/os
+  when defined(nimPreviewSlimSystem):
+    import std/syncio
 import cbor, data, dom, dumping, loading, native, parser, spans, stream, source,
     presenter,
     memory
-import std/streams
+when defined(js):
+  # jshost opens files by path; std/streams would through syncio
+  import std/streams except newFileStream, openFileStream
+else:
+  import std/streams
 export options, SpanKind
 
 type
@@ -206,7 +214,7 @@ proc fingerprintFile*(file: string, mtime = 0'i64): SourceFingerprint =
     hash = fnvOffset
     size = 0'i64
   while true:
-    let n = f.readBuffer(addr buffer[0], buffer.len)
+    let n = f.readChars(buffer.toOpenArray(0, buffer.high))
     if n <= 0: break
     hash = fnv1a64(buffer.toOpenArray(0, n - 1), hash)
     size += n
@@ -223,7 +231,7 @@ proc fingerprint*(src: YamlSource, mtime = 0'i64): SourceFingerprint
     hash = fnvOffset
     size = 0'i64
   while true:
-    let n = input.readData(addr buffer[0], buffer.len)
+    let n = input.readDataStr(buffer, 0 ..< buffer.len)
     if n <= 0: break
     hash = fnv1a64(buffer.toOpenArray(0, n - 1), hash)
     size += n

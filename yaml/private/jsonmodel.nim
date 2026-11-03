@@ -32,7 +32,7 @@
 ## ``int64`` becomes a float.
 
 import std/[algorithm, sets, strutils, tables]
-import ../data, ../dom, ../hints
+import ../data, ../dom, ../hints, refidentity
 
 type
   JsonKind* = enum
@@ -165,14 +165,14 @@ proc `==`*(a, b: JsonScalar): bool {.raises: [].} =
   of jkArray, jkObject: false # not scalars
 
 proc jsonEqualsImpl(a, b: YamlNode,
-    assumedEqual: var HashSet[(pointer, pointer)]): bool {.raises: [].} =
-  if cast[pointer](a) == cast[pointer](b): return true
+    assumedEqual: var HashSet[(Identity, Identity)]): bool {.raises: [].} =
+  if identity(a) == identity(b): return true
   if a.kind == yScalar or b.kind == yScalar:
     return a.kind == b.kind and a.jsonScalar == b.jsonScalar
   if a.kind != b.kind: return false
   # Cyclic graphs: if this pair is already being compared further up, the
   # comparison holds unless something else differs.
-  if assumedEqual.containsOrIncl((cast[pointer](a), cast[pointer](b))):
+  if assumedEqual.containsOrIncl((identity(a), identity(b))):
     return true
   case a.kind
   of ySequence:
@@ -195,7 +195,7 @@ proc jsonEquals*(a, b: YamlNode): bool {.raises: [].} =
   ## Whether ``a`` and ``b`` are equal as JSON values: numbers by value,
   ## arrays element-wise, objects member-wise regardless of order. Tags,
   ## styles and invisible members do not matter.
-  var assumedEqual = initHashSet[(pointer, pointer)]()
+  var assumedEqual = initHashSet[(Identity, Identity)]()
   result = jsonEqualsImpl(a, b, assumedEqual)
 
 proc jsonEquals*(a: YamlNode, b: JsonScalar): bool {.raises: [].} =

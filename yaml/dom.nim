@@ -21,7 +21,7 @@
 ## objects of Nim's `json module <http://nim-lang.org/docs/json.html>`_.
 
 import std / [algorithm, tables, streams, hashes, sets, strutils]
-import data, stream, taglib, private/internal, parser, loading
+import data, stream, taglib, private/[internal, refidentity], parser, loading
 
 when defined(gcArc) and not defined(gcOrc):
   {.error: "NimYAML's DOM API only supports ORC because ARC can't deal with cycles".}
@@ -73,15 +73,15 @@ proc `==`*(x, y: YamlNode): bool {.raises: [], gcsafe.}
   ## Structural equality, see ``eqImpl``. Declared ahead, so that table
   ## lookups of keys within ``eqImpl`` compare structurally too.
 
-proc eqImpl(x, y: YamlNode, assumedEqual: var HashSet[(pointer, pointer)]):
+proc eqImpl(x, y: YamlNode, assumedEqual: var HashSet[(Identity, Identity)]):
     bool {.raises: [], gcsafe.} =
   ## Structural equality: same kind, tag and content, recursively. On cyclic
   ## graphs, a pair of nodes already being compared further up is assumed
   ## equal; the comparison then fails only if something else differs.
-  if cast[pointer](x) == cast[pointer](y): return true
+  if identity(x) == identity(y): return true
   if x.kind != y.kind or x.tag != y.tag: return false
   if x.kind == yScalar: return x.content == y.content
-  if assumedEqual.containsOrIncl((cast[pointer](x), cast[pointer](y))):
+  if assumedEqual.containsOrIncl((identity(x), identity(y))):
     return true
   case x.kind
   of yScalar: discard # handled above
@@ -111,7 +111,7 @@ proc eqImpl(x, y: YamlNode, assumedEqual: var HashSet[(pointer, pointer)]):
   result = true
 
 proc `==`*(x, y: YamlNode): bool {.raises: [], gcsafe.} =
-  var assumedEqual = initHashSet[(pointer, pointer)]()
+  var assumedEqual = initHashSet[(Identity, Identity)]()
   result = eqImpl(x, y, assumedEqual)
 
 proc `$`*(n: YamlNode): string =
@@ -196,7 +196,7 @@ proc constructChild*(
   template addAnchor(c: var ConstructionContext, target: Anchor) =
     if target != yAnchorNone:
       # anchors may be redefined; aliases refer to the latest definition
-      c.refs[target] = (tag: yamlTag(YamlNode), p: cast[pointer](result))
+      c.refs[target] = (tag: yamlTag(YamlNode), p: identity(result))
 
   var start: Event
   # instead of checking whether gcArc, gcOrc, or gcAtomicArc are defined, we use compiles to make it future proof. note that shallowCopy is only defined when for mm:arc/orc/atomicArc
@@ -255,7 +255,7 @@ proc constructChild*(
     else:
       result.content = move start.scalarContent
   of yamlAlias:
-    result = cast[YamlNode](ctx.refs.getOrDefault(start.aliasTarget).p)
+    result = toRef[YamlNode](ctx.refs.getOrDefault(start.aliasTarget).p)
   else: internalError("Malformed YamlStream")
 
 proc representChild*(

@@ -56,7 +56,7 @@
 ## through others), raise ``YamlMergeError``.
 
 import std/[sets, streams, tables]
-import data, dom, stream, native, parser, private/internal, memory
+import data, dom, stream, native, parser, private/[internal, refidentity], memory
 
 type
   YamlMergeError* = object of ValueError
@@ -87,8 +87,8 @@ type
     msResolving, msResolved
 
   Merger = object
-    states: Table[pointer, MergeState]
-    visited: HashSet[pointer]
+    states: Table[Identity, MergeState]
+    visited: HashSet[Identity]
 
 proc rehash(mapping: YamlNode) =
   ## A key's hash covers its content, so a mapping key that has had merge
@@ -105,7 +105,7 @@ proc hasCollectionKeys(mapping: YamlNode): bool =
 
 proc resolve(m: var Merger, mapping: YamlNode) =
   ## Applies the merge keys of ``mapping`` itself (not of its children).
-  let p = cast[pointer](mapping)
+  let p = identity(mapping)
   if p in m.states:
     if m.states.getOrDefault(p) == msResolved: return
     raise mergeError(mapping, "mapping merges itself")
@@ -139,7 +139,7 @@ proc resolve(m: var Merger, mapping: YamlNode) =
 
 proc walk(m: var Merger, node: YamlNode) =
   if node.kind == yScalar or
-      m.visited.containsOrIncl(cast[pointer](node)): return
+      m.visited.containsOrIncl(identity(node)): return
   case node.kind
   of ySequence:
     for item in node.elems: m.walk(item)
@@ -178,11 +178,11 @@ proc applyMergeKeys*(root: YamlNode) {.raises: [YamlMergeError].} =
 # in any case.
 # ============================================================================
 
-proc countReferences(node: YamlNode, counts: var CountTable[pointer]) =
+proc countReferences(node: YamlNode, counts: var CountTable[Identity]) =
   ## Counts the places each node of the graph appears in, descending into
   ## each node once.
-  counts.inc(cast[pointer](node))
-  if counts[cast[pointer](node)] > 1: return
+  counts.inc(identity(node))
+  if counts[identity(node)] > 1: return
   case node.kind
   of yScalar: discard
   of ySequence:
@@ -192,11 +192,11 @@ proc countReferences(node: YamlNode, counts: var CountTable[pointer]) =
       countReferences(key, counts)
       countReferences(value, counts)
 
-proc findCycles(node: YamlNode, onPath, done, reachedAgain: var HashSet[pointer]) =
+proc findCycles(node: YamlNode, onPath, done, reachedAgain: var HashSet[Identity]) =
   ## Collects in ``reachedAgain`` the nodes that the depth-first walk of
   ## ``emit``, which visits in the same order, reaches again while they are
   ## on its path.
-  let p = cast[pointer](node)
+  let p = identity(node)
   if p in onPath:
     reachedAgain.incl(p)
     return
@@ -213,13 +213,13 @@ proc findCycles(node: YamlNode, onPath, done, reachedAgain: var HashSet[pointer]
   onPath.excl(p)
 
 type Emitter = object
-  wasShared, isShared: CountTable[pointer]
-  cyclic: HashSet[pointer]
-  anchors: Table[pointer, Anchor]
+  wasShared, isShared: CountTable[Identity]
+  cyclic: HashSet[Identity]
+  anchors: Table[Identity, Anchor]
   events: seq[Event]
 
 proc emit(em: var Emitter, node: YamlNode) =
-  let p = cast[pointer](node)
+  let p = identity(node)
   if p in em.anchors:
     em.events.add(aliasEvent(em.anchors.getOrDefault(p), node.startPos,
         node.endPos))
@@ -260,7 +260,7 @@ proc mergedDocument(source: YamlStream, budget: MemoryBudget,
   countReferences(root, em.wasShared)
   root.applyMergeKeys()
   countReferences(root, em.isShared)
-  var onPath, done: HashSet[pointer]
+  var onPath, done: HashSet[Identity]
   findCycles(root, onPath, done, em.cyclic)
   em.emit(root)
   result = move em.events

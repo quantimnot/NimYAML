@@ -667,7 +667,11 @@ proc toMark(line, column: int): Mark {.raises: [ValueError].} =
   if line == 0 and column == 0:
     # positions the parser has not set yet are zero-initialized, outside of
     # the range of ``Positive``. Restore them as they were.
-    zeroMem(addr result, sizeof(result))
+    when defined(js):
+      # no raw memory on JavaScript; a cast bypasses the range check instead
+      result = Mark(line: cast[Positive](0), column: cast[Positive](0))
+    else:
+      zeroMem(addr result, sizeof(result))
     return
   if line < 1 or column < 1:
     raise newException(ValueError, "invalid position in checkpoint")
@@ -1450,7 +1454,7 @@ proc atBlockIndentation(ctx: Context, e: var Event): bool =
         raise ctx.generateError("Implicit mapping key may not be multiline")
       let props = e.scalarProperties
       e.scalarProperties = autoScalarTag(defaultProperties, scalarToken)
-      ctx.keyCache.add(move(e))
+      ctx.keyCache.add(moveParam(e))
       e = startMapEvent(csBlock, props, ctx.headerStart, headerEnd)
       ctx.transition(afterImplicitKey)
       ctx.pushLevel(emitCached)
@@ -1464,7 +1468,7 @@ proc atBlockIndentation(ctx: Context, e: var Event): bool =
     let headerEnd = ctx.lex.curStartPos
     ctx.safeNext()
     if ctx.lex.cur == Token.MapValueInd:
-      ctx.keyCache.add(move(e))
+      ctx.keyCache.add(moveParam(e))
       e = startMapEvent(csBlock, ctx.headerProps, ctx.headerStart, headerEnd)
       ctx.headerProps = defaultProperties
       ctx.transition(afterImplicitKey)
@@ -1498,7 +1502,7 @@ proc atBlockIndentationProps(ctx: Context, e: var Event): bool =
     if ctx.lex.cur == Token.MapValueInd:
       if ctx.lex.lastScalarWasMultiline():
         raise ctx.generateError("Implicit mapping key may not be multiline")
-      ctx.keyCache.add(move(e))
+      ctx.keyCache.add(moveParam(e))
       e = startMapEvent(csBlock, ctx.headerProps, ctx.headerStart, headerEnd)
       ctx.headerProps = defaultProperties
       ctx.transition(afterImplicitKey)
@@ -1623,7 +1627,7 @@ proc afterCompactParentProps(ctx: Context, e: var Event): bool =
     let headerEnd = ctx.lex.curStartPos
     ctx.safeNext()
     if ctx.lex.cur == Token.MapValueInd:
-      ctx.keyCache.add(move(e))
+      ctx.keyCache.add(moveParam(e))
       e = startMapEvent(csBlock, defaultProperties, headerEnd, headerEnd)
       ctx.transition(afterImplicitKey)
       ctx.pushLevel(emitCached)
@@ -1640,7 +1644,7 @@ proc afterCompactParentProps(ctx: Context, e: var Event): bool =
     if ctx.lex.cur == Token.MapValueInd:
       if ctx.lex.lastScalarWasMultiline():
         raise ctx.generateError("Implicit mapping key may not be multiline")
-      ctx.keyCache.add(move(e))
+      ctx.keyCache.add(moveParam(e))
       e = startMapEvent(csBlock, defaultProperties, headerEnd, headerEnd)
       ctx.transition(afterImplicitKey)
       ctx.pushLevel(emitCached)
@@ -2005,7 +2009,7 @@ proc afterFlowSeqSepProps(ctx: Context, e: var Event): bool =
       if ctx.caching:
         ctx.keyCache.add(startMapEvent(csFlow, defaultProperties, ctx.lex.curStartPos, ctx.lex.curStartPos))
       else:
-        ctx.keyCache.add(move(e))
+        ctx.keyCache.add(moveParam(e))
         e = startMapEvent(csFlow, defaultProperties, ctx.lex.curStartPos, ctx.lex.curStartPos)
         ctx.pushLevel(emitCached)
     return true

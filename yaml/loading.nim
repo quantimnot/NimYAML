@@ -17,7 +17,7 @@
 ## loads JSON Lines, one JSON value per line.
 
 import std / [ streams, strutils ]
-import native, parser, private/internal
+import native, parser, private/[internal, charcopy]
 export native, YamlConstructionError, YamlParserError
 
 proc load*[K](input: Stream | string, target: var K)
@@ -167,15 +167,19 @@ proc filterReadStr(s: Stream, buffer: var string, slice: Slice[int]): int =
       f.fill()
       if f.outPos >= f.output.len: break
     let n = min(slice.b - i + 1, f.output.len - f.outPos)
-    copyMem(addr buffer[i], addr f.output[f.outPos], n)
+    copyChars(buffer, i, f.output, f.outPos, n)
     f.outPos += n
     i += n
   i - slice.a
 
 proc filterRead(s: Stream, buffer: pointer, bufLen: int): int =
-  var str = newString(bufLen)
-  result = filterReadStr(s, str, 0 ..< bufLen)
-  if result > 0: copyMem(buffer, addr str[0], result)
+  when defined(js):
+    # std/streams passes the address of a string on JavaScript
+    result = filterReadStr(s, cast[ptr string](buffer)[], 0 ..< bufLen)
+  else:
+    var str = newString(bufLen)
+    result = filterReadStr(s, str, 0 ..< bufLen)
+    if result > 0: copyMem(buffer, addr str[0], result)
 
 proc filterAtEnd(s: Stream): bool =
   let f = FilterStream(s)

@@ -22,7 +22,8 @@
 import std / [tables, typetraits, strutils, macros, streams, times, parseutils, options]
 when defined(nimPreviewSlimSystem):
   import std/formatfloat
-import data, taglib, stream, private/internal, hints, annotations, memory
+import data, taglib, stream, private/[internal, refidentity], hints, annotations, memory
+export refidentity
 export data, stream, annotations
   # *something* in here needs externally visible `==`(x,y: AnchorId),
   # but I cannot figure out what. binding it would be the better option.
@@ -59,7 +60,7 @@ type
 
   SerializationContext* = object
     ## Context information for the process of serializing YAML from Nim values.
-    refs: Table[pointer, tuple[a: Anchor, referenced: bool]]
+    refs: Table[Identity, tuple[a: Anchor, referenced: bool]]
     emitTag: bool
     nextAnchorId: string
     options*: SerializationOptions
@@ -70,7 +71,7 @@ type
   ConstructionContext* = object
     ## Context information for the process of constructing Nim values from YAML.
     input*: YamlStream
-    refs* : Table[Anchor, tuple[tag: Tag, p: pointer]]
+    refs* : Table[Anchor, tuple[tag: Tag, p: Identity]]
 
   YamlConstructionError* = object of YamlLoadingError
     ## Exception that may be raised when constructing data objects from a
@@ -167,7 +168,7 @@ proc representChild*[O](
 proc initConstructionContext*(input: YamlStream): ConstructionContext =
   result = ConstructionContext(
     input: input,
-    refs : initTable[Anchor, tuple[tag: Tag, p: pointer]](),
+    refs : initTable[Anchor, tuple[tag: Tag, p: Identity]](),
   )
 
 const constructionCharge* = 128
@@ -202,7 +203,7 @@ proc initSerializationContext*(
   putImpl: proc(ctx: var SerializationContext, e: Event) {.gcsafe, raises: [], closure, noSideEffect.}
 ): SerializationContext =
   result = SerializationContext(
-    refs: initTable[pointer, tuple[a: Anchor, referenced: bool]](),
+    refs: initTable[Identity, tuple[a: Anchor, referenced: bool]](),
     emitTag: options.tagStyle != tsNone,
     nextAnchorId: "a",
     options: options,
@@ -382,7 +383,8 @@ proc representObject*(
     e.parent = rd
     raise e
 
-when defined(JS):
+when defined(JS) and not compileOption("jsbigint64"):
+  # without BigInt, JavaScript has no 64-bit integers
   type DefiniteUIntTypes = uint8 | uint16 | uint32
 else:
   type DefiniteUIntTypes = uint8 | uint16 | uint32 | uint64
@@ -420,7 +422,7 @@ proc constructObject*(
   ctx.constructObject(u32Result)
   result = uint(u32Result)
 
-when defined(JS):
+when defined(JS) and not compileOption("jsbigint64"):
   # TODO: this is a dirty hack and may lead to overflows!
   proc `$`(x: uint8|uint16|uint32|uint64|uint): string =
     result = $BiggestInt(x)
@@ -1777,14 +1779,14 @@ proc constructChild*[O](
       raise ctx.input.constructionError(e.startPos,
         "aliases are not supported at compile time")
     else:
-      let val = ctx.refs.getOrDefault(e.aliasTarget, (yTagNull, pointer(nil)))
-      if val.p == nil:
+      let val = ctx.refs.getOrDefault(e.aliasTarget, (yTagNull, noIdentity))
+      if val.p.isNil:
         raise ctx.input.constructionError(e.startPos,
           "alias node refers to anchor in ignored scope")
       if val.tag != yamlTag(O):
         raise ctx.input.constructionError(e.startPos,
           "alias node refers to object of incompatible type")
-      result = cast[ref O](val.p)
+      result = toRef[ref O](val.p)
       discard ctx.input.next()
       return
   new(result)
@@ -1792,7 +1794,7 @@ proc constructChild*[O](
     if anchor != yAnchorNone:
       yAssert(not ctx.refs.hasKey(anchor))
       when nimvm: discard # no aliases supported at compile time
-      else: ctx.refs[anchor] = (yamlTag(O), cast[pointer](result))
+      else: ctx.refs[anchor] = (yamlTag(O), identity(result))
       anchor = yAnchorNone
 
   case e.kind
@@ -1842,7 +1844,7 @@ proc representChild*[O](
   else:
     when nimvm: discard
     else:
-      let p = cast[pointer](value)
+      let p = identity(value)
       # when c.anchorStyle == asNone, `referenced` is used as indicator that we are
       # currently in the process of serializing this node. This enables us to
       # detect cycles and raise an error.

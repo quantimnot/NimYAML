@@ -40,9 +40,13 @@
 ## schemas are cached: others are no downloads, and VS Code's own
 ## (``vscode://schemas/...``) depend on the user's extensions and language.
 
-import std/[os, strutils]
-when defined(nimPreviewSlimSystem):
-  import std/syncio
+import std/strutils
+when defined(js):
+  import private/jshost
+else:
+  import std/os
+  when defined(nimPreviewSlimSystem):
+    import std/syncio
 import dom, loading, jsonschema, schemavalidation
 
 type

@@ -102,20 +102,22 @@ proc parseSize*(text: string): int {.raises: [ValueError].} =
   while i < t.len and t[i] in Digits: inc i
   if i == 0: raise newException(ValueError, "not a size: " & text)
   let number = parseBiggestInt(t[0 ..< i])
-  let factor = case t[i .. ^1].strip().toLowerAscii()
+  # in BiggestInt: ``int`` is 32 bits on the JavaScript backend, where a
+  # terabyte is merely too large rather than a literal that does not compile
+  let factor: BiggestInt = case t[i .. ^1].strip().toLowerAscii()
     of "", "b": 1
-    of "kib", "k": 1 shl 10
-    of "mib", "m": 1 shl 20
-    of "gib", "g": 1 shl 30
-    of "tib", "t": 1 shl 40
+    of "kib", "k": 1'i64 shl 10
+    of "mib", "m": 1'i64 shl 20
+    of "gib", "g": 1'i64 shl 30
+    of "tib", "t": 1'i64 shl 40
     of "kb": 1000
     of "mb": 1_000_000
     of "gb": 1_000_000_000
-    of "tb": 1_000_000_000_000
+    of "tb": 1_000_000_000_000'i64
     else: raise newException(ValueError, "unknown unit in size: " & text)
-  if number > int.high div factor:
+  if number > BiggestInt(int.high) div factor:
     raise newException(ValueError, "size too large: " & text)
-  int(number) * factor
+  int(number * factor)
 
 proc memoryLimitError*(e: ref Exception): ref YamlMemoryLimitError =
   ## The `YamlMemoryLimitError` that is ``e`` or one of its ``parent``s

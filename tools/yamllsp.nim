@@ -53,13 +53,17 @@
 ## how the document is actually read. Documents with syntax errors are
 ## dropped by error recovery and have no such information.
 
-import std/[algorithm, json, os, sets, streams, strutils, tables, uri]
-when defined(nimPreviewSlimSystem):
-  import std/syncio
+import std/[algorithm, json, sets, streams, strutils, tables, uri]
+when defined(js):
+  import ../yaml/private/jshost
+else:
+  import std/os
+  when defined(nimPreviewSlimSystem):
+    import std/syncio
 import ../yaml/[data, parser, stream, lint, jsonschema, documentschema,
     schemavalidation, toolconfig, dom, edit, jsonpath, loading, native, diff,
     dumping, schemainfer]
-import ../yaml/private/[lex, jsonmodel]
+import ../yaml/private/[lex, jsonmodel, refidentity]
 import ../yaml/schemacache
 from ../yaml/hints import guessType, TypeHint
 
@@ -91,6 +95,7 @@ type
 const
   methodNotFound = -32601
   internalError = -32603
+  contentModified = -32801
 
 proc readMessage*(s: Stream): JsonNode =
   ## Reads one ``Content-Length`` framed message. Returns nil at the end of
@@ -783,13 +788,13 @@ const
 
 type GridTooLarge = object of CatchableError
 
-proc gridTree(node: YamlNode, ancestors: var HashSet[pointer],
+proc gridTree(node: YamlNode, ancestors: var HashSet[Identity],
     budget: var int): JsonNode =
   dec(budget)
   if budget < 0:
     raise newException(GridTooLarge, "the documents have more than " &
         $gridNodeLimit & " nodes, counting each alias as a copy")
-  let id = cast[pointer](node)
+  let id = identity(node)
   if id in ancestors: return %*{"kind": "cycle"}
   case node.kind
   of yScalar:
@@ -830,7 +835,7 @@ proc gridOf(text: string, json: bool): JsonNode =
     loadMultiDoc(if json: stripJsonComments(text) else: text, roots)
     var budget = gridNodeLimit
     for root in roots:
-      var ancestors: HashSet[pointer]
+      var ancestors: HashSet[Identity]
       documents.add(gridTree(root, ancestors, budget))
   except YamlLoadingError as e:
     let error = errorPosition(text, e.mark)
@@ -1448,6 +1453,12 @@ proc handle*(s: var Server, msg: JsonNode): seq[JsonNode] =
     result.add(respond(id, diffOf(params)))
   of "nimyaml/inferSchema":
     result.add(respond(id, inferSchemaOf(params)))
+  of "nimyaml/filesChanged":
+    # A driver that reads files for the server (see `handleBatch`) sends this
+    # when files it was asked for arrived or changed: configs and ``file:``
+    # schemas are read again on the next publish.
+    s.configs.clear()
+    result.add(s.publishAll())
   of "nimyaml/schemaChanged":
     if not s.clientSchemas.isNil:
       let changed = params["uri"].getStr()
@@ -1486,6 +1497,61 @@ proc handle*(s: var Server, msg: JsonNode): seq[JsonNode] =
     if not id.isNil:
       result.add(respondError(id, methodNotFound, "method not found: " & meth))
   result.add(s.schemaRequests())
+
+# Batches
+#
+# A driver that cannot call the server while it is busy, like one in a
+# browser worker, queues the messages that arrive meanwhile and hands over
+# the whole queue at once. A burst of keystrokes is then one batch of
+# ``didChange``s, and checking the document after each of them would only
+# delay the diagnostics of the last. So within a batch a document is
+# checked once, after its last change in the batch; its earlier changes
+# only replace its text. A request about a document that a later message
+# of the batch changes is answered ``ContentModified``, which LSP provides
+# for exactly this: its answer would describe a text that no longer is.
+# Every other message is handled as `handle` does, in order, so that a
+# request after a change is answered on the changed text.
+
+proc documentUri(msg: JsonNode): string =
+  msg{"params"}{"textDocument"}{"uri"}.getStr()
+
+proc handleBatch*(s: var Server, batch: openArray[JsonNode]): seq[JsonNode] =
+  ## Handles the messages of ``batch`` in order and returns the messages to
+  ## send, checking each document once (see above). A message that raises
+  ## is answered with an error if it is a request and dropped otherwise.
+  const edits = ["textDocument/didOpen", "textDocument/didChange",
+                 "textDocument/didClose"]
+  var lastEdit: Table[string, int]
+  for i, msg in batch:
+    if msg{"method"}.getStr() in edits: lastEdit[msg.documentUri] = i
+  for i, msg in batch:
+    let
+      meth = msg{"method"}.getStr()
+      id = msg{"id"}
+      uri = msg.documentUri
+      editedLater = uri.len > 0 and lastEdit.getOrDefault(uri, -1) > i
+    try:
+      if editedLater and meth in ["textDocument/didOpen",
+          "textDocument/didChange"]:
+        let text =
+          if meth == "textDocument/didOpen": msg["params"]["textDocument"]["text"]
+          else:
+            let changes = msg["params"]["contentChanges"]
+            if changes.len == 0: nil else: changes[changes.len - 1]["text"]
+        if not text.isNil: s.docs[uri] = text.getStr()
+      elif editedLater and not id.isNil and meth.len > 0:
+        result.add(respondError(id, contentModified,
+            "the document changed after the request"))
+      else:
+        result.add(s.handle(msg))
+    except CatchableError as e:
+      if not id.isNil and meth.len > 0:
+        result.add(respondError(id, internalError, e.msg))
+
+proc documentText*(s: Server, uri: string): tuple[open: bool, text: string] =
+  ## The text of the open document ``uri``, for drivers that keep a copy of
+  ## the documents, like one that saves them.
+  if uri in s.docs: (true, s.docs[uri]) else: (false, "")
 
 proc serve*(input: Stream, output: File): int =
   ## Serves messages from ``input`` until ``exit`` or the end of the input.
