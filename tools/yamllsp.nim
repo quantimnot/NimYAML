@@ -32,6 +32,9 @@
 ##   document, and its schema with the source it comes from,
 ## * go-to-definition and document links on schema references.
 ##
+## Formatting rewrites a document as ``yaml format`` would, in the style of
+## its config (see the section below).
+##
 ## Semantic tokens highlight the text as NimYAML's lexer reads it: keys,
 ## scalars by the type they resolve to, tags, anchors, aliases, directives
 ## and comments (see the section below).
@@ -53,7 +56,7 @@
 ## how the document is actually read. Documents with syntax errors are
 ## dropped by error recovery and have no such information.
 
-import std/[algorithm, json, sets, streams, strutils, tables, uri]
+import std/[algorithm, json, options, sets, streams, strutils, tables, uri]
 when defined(js):
   import ../yaml/private/jshost
 else:
@@ -62,7 +65,7 @@ else:
     import std/syncio
 import ../yaml/[data, parser, stream, lint, jsonschema, documentschema,
     schemavalidation, toolconfig, dom, edit, jsonpath, loading, native, diff,
-    dumping, schemainfer]
+    dumping, schemainfer, source, presenter]
 import ../yaml/private/[lex, jsonmodel, refidentity]
 import ../yaml/schemacache
 from ../yaml/hints import guessType, TypeHint
@@ -1232,6 +1235,70 @@ proc inferSchemaOf(params: JsonNode): JsonNode =
     text = dumper.dump(schema)
   %*{"schema": text, "documents": inference.documents}
 
+# Formatting
+#
+# ``textDocument/formatting`` is `yaml format` on the open text: in the style
+# of the format section of the document's config, with its comments unless
+# the config drops them. The answer is one edit that replaces the whole
+# text, or none when the text is formatted already, so that an editor's undo
+# history gets no empty step. A text that cannot be formatted without loss,
+# one that does not parse or has comments its style cannot keep, is answered
+# with an error saying so, as the command reports it, rather than with an
+# edit that loses something.
+#
+# The whole text, not the lines that differ: the presenter writes the text
+# anew rather than editing it, so finding the lines that stayed would be a
+# diff of two texts, which the editor that applies the edit keeps the
+# cursor through anyway.
+
+proc hasComments*(src: YamlSource): bool =
+  ## Whether ``src`` has a comment. False if the lexer fails, which
+  ## formatting then reports.
+  var lex: Lexer
+  lex.directiveExtensions = true
+  lex.keepComments = true
+  lex.init(newSourceStream(src))
+  while true:
+    try: lex.next()
+    except LexerError: return false
+    if lex.comments.len > 0: return true
+    if lex.cur == Token.StreamEnd: return false
+
+proc positionAfter(text: string): JsonNode =
+  ## The LSP position just after the last character of ``text``.
+  let lastLine = text.substr(text.rfind('\n') + 1)
+  %*{"line": text.count('\n'),
+     "character": utf16Column(lastLine, lastLine.len + 1)}
+
+proc formatting(s: var Server, uri: string): tuple[edits: JsonNode,
+    error: string] =
+  ## The edits that format the open document ``uri``, or why it cannot be.
+  if uri notin s.docs: return (newJArray(), "")
+  let text = s.docs[uri]
+  let (config, error, _) = s.configFor(uri)
+  if error.len > 0: return (nil, "invalid config: " & error)
+  let style = config.format
+  let dumper = style.dumper
+  try:
+    let src = sourceOf(text, uri)
+    if style.comments.get(kKeep) == kKeep and
+        not dumper.presentation.keepsComments and src.hasComments:
+      return (nil, "the document has comments, which the " &
+          $style.style.get(fsDefault) & " style cannot keep; " &
+          "drop them with format.comments: drop in the config")
+    let output = newStringStream()
+    dumper.transform(src, output)
+    let formatted = output.data
+    if formatted == text: return (newJArray(), "")
+    result.edits = %*[{"range": {"start": {"line": 0, "character": 0},
+                                 "end": positionAfter(text)},
+                       "newText": formatted}]
+  except YamlParserError as e:
+    result = (nil, "cannot format: " & $e.mark.line & ":" & $e.mark.column &
+        ": " & e.msg)
+  except CatchableError as e:
+    result = (nil, "cannot format: " & e.msg)
+
 # Schemas from the client
 #
 # Some schemas exist only in the client: VS Code serves the schemas of its
@@ -1391,6 +1458,7 @@ proc handle*(s: var Server, msg: JsonNode): seq[JsonNode] =
                                             "save": {"includeText": false}},
                        "completionProvider": {"triggerCharacters": ["%", " "]},
                        "hoverProvider": true, "definitionProvider": true,
+                       "documentFormattingProvider": true,
                        "documentLinkProvider": {"resolveProvider": false},
                        "semanticTokensProvider": {"legend": semanticLegend(),
                                                   "full": true}},
@@ -1432,6 +1500,10 @@ proc handle*(s: var Server, msg: JsonNode): seq[JsonNode] =
     result.add(respond(id, s.documentLinks(params["textDocument"]["uri"].getStr())))
   of "textDocument/semanticTokens/full":
     result.add(respond(id, s.semanticTokens(params["textDocument"]["uri"].getStr())))
+  of "textDocument/formatting":
+    let (edits, error) = s.formatting(params["textDocument"]["uri"].getStr())
+    result.add(if error.len > 0: respondError(id, requestFailed, error)
+               else: respond(id, edits))
   of "nimyaml/blockScalars":
     result.add(respond(id, s.blockScalarsOf(params["textDocument"]["uri"].getStr())))
   of "nimyaml/grid":

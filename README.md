@@ -1211,14 +1211,14 @@ language server publishes the diagnostics of open documents and offers
 completion of directive names, hover on directives (effective value, global
 or per-document, overrides) and on `---`/`...` markers (the directives and
 schema in effect), go-to-definition and document links on schema
-references, and syntax highlighting (semantic tokens) as NimYAML's lexer
-reads the text: keys, scalars by resolved type (numbers, booleans, null),
-tags, anchors, aliases, `%GLOBAL`/`%SCHEMA` and other directives, and
-comments.
+references, formatting as `yaml format` does, and syntax highlighting
+(semantic tokens) as NimYAML's lexer reads the text: keys, scalars by
+resolved type (numbers, booleans, null), tags, anchors, aliases,
+`%GLOBAL`/`%SCHEMA` and other directives, and comments.
 
-Editor bindings for the language server live in `editors/`. Both start
-`yaml lsp` with `yaml` from `PATH` by default, so put the built binary there
-or point them at it:
+Editor bindings for the language server live in `editors/`. VS Code and
+Helix start `yaml lsp` with `yaml` from `PATH` by default, so put the built
+binary there or point them at it:
 
 * **VS Code**: `editors/vscode` is a small extension. Package and install it
   with
@@ -1237,6 +1237,11 @@ or point them at it:
 * **Helix**: merge `editors/helix/languages.toml` into
   `~/.config/helix/languages.toml`, or copy it to `.helix/languages.toml` in a
   project. `hx --health yaml` shows whether `yaml` was found.
+* **CodeMirror** (in a browser): `editors/codemirror` connects CodeMirror 6,
+  through the `<code-editor>` web component, to the language server compiled
+  to JavaScript and running in a worker, with the server's highlighting,
+  schema links and the JSON Pointer at the cursor on top; see
+  [editors/codemirror/README.md](editors/codemirror/README.md).
 
 ## The `yaml` Command
 

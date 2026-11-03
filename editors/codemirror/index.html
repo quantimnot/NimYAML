@@ -1,0 +1,42 @@
+<!doctype html>
+<!--
+  yamllsp in <code-editor>: a small project of YAML files edited in the browser,
+  checked by NimYAML's language server running in a worker. demo.js wires it up;
+  serve.mjs serves it, with the component collection at /ui/ and NimYAML's
+  JavaScript build at /nimyaml/. With ?test, test/checks.js runs against it
+  and reports to the browser test (test/browser.mjs).
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>yamllsp in CodeMirror</title>
+  <link rel="html-import" href="/ui/code-editor/code-editor.html">
+  <script type="module" src="/ui/html-import.js"></script>
+  <style>
+    :root { color-scheme: light dark; font: 14px/1.4 system-ui, sans-serif; }
+    body { margin: 0; display: grid; grid-template: auto 1fr / 14rem 1fr; block-size: 100vh; }
+    header { grid-column: 1 / -1; display: flex; gap: .75rem; align-items: center;
+             padding: .5rem 1rem; border-block-end: 1px solid color-mix(in srgb, currentColor 20%, transparent); }
+    header h1 { font-size: 1rem; margin: 0 auto 0 0; }
+    nav { padding: .5rem; overflow: auto; border-inline-end: 1px solid color-mix(in srgb, currentColor 20%, transparent); }
+    nav button { display: block; inline-size: 100%; text-align: start; font: 13px ui-monospace, monospace;
+                 padding: .3rem .5rem; border: 0; border-radius: 4px; background: none; color: inherit; cursor: pointer; }
+    nav button[aria-current="true"] { background: color-mix(in srgb, currentColor 14%, transparent); }
+    main { min-block-size: 0; display: flex; flex-direction: column; padding: .5rem; }
+    main code-editor { flex: 1; min-block-size: 0; }
+    #status { font-size: 12px; opacity: .75; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>yamllsp in CodeMirror</h1>
+    <span id="status">starting the server…</span>
+    <button id="format" title="Shift+Alt+F">Format</button>
+    <button id="infer">Infer schema</button>
+  </header>
+  <nav id="files" aria-label="Files"></nav>
+  <main id="editors"></main>
+  <script type="module" src="demo.js"></script>
+</body>
+</html>

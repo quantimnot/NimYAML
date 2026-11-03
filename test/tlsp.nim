@@ -121,7 +121,7 @@ suite "LSP server":
 
   test "unknown requests and notifications":
     var s: Server
-    let replies = s.handle(request(7, "textDocument/formatting"))
+    let replies = s.handle(request(7, "textDocument/rename"))
     check replies.len == 1
     check replies[0]["error"]["code"].getInt() == -32601
     check s.handle(notification("$/whatever")).len == 0
@@ -247,6 +247,40 @@ suite "LSP directive features":
         %*{"textDocument": {"uri": "untitled:m"}}))
     check links.len == 2
     check links[1]["target"].getStr() == "https://x.example/b.json"
+
+  test "formatting rewrites the document in one edit":
+    var s: Server
+    check s.answer(request(1, "initialize"))["capabilities"][
+        "documentFormattingProvider"].getBool()
+    discard s.handle(didOpen("untitled:f", "a:    1 # one\nb:   é\n"))
+    let edits = s.answer(request(2, "textDocument/formatting",
+        %*{"textDocument": {"uri": "untitled:f"}, "options": {}}))
+    check edits.len == 1
+    check edits[0]["range"] == %*{"start": {"line": 0, "character": 0},
+        "end": {"line": 2, "character": 0}}
+    let formatted = edits[0]["newText"].getStr()
+    check formatted == "a: 1  # one\nb: é\n"
+
+  test "formatting a formatted document edits nothing":
+    var s: Server
+    discard s.handle(didOpen("untitled:f", "a: 1\nb: é"))
+    let edits = s.answer(request(1, "textDocument/formatting",
+        %*{"textDocument": {"uri": "untitled:f"}, "options": {}}))
+    check edits.len <= 1
+    if edits.len == 1:
+      # no final line break: the edit ends after the last character
+      check edits[0]["range"]["end"] == %*{"line": 1, "character": 4}
+      discard s.handle(didOpen("untitled:g", edits[0]["newText"].getStr()))
+      check s.answer(request(2, "textDocument/formatting",
+          %*{"textDocument": {"uri": "untitled:g"}, "options": {}})).len == 0
+
+  test "a document that does not parse is not formatted":
+    var s: Server
+    discard s.handle(didOpen("untitled:f", "a: [1\n"))
+    let reply = s.handle(request(1, "textDocument/formatting",
+        %*{"textDocument": {"uri": "untitled:f"}, "options": {}}))[0]
+    check reply.hasKey("error")
+    check "cannot format: " in reply["error"]["message"].getStr()
 
   test "definition and document links of schema references":
     var s: Server

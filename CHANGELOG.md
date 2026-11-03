@@ -2,6 +2,18 @@
 
 Features:
 
+ * CodeMirror: `editors/codemirror` connects CodeMirror 6 and the
+   `<code-editor>` web component to the language server in a browser worker.
+   `yamllsp.js` adds to `@codemirror/lsp-client` what it lacks: the server's
+   semantic highlighting, document links, the JSON Pointer at the cursor, and
+   `https:` schemas fetched by the page for `nimyaml/schemaContent`. A demo
+   page, its server and a headless browser test come with it.
+
+ * `yamllsp` formats documents (`textDocument/formatting`) as `yaml format`
+   does, in the style of the config's `format` section, keeping comments;
+   it answers with an error rather than an edit when the text does not parse
+   or has comments its style cannot keep.
+
  * JavaScript: the library and the tools compile with the JavaScript
    backend, and `js/` makes ES modules of them (`node js/build.mjs`, or
    `nim jsModules`): `yaml.mjs` (load, dump, lint, validate, query, patches, diff,

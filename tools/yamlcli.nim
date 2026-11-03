@@ -888,19 +888,6 @@ proc sameContent(a: string, b: YamlSource): bool =
     if n == 0: return true
     if not sameChars(x, y, n): return false
 
-proc hasComments(src: YamlSource): bool =
-  ## Whether ``src`` has a comment. False if the lexer fails, which
-  ## formatting then reports.
-  var lex: Lexer
-  lex.directiveExtensions = true
-  lex.keepComments = true
-  lex.init(newSourceStream(src))
-  while true:
-    try: lex.next()
-    except LexerError: return false
-    if lex.comments.len > 0: return true
-    if lex.cur == Token.StreamEnd: return false
-
 proc formatCommand(args: seq[string]): int =
   var
     files: seq[string]

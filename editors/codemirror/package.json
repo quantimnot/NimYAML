@@ -1,0 +1,15 @@
+{
+  "name": "yamllsp-codemirror",
+  "version": "0.0.0",
+  "description": "NimYAML's language server in CodeMirror 6 and the <code-editor> web component",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./yamllsp.js"
+  },
+  "scripts": {
+    "serve": "node serve.mjs",
+    "test": "node --test test/ && node test/browser.mjs"
+  }
+}
