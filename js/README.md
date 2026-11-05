@@ -22,6 +22,23 @@ every module below imports. `dist/` is built, not committed.
 export `X`, taking and returning strings (JSON text in, `{ok}`/`{error}`
 envelopes out). The modules turn those into an API.
 
+## As a package
+
+`js/` is the bun package `nimyaml.js` (private, not published). Register it
+once from this folder, then link it where it is used:
+
+```sh
+cd js && bun link                         # registers nimyaml.js → this folder
+# in the package that uses it, package.json:
+#   "dependencies": { "nimyaml.js": "link:nimyaml.js" }
+bun install                               # node_modules/nimyaml.js → js/
+```
+
+A link is to this folder as it is, so `dist/` must be built here first
+(`node js/build.mjs`) and is rebuilt here when the Nim sources change.
+webstack's `yaml-language` (its CodeMirror plugin) uses it this way, and
+its static server mounts the link at `/js/`, the folder's name.
+
 ## The library: `yaml.mjs`
 
 ```js
@@ -107,7 +124,7 @@ a service worker may be stopped whenever idle, losing the open documents.
 
 ```js
 import { LSPClient } from "@codemirror/lsp-client";
-import { startServer, flushOnHide } from "nimyaml/lsp/transport";
+import { startServer, flushOnHide } from "nimyaml.js/lsp/transport";
 
 const server = startServer({ persist: true, readFile: (path) => myFiles.get(path) ?? null });
 const client = new LSPClient().connect(server.transport);

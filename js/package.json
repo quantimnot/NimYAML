@@ -1,5 +1,5 @@
 {
-  "name": "nimyaml",
+  "name": "nimyaml.js",
   "version": "0.0.0",
   "description": "NimYAML compiled to JavaScript: the library, the yaml command and the language server, as ES modules",
   "license": "MIT",
