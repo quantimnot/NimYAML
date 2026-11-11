@@ -46,6 +46,7 @@ import * as Y from "./js/yaml.mjs";
 
 Y.load("a: [1, x]")                         // { a: [1, "x"] }
 Y.loadAll("--- 1\n--- 2\n")                 // [1, 2]
+Y.load("[0x1F, 1_000, .inf, .nan]")         // [31, 1000, Infinity, NaN]
 Y.dump({ a: 1, n: "80" })                   // 'a: 1\nn: "80"\n'
 Y.dump(value, { style: "json" })            // default, block, minimal, canonical, explanatory, json
 Y.lint("a: 1\na: 2\n")                      // [{rule: "duplicate-key", severity, message, start, end}]

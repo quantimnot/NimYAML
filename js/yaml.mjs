@@ -38,8 +38,17 @@ export class YamlError extends Error {
 }
 
 function unwrap(envelope) {
-  const { ok, error } = JSON.parse(envelope);
+  const { ok, error, nan } = JSON.parse(envelope);
   if (error) throw new YamlError(error);
+  // JSON has no NaN: the envelope has null where it is, and its paths
+  if (nan) {
+    for (const path of nan) {
+      if (path.length === 0) return NaN;
+      let parent = ok;
+      for (const step of path.slice(0, -1)) parent = parent[step];
+      parent[path.at(-1)] = NaN;
+    }
+  }
   return ok;
 }
 

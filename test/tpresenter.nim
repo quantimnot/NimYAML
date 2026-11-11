@@ -221,3 +221,21 @@ suite "Presenter":
       scalarEvent("2"), endSeqEvent(), endMapEvent())
     assertOutput(input, "{\n  \"1\": true,\n  \"null\": [\n    2\n  ]\n}\n",
       jsonOptions)
+
+  test "JSON output writes numbers in JSON's syntax":
+    # YAML's integers and floats are wider than JSON's numbers: a sign, leading
+    # zeros, underscores, hexadecimal and octal, a point without digits
+    for (yaml, json) in [("080", "80"), ("1_000", "1000"), ("+12", "12"),
+        ("-007", "-7"), ("0", "0"), ("-0", "-0"), ("0x1F", "31"),
+        ("0o17", "15"), ("0xffffffffffffffffff", "4722366482869645213695"),
+        ("0.", "0.0"), (".5", "0.5"), ("+1.5e3", "1.5e3"), ("01.50", "1.50"),
+        ("1.e-3", "1.0e-3"), ("1e3", "1e3")]:
+      checkpoint yaml
+      assertOutput(inputSingle(scalarEvent(yaml)), json & "\n", jsonOptions)
+    # a tagged integer the same way; a string stays a string
+    assertOutput(inputSingle(scalarEvent("0x10", yTagInteger)), "16\n", jsonOptions)
+    assertOutput(inputSingle(scalarEvent("1", yTagFloat)), "1\n", jsonOptions)
+    assertOutput(inputSingle(scalarEvent("0x1F", yTagString)), "\"0x1F\"\n", jsonOptions)
+    # not a number: no digits after 0x, or one outside the base
+    assertOutput(inputSingle(scalarEvent("0x")), "\"0x\"\n", jsonOptions)
+    assertOutput(inputSingle(scalarEvent("0o19")), "\"0o19\"\n", jsonOptions)

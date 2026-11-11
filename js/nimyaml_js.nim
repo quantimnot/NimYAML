@@ -40,6 +40,11 @@ import ../tools/[yamllsp, yamlcli]
 
 # envelopes
 
+var nanPaths: seq[JsonNode]
+  ## Where the values of the current envelope have a not-a-number, which
+  ## JSON cannot carry (see `presented`): the envelope lists them as
+  ## ``"nan"``, and ``yaml.mjs`` puts NaN there.
+
 proc rootCause(e: ref Exception): ref Exception =
   ## The innermost error: streams wrap the error of the parser they read.
   result = e
@@ -58,22 +63,45 @@ proc errorEnvelope(e: ref Exception): cstring =
 
 proc okEnvelope(json: string): cstring =
   ## ``json`` is JSON text already.
-  cstring("{\"ok\":" & json & "}")
+  if nanPaths.len == 0: cstring("{\"ok\":" & json & "}")
+  else: cstring("{\"ok\":" & json & ",\"nan\":" & $(%nanPaths) & "}")
 
 template envelope(body: untyped): cstring =
   # Defects too: a bug should reach JavaScript as an error with a message,
   # not as an object of the Nim runtime
+  nanPaths.setLen(0)
   try: okEnvelope(body)
   except Exception as e: errorEnvelope(e)
 
 # values
 
-proc presented(node: YamlNode, dumper: Dumper, json: bool): string =
+type Frame = object
+  ## A collection that `presented` is in: its path component so far.
+  isMap, atKey: bool
+  index: int
+  key: string
+
+proc presented(node: YamlNode, dumper: Dumper, json: bool,
+    nonFinite = false, path: seq[JsonNode] = @[]): string =
   ## ``node`` written as ``dumper`` says. A node keeps the style it was read
   ## in, all flow and quotes for a value from JSON, which is dropped so that
   ## the dumper decides. JSON needs its tags resolved (to tell 1 from "1");
   ## YAML keeps them implicit, and keeps quotes only on a string that would
   ## read as another type without them, as the yaml command does.
+  ##
+  ## With ``nonFinite``, a float that JSON has no number for still comes
+  ## out, for JavaScript: an infinity as ``1e999`` or ``-1e999``, which
+  ## ``JSON.parse`` reads as one, and not-a-number as ``null``, its path
+  ## (after ``path``) added to `nanPaths`.
+  var frames: seq[Frame]
+  proc here(): seq[JsonNode] =
+    result = path
+    for f in frames:
+      result.add(if f.isMap: %f.key else: %f.index)
+  proc done() =
+    if frames.len > 0:
+      if frames[^1].isMap: frames[^1].atKey = true
+      else: inc frames[^1].index
   let events = newBufferYamlStream()
   for e in represent(node, dumper.serialization):
     var e = e
@@ -88,15 +116,48 @@ proc presented(node: YamlNode, dumper: Dumper, json: bool): string =
         n.scalarProperties.tag in [yTagExclamationMark, yTagString] and
         guessType(n.scalarContent) != yTypeUnknown:
       n.scalarStyle = ssDoubleQuoted
+    if nonFinite:
+      let atKey = frames.len > 0 and frames[^1].atKey
+      case n.kind
+      of yamlStartMap, yamlStartSeq:
+        if atKey: frames[^1].atKey = false
+        frames.add(Frame(isMap: n.kind == yamlStartMap,
+            atKey: n.kind == yamlStartMap))
+      of yamlEndMap, yamlEndSeq:
+        frames.setLen(frames.len - 1)
+        done()
+      of yamlScalar, yamlAlias:
+        if atKey:
+          frames[^1].atKey = false
+          frames[^1].key = if n.kind == yamlScalar: n.scalarContent else: ""
+        else:
+          if n.kind == yamlScalar and n.scalarProperties.tag in [
+              yTagQuestionMark, yTagFloat, yTagNimFloat32, yTagNimFloat64]:
+            case guessType(n.scalarContent)
+            of yTypeFloatInf:
+              n.scalarContent =
+                if n.scalarContent.startsWith('-'): "-1e999" else: "1e999"
+              n.scalarProperties.tag = yTagFloat
+            of yTypeFloatNaN:
+              nanPaths.add(%here())
+              n.scalarContent = "null"
+              n.scalarProperties.tag = yTagNull
+            else: discard
+          done()
+      else: discard
     events.put(n)
   present(events, dumper.presentation)
 
-proc jsonText(node: YamlNode): string =
-  ## ``node`` as JSON text, on one line.
+proc jsonText(node: YamlNode, path: seq[JsonNode] = @[]): string =
+  ## ``node`` as JSON text, on one line; ``path`` is where it is in the
+  ## result, for `nanPaths`.
   var dumper = jsonDumper()
   dumper.presentation.maxLineLength = none(int)
   dumper.presentation.newlines = nlNone
-  presented(node, dumper, json = true).strip()
+  # the tags of the nodes, which the presenter does not write but types the
+  # scalars by: without, ``!!str 80`` would be the number 80
+  dumper.serialization.tagStyle = tsAll
+  presented(node, dumper, json = true, nonFinite = true, path).strip()
 
 proc nodeOf(json: cstring): YamlNode =
   loadAs[YamlNode]($json)
@@ -108,7 +169,7 @@ proc jsonArray(nodes: openArray[YamlNode]): string =
   result = "["
   for i, node in nodes:
     if i > 0: result.add(',')
-    result.add(node.jsonText)
+    result.add(node.jsonText(@[%i]))
   result.add(']')
 
 # the library
@@ -172,7 +233,7 @@ proc nimyaml_query(json, path: cstring): cstring {.exportc.} =
     var parts: seq[string]
     for found in queryLocated(nodeOf(json), $path):
       parts.add("{\"path\":" & $(%found.path) & ",\"value\":" &
-          found.node.jsonText & "}")
+          found.node.jsonText(@[%parts.len, %"value"]) & "}")
     "[" & parts.join(",") & "]"
 
 proc nimyaml_applyPatch(json, patch: cstring): cstring {.exportc.} =

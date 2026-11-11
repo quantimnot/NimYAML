@@ -28,7 +28,8 @@ type
     ## ================== =========================
     ## Name               RegEx
     ## ================== =========================
-    ## ``yTypeInteger``   ``[-+]? [0-9]+``
+    ## ``yTypeInteger``   ``[-+]? [0-9]+ | 0 [xX] [0-9a-fA-F]+ | 0 [oO] [0-7]+``
+    ##                    (underscores allowed after the first digit)
     ## ``yTypeFloat``     ``[-+]? ( \. [0-9]+ | [0-9]+ ( \. [0-9]* )? ) ( [eE] [-+]? [0-9]+ )?``
     ## ``yTypeFloatInf``  ``[-+]? ( \.inf | \.Inf | \.INF )``
     ## ``yTypeFloatNaN``  ``\.nan | \.NaN | \.NAN``
@@ -220,9 +221,22 @@ template advanceTypeHint(ch: char) {.dirty.} =
     [ythDay1, ythDay2, ythDay1NoYmd, ythDay2NoYmd] => ythAfterDaySpace
     [ythAfterTimeSpace, ythAfterDaySpace] => nil
 
+proc isBasedInteger(scalar: string): bool =
+  ## Whether ``scalar`` is a hexadecimal (``0x``) or octal (``0o``) integer,
+  ## which the library reads with underscores between digits, as decimal.
+  if scalar.len < 3 or scalar[0] != '0' or scalar[2] == '_': return false
+  let digits = case scalar[1]
+    of 'x', 'X': {'0'..'9', 'a'..'f', 'A'..'F', '_'}
+    of 'o', 'O': {'0'..'7', '_'}
+    else: return false
+  for i in 2 ..< scalar.len:
+    if scalar[i] notin digits: return false
+  true
+
 proc guessType*(scalar: string): TypeHint {.raises: [].} =
   ## Parse scalar string according to the RegEx table documented at
   ## `TypeHint <#TypeHind>`_.
+  if isBasedInteger(scalar): return yTypeInteger
   var typeHintState: YamlTypeHintState = ythInitial
   for c in scalar: advanceTypeHint(c)
   case typeHintState

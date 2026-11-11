@@ -551,6 +551,63 @@ proc writeDoubleQuoted(
     e.parent = ce
     raise e
 
+proc jsonInteger(scalar: string): string =
+  ## ``scalar``, an integer as YAML writes it, as JSON writes it; empty if
+  ## it is none. YAML allows what the library reads as an integer: a sign,
+  ## leading zeros and underscores in decimal (``+007``, ``1_000``), and
+  ## ``0x`` hexadecimal and ``0o`` octal of any size, which are converted.
+  var base = 10
+  var i = 0
+  var negative = false
+  if scalar.len > 2 and scalar[0] == '0' and scalar[1] in {'x', 'X', 'o', 'O'}:
+    base = if scalar[1] in {'x', 'X'}: 16 else: 8
+    i = 2
+  elif scalar.len > 0 and scalar[0] in {'-', '+'}:
+    negative = scalar[0] == '-'
+    i = 1
+  if i >= scalar.len or scalar[i] == '_': return ""
+  # the decimal digits of the value, most significant first
+  var digits: seq[int]
+  for c in scalar.toOpenArray(i, scalar.high):
+    let d = case c
+      of '_': continue
+      of '0'..'9': ord(c) - ord('0')
+      of 'a'..'f': ord(c) - ord('a') + 10
+      of 'A'..'F': ord(c) - ord('A') + 10
+      else: return ""
+    if d >= base: return ""
+    var carry = d
+    for k in countdown(digits.high, 0):
+      let v = digits[k] * base + carry
+      digits[k] = v mod 10
+      carry = v div 10
+    while carry > 0:
+      digits.insert(carry mod 10, 0)
+      carry = carry div 10
+  if digits.len == 0: digits.add(0)
+  if negative: result.add('-')
+  for d in digits: result.add(chr(ord('0') + d))
+
+proc jsonFloat(scalar: string): string =
+  ## ``scalar``, a float that `guessType` recognizes, as JSON writes it:
+  ## without a ``+``, underscores or leading zeros, with a digit on each
+  ## side of the point (``.5`` is ``0.5``, ``1.e3`` is ``1.0e3``).
+  var s = scalar.replace("_", "")
+  if s.len > 0 and s[0] in {'-', '+'}:
+    if s[0] == '-': result.add('-')
+    s = s[1..^1]
+  let e = s.find({'e', 'E'})
+  let mantissa = if e < 0: s else: s[0 ..< e]
+  let point = mantissa.find('.')
+  let whole = (if point < 0: mantissa else: mantissa[0 ..< point]).strip(
+      trailing = false, chars = {'0'})
+  result.add(if whole.len == 0: "0" else: whole)
+  if point >= 0:
+    let fraction = mantissa[point + 1 .. ^1]
+    result.add('.')
+    result.add(if fraction.len == 0: "0" else: fraction)
+  if e >= 0: result.add(s[e .. ^1])
+
 proc writeDoubleQuotedJson(
   ctx   : var Context,
   scalar: string,
@@ -1062,30 +1119,34 @@ proc doPresent(
       case ctx.options.quoting
       of sqJson:
         var hint = yTypeUnknown
+        var integer = ""
+        let tag = item.scalarProperties.tag
         # keys are always strings in JSON; values and items may be keywords
         # and numbers
         if ctx.levels.len == 0 or ctx.state notin {dBlockExplicitMapKey,
             dBlockImplicitMapKey, dFlowImplicitMapKey, dFlowExplicitMapKey}:
           hint = guessType(item.scalarContent)
-        let tag = item.scalarProperties.tag
+          if tag in [yTagQuestionMark, yTagInteger,
+              yTagNimInt8, yTagNimInt16, yTagNimInt32, yTagNimInt64,
+              yTagNimUInt8, yTagNimUInt16, yTagNimUInt32, yTagNimUInt64,
+              # a float may be written as an integer
+              yTagFloat, yTagNimFloat32, yTagNimFloat64]:
+            integer = jsonInteger(item.scalarContent)
         if tag in [yTagQuestionMark, yTagBoolean] and
             hint in {yTypeBoolTrue, yTypeBoolFalse}:
           ctx.safeWrite(if hint == yTypeBoolTrue: "true" else: "false")
         elif tag in [yTagQuestionMark, yTagNull] and
             hint == yTypeNull:
           ctx.safeWrite("null")
-        elif tag in [yTagQuestionMark, yTagInteger,
-            yTagNimInt8, yTagNimInt16, yTagNimInt32, yTagNimInt64,
-            yTagNimUInt8, yTagNimUInt16, yTagNimUInt32, yTagNimUInt64] and
-            hint == yTypeInteger:
-          ctx.safeWrite(item.scalarContent)
+        elif integer.len > 0:
+          ctx.safeWrite(integer)
         elif tag in [yTagQuestionMark, yTagFloat, yTagNimFloat32,
             yTagNimFloat64] and hint in {yTypeFloatInf, yTypeFloatNaN}:
           raise newException(YamlPresenterJsonError,
               "Infinity and not-a-number values cannot be presented as JSON!")
-        elif tag in [yTagQuestionMark, yTagFloat] and
-            hint == yTypeFloat:
-          ctx.safeWrite(item.scalarContent)
+        elif tag in [yTagQuestionMark, yTagFloat, yTagNimFloat32,
+            yTagNimFloat64] and hint == yTypeFloat:
+          ctx.safeWrite(jsonFloat(item.scalarContent))
         else:
           ctx.lastImplicitKeyLen = ctx.writeDoubleQuotedJson(item.scalarContent)
       of sqDouble:

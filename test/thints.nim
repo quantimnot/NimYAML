@@ -19,6 +19,15 @@ suite "Hints":
     assert guessType("-4248") == yTypeInteger
     assert guessType("+42489") == yTypeInteger
 
+  test "Hexadecimal and octal Int":
+    # 0x [0-9a-fA-F]+ | 0o [0-7]+, as the library reads them
+    for s in ["0x1F", "0xff", "0X0", "0x1_F", "0o17", "0O0", "0o1_7"]:
+      checkpoint s
+      check guessType(s) == yTypeInteger
+    for s in ["0x", "0o", "0x_1", "0xg", "0o8", "-0x1", "1x0", "0x1.5"]:
+      checkpoint s
+      check guessType(s) == yTypeUnknown
+
   test "Non-Int":
     assert guessType("0+0") != yTypeInteger
     assert guessType("0-1") != yTypeInteger

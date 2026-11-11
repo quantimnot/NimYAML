@@ -19,6 +19,19 @@ test("load and loadAll: YAML to values, Unicode kept", () => {
   assert.throws(() => Y.load("a\n---\nb\n"), /expected one document, found 2/);
 });
 
+test("load: YAML's numbers become numbers", () => {
+  assert.deepEqual(Y.load("[080, 1_000, +12, 0x1F, 0o17, 0., .5, 1e3]"),
+    [80, 1000, 12, 31, 15, 0, 0.5, 1000]);
+  assert.deepEqual(Y.load("a: .inf\nb: -.Inf\nc: [.nan, .NaN]\nd: !!str .nan\n"),
+    { a: Infinity, b: -Infinity, c: [NaN, NaN], d: ".nan" });
+  assert.deepEqual(Y.loadAll("x\n--- {a: [1, .nan]}\n--- .nan\n"),
+    ["x", { a: [1, NaN] }, NaN]);
+  // a key is a string; so is what is tagged one, and a tag makes a number
+  assert.deepEqual(Y.load(".nan: .inf\n"), { ".nan": Infinity });
+  assert.deepEqual(Y.load("[!!str 80, !!str 0x1F, !!str true, !!int '7', !!float 1]"),
+    ["80", "0x1F", "true", 7, 1]);
+});
+
 test("a parse error is a YamlError with its position", () => {
   assert.throws(() => Y.load("a: [\n"), (e) =>
     e instanceof Y.YamlError && e.kind === "YamlParserError" &&
