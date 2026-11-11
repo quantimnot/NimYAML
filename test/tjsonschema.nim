@@ -220,6 +220,42 @@ properties:
     check ("default", "/a") in found
     check ("properties", "") in found
 
+  test "annotations at a location, of an invalid instance too":
+    let s = compile(loadAs[YamlNode]("""
+title: Root
+required: [missing]
+$defs:
+  port: {description: A port, type: integer}
+properties:
+  name: {title: Name, description: Who, type: string}
+  port: {$ref: "#/$defs/port", default: 80}
+  shape:
+    oneOf:
+    - {description: A circle, required: [r]}
+    - {description: A square, required: [side]}
+  odd: {not: {description: Not this}, description: Odd}
+"""))
+    proc at(r: ValidationResult, location: string): seq[(string, string)] =
+      for a in r.annotationsAt(location):
+        result.add((a.keyword, if a.value.kind == yScalar: a.value.content
+                               else: ""))
+    let r = s.validate(loadAs[YamlNode](
+        "{name: [1], port: x, shape: {side: 2}, odd: 1}"))
+    check not r.valid
+    check r.at("") == @[("title", "Root")] # properties failed: no annotation
+    # failed for its type, still described
+    check r.at("/name") == @[("title", "Name"), ("description", "Who")]
+    check r.at("/name/0").len == 0
+    # through the reference
+    check ("description", "A port") in r.at("/port")
+    check ("default", "80") in r.at("/port")
+    # only the matching alternative
+    check r.at("/shape") == @[("description", "A square")]
+    check r.at("/odd") == @[("description", "Odd")]
+    # no alternative matches: all of them
+    let none = s.validate(loadAs[YamlNode]("{shape: {}}")).at("/shape")
+    check none == @[("description", "A circle"), ("description", "A square")]
+
   test "output formats":
     let
       s = compile(loadAs[YamlNode]("{anyOf: [{type: string}, {type: integer}]}"))

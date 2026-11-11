@@ -355,6 +355,67 @@ suite "LSP directive features":
     check diags[0]["code"].getStr() == "unresolvable-schema-uri"
     check diags[0]["severity"].getInt() == 1
 
+  test "hover shows the schema's documentation of a node":
+    let dir = getTempDir() / ("yamllsp-hover-" & $getCurrentProcessId())
+    createDir(dir)
+    defer: removeDir(dir)
+    writeFile(dir / "s.yaml", """
+title: Service
+$defs:
+  port: {type: integer, description: A TCP port., examples: [80, 443]}
+properties:
+  name:
+    title: Name
+    description: plain
+    markdownDescription: The *service* name.
+  port: {$ref: "#/$defs/port", default: 8080}
+  old: {deprecated: true, deprecationMessage: Use name.}
+  tags: {items: {description: One tag.}}
+""")
+    let uri = "file://" & dir / "x.yaml"
+    let text = """%GLOBAL SCHEMA s.yaml
+---
+name: web   # the name
+port: high
+tags: [a, b]
+
+old: 1
+--- {port: 1}
+"""
+    var s: Server
+    discard s.handle(didOpen(uri, text))
+    proc hoverText(s: var Server, line, character: int): string =
+      let r = s.answer(at("textDocument/hover", uri, line, character))
+      if r.kind == JNull: "" else: r["contents"]["value"].getStr()
+    # on the key and on the value, of a document that is not valid
+    let name = s.hoverText(2, 1)
+    check name.startsWith("**Name**\n\nThe *service* name.")
+    check "plain" notin name
+    check ("Schema: <file://" & dir / "s.yaml#/properties/name>") in name
+    check s.hoverText(2, 7) == name
+    # through a reference, with its own and the referring schema's keywords
+    let port = s.hoverText(3, 7)
+    check "A TCP port." in port
+    check "Default: `8080`" in port
+    check "Examples: `80`, `443`" in port
+    check "**Deprecated**: Use name." in s.hoverText(6, 0)
+    check "One tag." in s.hoverText(4, 7)
+    # the second document has the global schema too
+    check "A TCP port." in s.hoverText(7, 6)
+    # not between nodes, in comments or on directives
+    check s.hoverText(2, 10) == ""
+    check s.hoverText(2, 15) == ""
+    check s.hoverText(5, 0) == ""
+    check "**`%SCHEMA s.yaml`**" in s.hoverText(0, 9)
+    # nothing documented: no hover
+    discard s.handle(didOpen(uri, "%SCHEMA s.yaml\n--- {other: 1}\n"))
+    check s.hoverText(1, 6) == ""
+
+  test "no hover from a schema on a document without one":
+    var s: Server
+    discard s.handle(didOpen("untitled:n", "a: 1\n"))
+    check s.answer(at("textDocument/hover", "untitled:n", 0, 0)).kind == JNull
+
 suite "LSP schemas from the client":
   proc initialized(schemes: seq[string]): Server =
     discard result.handle(request(1, "initialize",
@@ -743,6 +804,10 @@ suite "LSP path at a position":
     check pointerAt(doc, 1, 18) == "/a/b"
     check pointerAt(doc, 2, 7) == "/a/e f"
     check pointerAt(doc, 3, 4) == "/z/0"
+
+  test "UTF-16 columns of the position's own line":
+    # not of the line before it, which has more bytes per unit
+    check pointerAt("éééééé: 1\nk: [x, y]\n", 1, 7) == "/k/1"
 
   test "pointer, path, segments and document":
     check pathAt("a:\n  - {c/d: x, e f: y, g_1: z}\n", 1, 18) == %*{

@@ -2,6 +2,17 @@
 
 Features:
 
+ * `yamllsp` shows the documentation of a node from the schema of its
+   document on hover: the `title`, `description` (VS Code's
+   `markdownDescription` where there is one), `deprecated`, `readOnly`,
+   `writeOnly`, `default` and `examples` of the subschemas that apply to it.
+   The new `annotationsAt` of `yaml/jsonschema` finds them, in an instance
+   that is not valid too.
+
+ * `yamllsp` reads the UTF-16 column of a position on its own line for
+   `nimyaml/pathAt` and the grid's error positions, not on the line before
+   it, which put positions after non-ASCII text in the wrong place.
+
  * JavaScript: `js/` is the bun package `nimyaml.js`, registered with
    `bun link` (in `js/`) and linked by the packages that use it, as
    `"nimyaml.js": "link:nimyaml.js"`. The CodeMirror editor that was

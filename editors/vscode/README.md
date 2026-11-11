@@ -187,6 +187,20 @@ name: Ada
 age: -1   # error: -1 is less than the minimum of 0 [schema-validation]
 ```
 
+Hovering a key or a value shows what the schema says about it: its
+`title`, its `description` (or VS Code's `markdownDescription`), whether it
+is `deprecated` (with VS Code's `deprecationMessage`), `readOnly` or
+`writeOnly`, its `default` and its `examples`, gathered through `$ref`s and
+`allOf`, and of `anyOf` and `oneOf` from the alternatives the value
+matches. A document that is not valid yet is described too; on `age` above,
+with a schema that describes it:
+
+> A person's age in years.
+>
+> Default: `0`
+>
+> Schema: <file:///…/person.schema.yaml#/properties/age>
+
 VS Code's own schemas, which it builds at runtime from the installed
 extensions and localizes into the display language, can be named by their
 `vscode://schemas/` URI, so that a YAML source of an extension manifest, of
@@ -409,7 +423,8 @@ a schema description, like vscode-yaml's
 [`registerHoverTransformer`](https://github.com/redhat-developer/vscode-yaml/pull/1304).
 
 The hovers that exist are those on directives and document markers (see
-[%GLOBAL](#global-directive)).
+[%GLOBAL](#global-directive)) and the schema documentation of nodes (see
+[JSON Schema](#json-schema)).
 
 ### Format Document
 

@@ -67,7 +67,8 @@
 ## ``isValid`` answers yes or no as fast as it can. ``validate`` evaluates
 ## the whole schema and keeps the results in a ``ValidationResult``:
 ## ``errors`` and ``annotations`` give the flat lists of the *basic* output
-## format, ``toYaml`` renders any of the four output formats of JSON Schema
+## format (``annotationsAt`` those that describe one node, whether or not
+## the instance is valid), ``toYaml`` renders any of the four output formats of JSON Schema
 ## 2020-12 (flag, basic, detailed and verbose) as a ``YamlNode``, and
 ## ``outputTree`` exposes the full tree for further processing (it is what
 ## JSON Hyper-Schema builds on).
@@ -1800,6 +1801,45 @@ proc annotations*(r: ValidationResult): seq[Annotation] =
         keyword: u.keyword, schemaLocation: u.schemaLocation,
         documentPointer: u.documentPointer,
         keywordLocation: u.keywordLocation, value: u.annotation))
+
+proc annotationsAt(u: OutputUnit, location: string,
+    output: var seq[Annotation]) =
+  let here = u.instanceLocation
+  if here != location and not location.startsWith(here & "/") and
+      here.len > 0:
+    return # applies elsewhere, and so does everything below it
+  if u.kind == oukKeyword:
+    case u.keyword
+    of "not", "propertyNames": return # the negation; property names
+    else: discard
+    if u.valid and not u.annotation.isNil and here == location:
+      output.add(Annotation(instanceLocation: here, keyword: u.keyword,
+          schemaLocation: u.schemaLocation,
+          documentPointer: u.documentPointer,
+          keywordLocation: u.keywordLocation, value: u.annotation))
+  # of alternatives, the ones that match, if any does; of contains, the
+  # items that match
+  var onlyValid = u.kind == oukKeyword and u.keyword == "contains"
+  if u.kind == oukKeyword and u.keyword in ["anyOf", "oneOf"]:
+    for c in u.children:
+      if c.valid: onlyValid = true
+  for c in u.children:
+    if onlyValid and not c.valid: continue
+    annotationsAt(c, location, output)
+
+proc annotationsAt*(r: ValidationResult, instanceLocation: string):
+    seq[Annotation] =
+  ## The annotations that apply to the node at ``instanceLocation``, for
+  ## describing it (as an editor does on hover) whether or not the instance
+  ## is valid. Unlike `annotations`, a subschema keeps the annotations it
+  ## produced when it failed for other parts of the instance (or other
+  ## keywords); of the subschemas of ``anyOf`` and ``oneOf``, only those
+  ## that match count, unless none does, and ``contains`` describes only the
+  ## items that match it. ``not`` and
+  ## ``propertyNames`` contribute nothing: their annotations describe what
+  ## is not allowed and property names. Ordered as evaluated, outermost
+  ## first.
+  if not r.tree.isNil: annotationsAt(r.tree, instanceLocation, result)
 
 proc unitNode(u: OutputUnit, nested: seq[YamlNode]): YamlNode =
   var fields = @[

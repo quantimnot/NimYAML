@@ -32,6 +32,10 @@
 ##   document, and its schema with the source it comes from,
 ## * go-to-definition and document links on schema references.
 ##
+## Hover on a node of a document with a schema shows its documentation
+## from the schema: title, description, default, examples and whether it is
+## deprecated (see the section below).
+##
 ## Formatting rewrites a document as ``yaml format`` would, in the style of
 ## its config (see the section below).
 ##
@@ -344,9 +348,12 @@ proc hoverForDocument(a: Analysis, doc: int): string =
         $winner.startPos.line & ")")
   if not any: result.add("\nNo directives; YAML 1.2 defaults.")
 
-proc hover(s: Server, uri: string, line, character: int): JsonNode =
+proc schemaHover(s: var Server, uri: string, line, character: int): JsonNode
+
+proc hover(s: var Server, uri: string, line, character: int): JsonNode =
   ## A directive line explains that directive (or why it is ignored); a
-  ## ``---`` or ``...`` marker lists what is in effect for its document.
+  ## ``---`` or ``...`` marker lists what is in effect for its document;
+  ## a node shows its documentation from the schema of its document.
   if uri notin s.docs: return newJNull()
   let a = analyze(s.docs[uri], uri)
   let markLine = line + 1
@@ -382,7 +389,8 @@ proc hover(s: Server, uri: string, line, character: int): JsonNode =
           "value": a.hoverForDocument(i)},
           "range": lspRange(a.lines, Mark(line: markLine, column: 1),
               Mark(line: markLine, column: 4))}
-  newJNull()
+  if text.startsWith("%"): return newJNull()
+  s.schemaHover(uri, line, character)
 
 const
   directiveNames = [
@@ -834,11 +842,7 @@ proc gridTree(node: YamlNode, ancestors: var HashSet[Identity],
 proc errorPosition(text: string, mark: Mark): JsonNode =
   ## The LSP position of ``mark`` in ``text``.
   let line = max(int(mark.line) - 1, 0)
-  var lineText = ""
-  for i, l in text.sourceLines:
-    if i == line:
-      lineText = l
-      break
+  let lineText = text.lineAt(line + 1) # LSP lines are 0-based
   %*{"line": line, "character": utf16Column(lineText, max(int(mark.column), 1))}
 
 proc gridOf(text: string, json: bool): JsonNode =
@@ -1029,11 +1033,7 @@ iterator walkDocuments(w: var PathWalker): tuple[document: int,
 
 proc pathAt(text: string, json: bool, line, character: int): JsonNode =
   ## The path of the node at the LSP position, or null outside every document.
-  var lineText = ""
-  for i, l in text.sourceLines:
-    if i == line:
-      lineText = l
-      break
+  let lineText = text.lineAt(line + 1) # LSP lines are 0-based
   let position = Mark(line: line + 1,
       column: max(byteColumn(lineText, character), 1))
   var
@@ -1406,6 +1406,149 @@ proc schemaRequests(s: var Server): seq[JsonNode] =
         "method": "nimyaml/schemaContent", "params": {"uri": uri}})
   client.unsent.setLen(0)
 
+proc registryFor(s: Server, config: ToolConfig, configDir: string):
+    SchemaRegistry =
+  ## A fresh registry for the documents of ``config``, so that edits of
+  ## schema files take effect on the next use.
+  let location = config.schemaCache
+  newSchemaRegistry(s.schemaLoader(config.remoteSchemas,
+      readDirs(location, configDir), schemaCacheDir(location, configDir)),
+      lenient = s.lenient())
+
+# Schema documentation
+#
+# Hover on a node of a document with a schema shows what the schema says
+# about it: the ``title``, ``description`` (VS Code's ``markdownDescription``
+# where a schema has one), ``deprecated`` (with VS Code's
+# ``deprecationMessage``), ``readOnly``, ``writeOnly``, ``default`` and
+# ``examples`` of the subschemas that apply to it, as `annotationsAt` finds
+# them, so that a document that is not valid yet is described too. The node
+# is the one ``nimyaml/pathAt`` names: on a key, the member's value. The
+# document is read and validated as for its diagnostics, by the config's
+# rules; it has no documentation where it is not validated.
+
+type
+  SchemaNode = object
+    found: bool
+    schema: DocumentSchema
+    root: YamlNode
+    pointer: string
+
+proc schemaNodeAt(text, sourceUri: string, position: Mark): SchemaNode =
+  ## The document at ``position`` if it declares a schema, constructed, and
+  ## the JSON Pointer of its node at ``position``.
+  var
+    held: seq[Event]
+    found: SchemaNode
+  proc onEvent(e: Event) =
+    if e.kind notin {yamlStartStream, yamlEndStream}: held.add(e)
+  proc onDocument(doc: DocumentSchema) =
+    let events = @[startStreamEvent()] & held
+    held.setLen(0)
+    if found.found or doc.schema.len == 0: return
+    var w = PathWalker(events: events, position: position)
+    for (_, first, last) in w.walkDocuments:
+      if not (first <= position and position <= last and w.found): continue
+      let buffer = newBufferYamlStream()
+      for i in 1 ..< events.len: buffer.put(events[i])
+      var stream = YamlStream(buffer)
+      var root: YamlNode
+      try: construct(stream, root)
+      except CatchableError: return
+      found = SchemaNode(found: true, schema: doc, root: root,
+          pointer: jsonPointer(%w.best))
+  discard readSchemas(initYamlParser(sourceUri = sourceUri).
+      parseRecovering(text), newStringStream(text), sourceUri, onEvent,
+      proc (line: int, text: string) = discard, onDocument)
+  found
+
+proc jsonText(node: YamlNode): string =
+  ## ``node`` as compact JSON, shortened to a hover's width.
+  result = $node.toJsonValue
+  if result.len > previewLength:
+    var cut = previewLength
+    while cut > 0 and (ord(result[cut]) and 0xC0) == 0x80: dec(cut)
+    result = result[0 ..< cut] & "…"
+
+proc describeNode(annotations: seq[Annotation]): string =
+  ## Markdown: what ``annotations`` say about a node; empty if nothing.
+  var
+    titles, descriptions, defaults, examples, notes: seq[string]
+    source = ""
+  template addNew(list: var seq[string], value: string) =
+    if value.len > 0 and value notin list: list.add(value)
+  proc text(a: Annotation): string =
+    if a.value.kind == yScalar: a.value.content else: ""
+  proc inSchema(a: Annotation, keyword: string): Annotation =
+    ## The annotation ``keyword`` of the schema of ``a``, if any.
+    for other in annotations:
+      if other.keyword == keyword and other.schemaLocation == a.schemaLocation:
+        return other
+  for a in annotations:
+    case a.keyword
+    of "title": titles.addNew(a.text)
+    of "description", "markdownDescription":
+      let markdown = a.inSchema("markdownDescription")
+      if a.keyword == "description" and not markdown.value.isNil: continue
+      descriptions.addNew(a.text)
+    of "deprecated":
+      if a.text != "true": continue
+      let message = a.inSchema("deprecationMessage")
+      notes.addNew("**Deprecated**" &
+          (if not message.value.isNil and message.text.len > 0:
+            ": " & message.text else: "."))
+    of "readOnly": (if a.text == "true": notes.addNew("Read-only."))
+    of "writeOnly": (if a.text == "true": notes.addNew("Write-only."))
+    of "default": defaults.addNew("`" & a.value.jsonText & "`")
+    of "examples":
+      if a.value.kind == ySequence:
+        for example in a.value.elems:
+          examples.addNew("`" & example.jsonText & "`")
+    else: continue
+    if source.len == 0: source = a.schemaLocation
+  var parts: seq[string]
+  if titles.len > 0: parts.add("**" & titles.join(" / ") & "**")
+  parts.add(descriptions)
+  parts.add(notes)
+  if defaults.len > 0: parts.add("Default: " & defaults.join(", "))
+  if examples.len > 0:
+    parts.add((if examples.len == 1: "Example: " else: "Examples: ") &
+        examples.join(", "))
+  if parts.len == 0: return ""
+  parts.add("Schema: <" & source & ">")
+  parts.join("\n\n")
+
+proc schemaHover(s: var Server, uri: string, line, character: int): JsonNode =
+  ## What the schema of the document says about the node at the position.
+  result = newJNull()
+  let text = s.docs[uri]
+  let lineText = text.lineAt(line + 1) # LSP lines are 0-based
+  # on the text of a node, not between nodes or in a comment
+  let column = byteColumn(lineText, character)
+  if column > lineText.len or lineText[column - 1] in Whitespace: return
+  let comment = lineText.find(" #")
+  if lineText.strip().startsWith("#") or comment >= 0 and column > comment:
+    return
+  let (config, _, configDir) = s.configFor(uri)
+  if not config.validateSchemas: return
+  let sourceUri = sourceUriOf(uri)
+  let node = schemaNodeAt(text, sourceUri, Mark(line: line + 1,
+      column: column))
+  if not node.found: return
+  let registry = s.registryFor(config, configDir)
+  var sections: seq[string]
+  for declared in node.schema.schemas:
+    if declared.uri.len == 0: continue
+    var described = ""
+    try:
+      described = registry.compile(declared.uri).validate(node.root).
+          annotationsAt(node.pointer).describeNode
+    except JsonSchemaError: continue
+    if described.len > 0 and described notin sections: sections.add(described)
+  if sections.len > 0:
+    result = %*{"contents": {"kind": "markdown",
+        "value": sections.join("\n\n---\n\n")}}
+
 proc publish(s: var Server, uri: string): JsonNode =
   var diagnostics = newJArray()
   if uri in s.docs:
@@ -1421,12 +1564,7 @@ proc publish(s: var Server, uri: string): JsonNode =
     let sourceUri = sourceUriOf(uri)
     for d in lint(text, config.lint, sourceUri): diagnostics.add(d.toLsp(lines))
     if config.validateSchemas:
-      # a fresh registry per publish, so that edits of schema files take
-      # effect on the next change
-      let location = config.schemaCache
-      let registry = newSchemaRegistry(s.schemaLoader(config.remoteSchemas,
-          readDirs(location, configDir), schemaCacheDir(location, configDir)),
-          lenient = s.lenient())
+      let registry = s.registryFor(config, configDir)
       let found = validateDocuments(text, registry, sourceUri)
       let missing = not s.clientSchemas.isNil and s.clientSchemas.missing
       for d in found:
