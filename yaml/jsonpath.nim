@@ -726,6 +726,23 @@ proc normalizedPath*(path: JsonPath): string {.raises: [].} =
       result.add("[" & $selector.index & "]")
     else: return ""
 
+proc memberNames*(path: JsonPath): seq[string]
+    {.raises: [YamlJsonPathError].} =
+  ## The keys of the member that ``path`` names, one per level, for a path
+  ## that is a chain of member names, like ``$.files['save-delay']``. Used
+  ## by `yaml/edit <edit.html>`_ to set and remove members by path.
+  ## Raises ``YamlJsonPathError`` for any other path.
+  proc fail(reason: string) {.noreturn.} =
+    var e = newException(YamlJsonPathError, reason)
+    e.query = path.source
+    raise e
+  if path.query.relative: fail("expected a path that starts at $")
+  for segment in path.query.segments:
+    if segment.descendant or segment.selectors.len != 1 or
+        segment.selectors[0].kind != skName:
+      fail("expected a path of member names, like $.a.b")
+    result.add(segment.selectors[0].name)
+
 # ============================================================================
 # Evaluation
 #

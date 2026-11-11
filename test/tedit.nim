@@ -7,7 +7,7 @@
 import std/[os, streams, unittest]
 when defined(nimPreviewSlimSystem):
   import std/syncio
-import ../yaml/[edit, jsonpath, presenter, source, memory]
+import ../yaml/[edit, jsonpath, presenter, source, memory, parser, data, native]
 
 let tmp = getTempDir() / ("tedit-" & $getCurrentProcessId())
 createDir(tmp)
@@ -189,6 +189,12 @@ suite "rename":
     check renamed("a: 1\n", "$.a", "x: y") == "\"x: y\": 1\n"
     check renamed("a: 1\n", "$.a", "true") == "\"true\": 1\n"
     check renamed("a: 1\n", "$.a", "") == "\"\": 1\n"
+    check renamed("a: 1\n", "$.a", "2001-01-01") == "\"2001-01-01\": 1\n"
+    check renamed("a: 1\n", "$.a", "-a") == "\"-a\": 1\n"
+
+  test "names like save-delay are plain":
+    check renamed("a: 1\n", "$.a", "save-delay") == "save-delay: 1\n"
+    check renamed("{a: 1}\n", "$.a", "x.y/z_1") == "{x.y/z_1: 1}\n"
 
   test "properties of the key stay":
     check renamed("!!str a: 1\n", "$.a", "b") == "!!str b: 1\n"
@@ -213,3 +219,162 @@ suite "rename":
     expect YamlEditError: discard renamed("a: 1\n", "$", "b")
     # the mapping has a member of that name
     expect YamlEditError: discard renamed("a: 1\nb: 2\n", "$.a", "b")
+
+proc setTo(source: string, keys: openArray[string], value: string,
+    json = false): string =
+  setMember(source, keys, value, json = json)
+
+suite "setMember":
+  test "an empty text or one with only comments":
+    check setTo("# head\n", ["files", "save-delay"], "10") ==
+        "# head\nfiles:\n  save-delay: 10\n"
+    check setTo("", ["a"], "1") == "a: 1\n"
+    check setTo("# head", ["a"], "1") == "# head\na: 1"
+    check setTo("# a\n\n# b\n", ["x", "y"], "[1, 2]") ==
+        "# a\n\n# b\nx:\n  y: [1, 2]\n"
+
+  test "a member that is there is assigned to, its comment kept":
+    let source = "# head\nfiles:\n  save-delay: 5 # fast\n  other: x\n"
+    check setTo(source, ["files", "save-delay"], "10") ==
+        "# head\nfiles:\n  save-delay: 10 # fast\n  other: x\n"
+
+  test "a new member goes after the last member of its mapping":
+    let source = "# head\n\nfiles:  # files\n  a: 1 # one\n\n  b:\n" &
+        "    c: 2\n# about z\nz: 3\n"
+    check setTo(source, ["files", "d"], "4") ==
+        "# head\n\nfiles:  # files\n  a: 1 # one\n\n  b:\n    c: 2\n" &
+        "  d: 4\n# about z\nz: 3\n"
+    check setTo(source, ["files", "b", "e"], "x y") ==
+        "# head\n\nfiles:  # files\n  a: 1 # one\n\n  b:\n    c: 2\n" &
+        "    e: x y\n# about z\nz: 3\n"
+    check setTo(source, ["n"], "1") == source & "n: 1\n"
+    check setTo("a: 1", ["b"], "2") == "a: 1\nb: 2"
+
+  test "missing mappings are created in block style":
+    check setTo("a: 1\n", ["b", "c", "d"], "{p: 1, q: [x]}") ==
+        "a: 1\nb:\n  c:\n    d:\n      p: 1\n      q: [x]\n"
+    check setTo("a: 1\n", ["b"], "{p: [{q: 1, r: 2}]}") ==
+        "a: 1\nb:\n  p:\n    - q: 1\n      r: 2\n"
+
+  test "keys and values that need quotes":
+    check setTo("a: 1\n", ["1"], "'true'") == "a: 1\n\"1\": \"true\"\n"
+    check setTo("a: 1\n", ["x: y"], "''") == "a: 1\n\"x: y\": \"\"\n"
+
+  test "an empty or null value becomes a mapping":
+    check setTo("a:\nb: 1\n", ["a", "c"], "2") == "a:\n  c: 2\nb: 1\n"
+    check setTo("a:  # c\nb: 1\n", ["a", "c"], "2") ==
+        "a:  # c\n  c: 2\nb: 1\n"
+    check setTo("a: ~ # c\nb: 1\n", ["a", "c"], "2") ==
+        "a: # c\n  c: 2\nb: 1\n"
+    check setTo("a: {k: ~}\n", ["a", "k", "c"], "2") ==
+        "a: {k: {c: 2}}\n"
+
+  test "flow mappings":
+    check setTo("a: {x: 1}\n", ["a", "y"], "2") == "a: {x: 1, y: 2}\n"
+    check setTo("a: {}\n", ["a", "y", "z"], "2") == "a: {y: {z: 2}}\n"
+    check setTo("a: {x: 1,}\n", ["a", "y"], "2") == "a: {x: 1, y: 2,}\n"
+    check setTo("{\n  \"a\": 1 // one\n}\n", ["b"], "[1]", json = true) ==
+        "{\n  \"a\": 1, // one\n  \"b\": [1]\n}\n"
+    check setTo("{\n  \"a\": 1,\n}\n", ["b"], "x", json = true) ==
+        "{\n  \"a\": 1,\n  \"b\": \"x\",\n}\n"
+
+  test "line breaks of the source":
+    check setTo("a:\r\n  b: 1\r\n", ["a", "c"], "2") ==
+        "a:\r\n  b: 1\r\n  c: 2\r\n"
+
+  test "a path given as a JSONPath":
+    check setMember("a: 1\n", parseJsonPath("$.files['save-delay']"), "10") ==
+        "a: 1\nfiles:\n  save-delay: 10\n"
+    expect YamlJsonPathError:
+      discard setMember("a: 1\n", parseJsonPath("$.a[0]"), "10")
+    expect YamlJsonPathError:
+      discard setMember("a: 1\n", parseJsonPath("$..a"), "10")
+
+  test "errors":
+    # not a mapping on the path
+    expect YamlEditError: discard setTo("a: 1\n", ["a", "b"], "2")
+    expect YamlEditError: discard setTo("- 1\n", ["a"], "2")
+    expect YamlEditError: discard setTo("a: 1\n", [], "2")
+    # an invalid source is refused with its position
+    try:
+      discard setTo("a: 1\nb: [\n", ["c"], "2")
+      check false
+    except YamlParserError as e:
+      check e.mark.line == 3
+    # a duplicate key too
+    try:
+      discard setTo("a: 1\nb: 2\na: 3\n", ["c"], "2")
+      check false
+    except YamlConstructionError as e:
+      check e.mark.line == 3
+      check e.mark.column == 1
+
+proc removed(source: string, keys: openArray[string], json = false): string =
+  removeMember(source, keys, json = json)
+
+suite "removeMember":
+  test "the member's lines go, with the comment block above it":
+    let source = "# head\nfiles:\n  # about a\n  # more\n  a: 1 # one\n" &
+        "\n  # about b\n  b:\n    c: 2\n    # c's\n  # d's\n  d: 3\nz: 4\n"
+    check removed(source, ["files", "a"]) ==
+        "# head\nfiles:\n\n  # about b\n  b:\n    c: 2\n    # c's\n" &
+        "  # d's\n  d: 3\nz: 4\n"
+    check removed(source, ["files", "b"]) ==
+        "# head\nfiles:\n  # about a\n  # more\n  a: 1 # one\n\n" &
+        "  # d's\n  d: 3\nz: 4\n"
+    check removed(source, ["files", "d"]) ==
+        "# head\nfiles:\n  # about a\n  # more\n  a: 1 # one\n" &
+        "\n  # about b\n  b:\n    c: 2\n    # c's\nz: 4\n"
+    check removed(source, ["z"]) ==
+        "# head\nfiles:\n  # about a\n  # more\n  a: 1 # one\n" &
+        "\n  # about b\n  b:\n    c: 2\n    # c's\n  # d's\n  d: 3\n"
+
+  test "the head of the file stays":
+    let source = "# $schema: x.json\nfiles:\n  a: 1\n# about z\nz: 2\n"
+    check removed(source, ["files"]) == "# $schema: x.json\n# about z\nz: 2\n"
+    check removed(source, ["z"]) == "# $schema: x.json\nfiles:\n  a: 1\n"
+
+  test "a mapping left empty goes, all the way up":
+    check removed("# head\nfiles:\n  save-delay: 10\n",
+        ["files", "save-delay"]) == "# head\n"
+    check removed("a:\n  b:\n    c: 1\nd: 2\n", ["a", "b", "c"]) == "d: 2\n"
+    check removed("a:\n  b:\n    c: 1\n  e: 3\n", ["a", "b", "c"]) ==
+        "a:\n  e: 3\n"
+    check removed("a: 1\n", ["a"]) == ""
+    check removed("a: 1\n---\nb: 2\n", ["a"]) == "---\nb: 2\n"
+
+  test "a path that is not there leaves the text as it is":
+    let source = "a:\n  b: 1\n"
+    check removed(source, ["x"]) == source
+    check removed(source, ["a", "x"]) == source
+    check removed(source, ["a", "b", "c"]) == source
+    check removed("", ["a"]) == ""
+    check removed("# only\n", ["a"]) == "# only\n"
+
+  test "flow mappings":
+    check removed("a: {x: 1, y: 2}\nb: 1\n", ["a", "x"]) ==
+        "a: {y: 2}\nb: 1\n"
+    check removed("a: {x: 1, y: 2}\nb: 1\n", ["a", "y"]) ==
+        "a: {x: 1}\nb: 1\n"
+    check removed("a: {x: 1}\nb: 1\n", ["a", "x"]) == "b: 1\n"
+    check removed("{\n  \"a\": 1,\n  \"b\": 2\n}\n", ["a"], json = true) ==
+        "{\n  \"b\": 2\n}\n"
+    check removed("{\n  \"a\": 1,\n  \"b\": 2\n}\n", ["b"], json = true) ==
+        "{\n  \"a\": 1\n}\n"
+    check removed("{\"a\": 1}", ["a"], json = true) == "{}"
+
+  test "set then remove gives the text back":
+    for source in ["# head\n", "# head\nx: 1\n", "x:\n  y: 1 # c\n"]:
+      let edited = setTo(source, ["files", "save-delay"], "10")
+      check removed(edited, ["files", "save-delay"]) == source
+
+  test "a path given as a JSONPath":
+    check removeMember("a: 1\nb: 2\n", parseJsonPath("$.b")) == "a: 1\n"
+
+  test "errors":
+    try:
+      discard removed("a: [1\n", ["a"])
+      check false
+    except YamlParserError as e:
+      check e.mark.line == 2
+    expect YamlConstructionError: discard removed("a: 1\na: 2\n", ["a"])

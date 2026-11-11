@@ -691,6 +691,12 @@ proc yamlTag*[K, V](T: typedesc[Table[K, V]]): Tag {.inline, raises: [].} =
   return nimTag("tables:Table(" & safeTagUri(yamlTag(K)) & ';' &
       safeTagUri(yamlTag(V)) & ")")
 
+proc duplicateKeyMessage[K](key: K): string =
+  ## The error for a key a table has already; it names the key if it can.
+  when K is string: "Duplicate table key: " & escape(key)
+  elif compiles($key): "Duplicate table key: " & $key
+  else: "Duplicate table key!"
+
 proc constructObject*[K, V](
   ctx   : var ConstructionContext,
   result: var Table[K, V],
@@ -706,10 +712,11 @@ proc constructObject*[K, V](
     var
       key: K
       value: V
+    let keyPos = ctx.input.peek.startPos
     ctx.constructChild(key)
     ctx.constructChild(value)
     if result.contains(key):
-      raise ctx.input.constructionError(event.startPos, "Duplicate table key!")
+      raise ctx.input.constructionError(keyPos, duplicateKeyMessage(key))
     result[key] = value
   discard ctx.input.next()
 
@@ -751,6 +758,7 @@ proc constructObject*[K, V](
       raise ctx.input.constructionError(
         event.startPos, "Expected map start, got " & $event.kind
       )
+    let keyPos = ctx.input.peek.startPos
     ctx.constructChild(key)
     ctx.constructChild(value)
     event = ctx.input.next()
@@ -759,7 +767,7 @@ proc constructObject*[K, V](
         event.startPos, "Expected map end, got " & $event.kind
       )
     if result.contains(key):
-      raise ctx.input.constructionError(event.startPos, "Duplicate table key!")
+      raise ctx.input.constructionError(keyPos, duplicateKeyMessage(key))
     result[move(key)] = move(value)
   discard ctx.input.next()
 

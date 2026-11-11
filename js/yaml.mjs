@@ -148,3 +148,36 @@ export function expandDirectives(text, { uri = "" } = {}) {
 export function assign(text, path, value) {
   return unwrap(nimyaml.assign(text, path, value));
 }
+
+const memberPath = (path) => {
+  if (Array.isArray(path)) return JSON.stringify(path.map(String));
+  if (typeof path === "string") return path;
+  throw new TypeError("a path is an array of keys or a JSONPath");
+};
+
+/**
+ * A YAML text with the member at `path` set to the JavaScript (JSON)
+ * value `value`. `path` is an array of keys, like ["files", "save-delay"],
+ * or a JSONPath of member names, like "$.files['save-delay']". A member
+ * that is there gets the value in place, keeping its trailing comment; one
+ * that is not is added after the last member of its mapping, with the
+ * mappings it needs, in block style. The rest of the text — comments,
+ * blank lines, order, styles — is kept as it is. A text that does not
+ * parse (or has a duplicate key) is a YamlError with its position.
+ *
+ *   set("# head\n", ["files", "save-delay"], 10)
+ *   // "# head\nfiles:\n  save-delay: 10\n"
+ */
+export function set(text, path, value) {
+  return unwrap(nimyaml.set(text, memberPath(path), json(value)));
+}
+
+/**
+ * A YAML text without the member at `path` (as for set): its lines go,
+ * with the comment block directly above it, but not the comments above
+ * the root's first member, which may be the file's head. A mapping left
+ * empty goes too. A path that is not there gives the text unchanged.
+ */
+export function remove(text, path) {
+  return unwrap(nimyaml.remove(text, memberPath(path)));
+}

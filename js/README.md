@@ -58,6 +58,8 @@ Y.inferSchema([doc1, doc2])                 // a JSON Schema
 Y.canonicalize(value)                       // RFC 8785 text
 Y.expandDirectives(text)                    // %GLOBAL/%SCHEMA expanded
 Y.assign(text, "$.a", "42")                 // {text, count}, comments and styles kept
+Y.set("# head\n", ["files", "save-delay"], 10) // "# head\nfiles:\n  save-delay: 10\n"; adds what is missing
+Y.remove(text, "$.files['save-delay']")     // the member and the comments above it; empty mappings go too
 ```
 
 Errors are `YamlError`s, with `kind` (the Nim exception) and, for an error

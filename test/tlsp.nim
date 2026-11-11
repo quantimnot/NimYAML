@@ -1012,3 +1012,86 @@ suite "LSP batches":
     discard s.handle(didOpen("untitled:one", "a: 1\n"))
     let replies = s.handle(notification("nimyaml/filesChanged"))
     check replies.publishes("untitled:one") == 1
+
+suite "LSP setting and removing members":
+  proc offsetOf(text: string, position: JsonNode): int =
+    var line = position["line"].getInt()
+    while line > 0:
+      result = text.find('\l', result) + 1
+      dec(line)
+    var lineEnd = text.find('\l', result)
+    if lineEnd < 0: lineEnd = text.len
+    result += byteColumn(text[result ..< lineEnd],
+        position["character"].getInt()) - 1
+
+  proc applied(text: string, edits: JsonNode): string =
+    result = text
+    for edit in edits:
+      let
+        first = result.offsetOf(edit["range"]["start"])
+        last = result.offsetOf(edit["range"]["end"])
+      result = result[0 ..< first] & edit["newText"].getStr() &
+          result[last .. ^1]
+
+  proc command(s: var Server, name: string, args: JsonNode): JsonNode =
+    s.handle(request(7, "workspace/executeCommand",
+        %*{"command": name, "arguments": args}))[0]
+
+  test "the commands are advertised":
+    var s: Server
+    let c = s.handle(request(1, "initialize"))[0]["result"]["capabilities"]
+    check c["executeCommandProvider"]["commands"] ==
+        %*["nimyaml.set", "nimyaml.remove"]
+
+  test "set and remove answer edits of the open document":
+    var s: Server
+    let text = "# é head\nfiles:\n  save-delay: 5 # fast\nz: 1\n"
+    discard s.handle(didOpen("file:///w/c.yaml", text))
+    var reply = s.command("nimyaml.set",
+        %*["file:///w/c.yaml", ["files", "save-delay"], 10])
+    check reply["result"].len == 1
+    check reply["result"][0]["range"]["start"] ==
+        %*{"line": 2, "character": 14}
+    check text.applied(reply["result"]) ==
+        "# é head\nfiles:\n  save-delay: 10 # fast\nz: 1\n"
+    reply = s.command("nimyaml.set",
+        %*["file:///w/c.yaml", "$.files.watch", {"on": true}])
+    check text.applied(reply["result"]) ==
+        "# é head\nfiles:\n  save-delay: 5 # fast\n  watch: {on: true}\nz: 1\n"
+    reply = s.command("nimyaml.remove", %*["file:///w/c.yaml", ["files"]])
+    check text.applied(reply["result"]) == "# é head\nz: 1\n"
+    # nothing to remove: no edits
+    reply = s.command("nimyaml.remove", %*["file:///w/c.yaml", ["nope"]])
+    check reply["result"] == newJArray()
+
+  test "a document from nothing":
+    var s: Server
+    discard s.handle(didOpen("file:///w/e.yaml", "# head\n"))
+    let reply = s.command("nimyaml.set",
+        %*["file:///w/e.yaml", ["files", "save-delay"], 10])
+    check "# head\n".applied(reply["result"]) ==
+        "# head\nfiles:\n  save-delay: 10\n"
+
+  test "json documents":
+    var s: Server
+    let text = "{\n  \"a\": 1\n}\n"
+    discard s.handle(didOpen("file:///w/c.json", text))
+    let reply = s.command("nimyaml.set", %*["file:///w/c.json", ["b"], "x"])
+    check text.applied(reply["result"]) ==
+        "{\n  \"a\": 1,\n  \"b\": \"x\"\n}\n"
+
+  test "errors":
+    var s: Server
+    discard s.handle(didOpen("file:///w/bad.yaml", "a: 1\nb: [\n"))
+    var reply = s.command("nimyaml.set", %*["file:///w/bad.yaml", ["c"], 1])
+    check reply.hasKey("error")
+    check reply["error"]["message"].getStr().startsWith("line 3, column ")
+    discard s.handle(didOpen("file:///w/dup.yaml", "a: 1\na: 2\n"))
+    reply = s.command("nimyaml.remove", %*["file:///w/dup.yaml", ["a"]])
+    check reply["error"]["message"].getStr().startsWith("line 2, column 1: ")
+    reply = s.command("nimyaml.set", %*["file:///w/closed.yaml", ["c"], 1])
+    check "not an open document" in reply["error"]["message"].getStr()
+    reply = s.command("nimyaml.set", %*["file:///w/bad.yaml", ["c"]])
+    check "expects the arguments" in reply["error"]["message"].getStr()
+    reply = s.command("nimyaml.nope", %*[])
+    check reply["error"]["code"].getInt() == -32602

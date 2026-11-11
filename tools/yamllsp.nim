@@ -893,6 +893,86 @@ proc gridEdit(params: JsonNode): tuple[text, error: string] =
     result.error = getCurrentExceptionMsg()
 
 # ============================================================================
+# Setting and removing members
+#
+# ``workspace/executeCommand`` with ``nimyaml.set`` (arguments ``[uri, path,
+# value]``) or ``nimyaml.remove`` (``[uri, path]``) is `setMember` or
+# `removeMember` on the open document ``uri``: ``path`` is an array of keys
+# or a JSONPath of member names, ``value`` a JSON value. The answer is the
+# edits that make the change, for the client to apply to the document as an
+# ordinary edit, which comes back as ``didChange``: so a settings page and
+# the text of its file stay one. The edits are one, from the first byte
+# that changes to the last, so that the client's cursor and undo history
+# see only the lines of the member; none if nothing changes. A document
+# that does not parse is answered with an error at its position, rather
+# than with an edit.
+# ============================================================================
+
+const editCommands* = ["nimyaml.set", "nimyaml.remove"]
+
+proc lspOffsetPosition(text: string, offset: int): JsonNode =
+  ## The LSP position of the byte ``offset`` of ``text``.
+  let lineStart = if offset == 0: 0 else: text.rfind('\l', 0, offset - 1) + 1
+  %*{"line": text[0 ..< offset].count('\l'),
+     "character": utf16Column(text[lineStart ..< offset],
+         offset - lineStart + 1)}
+
+proc changeEdits*(old, new: string): JsonNode =
+  ## The LSP edits that turn ``old`` into ``new``: one, over what differs.
+  result = newJArray()
+  if old == new: return
+  proc inside(text: string, i: int): bool =
+    # within a UTF-8 sequence or a CR LF line break, where no position is
+    i > 0 and i < text.len and ((ord(text[i]) and 0xC0) == 0x80 or
+        text[i - 1] == '\c' and text[i] == '\l')
+  var first = 0
+  while first < old.len and first < new.len and old[first] == new[first]:
+    inc(first)
+  while old.inside(first) or new.inside(first): dec(first)
+  var tail = 0
+  while tail < old.len - first and tail < new.len - first and
+      old[^(tail + 1)] == new[^(tail + 1)]:
+    inc(tail)
+  while tail > 0 and (old.inside(old.len - tail) or
+      new.inside(new.len - tail)):
+    dec(tail)
+  result.add(%*{"range": {"start": lspOffsetPosition(old, first),
+                          "end": lspOffsetPosition(old, old.len - tail)},
+                "newText": new[first ..< new.len - tail]})
+
+proc editCommand(s: Server, command: string, args: JsonNode):
+    tuple[edits: JsonNode, error: string] =
+  ## The edits of the command ``command`` with ``args``, or why it fails.
+  let setting = command == "nimyaml.set"
+  if args.isNil or args.kind != JArray or args.len != (if setting: 3 else: 2):
+    return (nil, command & " expects the arguments [uri, path" &
+        (if setting: ", value]" else: "]"))
+  let uri = args[0].getStr()
+  if uri notin s.docs: return (nil, "not an open document: " & uri)
+  let
+    text = s.docs[uri]
+    path = documentPath(uri).toLowerAscii()
+    json = path.endsWith(".json") or path.endsWith(".jsonc")
+  var keys: seq[string]
+  try:
+    case args[1].kind
+    of JArray:
+      for key in args[1]:
+        if key.kind != JString: return (nil, "the keys of a path are strings")
+        keys.add(key.getStr())
+    of JString: keys = parseJsonPath(args[1].getStr()).memberNames
+    else: return (nil, "a path is an array of keys or a JSONPath")
+    let edited =
+      if setting: setMember(text, keys, $args[2], json = json)
+      else: removeMember(text, keys, json = json)
+    result.edits = changeEdits(text, edited)
+  except YamlLoadingError as e:
+    result.error = "line " & $e.mark.line & ", column " & $e.mark.column &
+        ": " & e.msg
+  except YamlEditError, YamlStreamError, YamlJsonPathError:
+    result.error = getCurrentExceptionMsg()
+
+# ============================================================================
 # Path at a position
 # ============================================================================
 #
@@ -1607,6 +1687,7 @@ proc handle*(s: var Server, msg: JsonNode): seq[JsonNode] =
                        "completionProvider": {"triggerCharacters": ["%", " "]},
                        "hoverProvider": true, "definitionProvider": true,
                        "documentFormattingProvider": true,
+                       "executeCommandProvider": {"commands": editCommands},
                        "documentLinkProvider": {"resolveProvider": false},
                        "semanticTokensProvider": {"legend": semanticLegend(),
                                                   "full": true}},
@@ -1652,6 +1733,14 @@ proc handle*(s: var Server, msg: JsonNode): seq[JsonNode] =
     let (edits, error) = s.formatting(params["textDocument"]["uri"].getStr())
     result.add(if error.len > 0: respondError(id, requestFailed, error)
                else: respond(id, edits))
+  of "workspace/executeCommand":
+    let command = params["command"].getStr()
+    if command notin editCommands:
+      result.add(respondError(id, -32602, "unknown command: " & command))
+    else:
+      let (edits, error) = s.editCommand(command, params{"arguments"})
+      result.add(if error.len > 0: respondError(id, requestFailed, error)
+                 else: respond(id, edits))
   of "nimyaml/blockScalars":
     result.add(respond(id, s.blockScalarsOf(params["textDocument"]["uri"].getStr())))
   of "nimyaml/grid":

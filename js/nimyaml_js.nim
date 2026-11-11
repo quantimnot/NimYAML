@@ -214,6 +214,29 @@ proc nimyaml_assign(text, path, value: cstring): cstring {.exportc.} =
     let (edited, count) = assign($text, parseJsonPath($path), $value)
     $(%*{"text": edited, "count": count})
 
+proc memberKeys(path: string): seq[string] =
+  ## The keys of ``path``: a JSON array of strings, or a JSONPath of member
+  ## names like ``$.files['save-delay']``.
+  if path.startsWith("["):
+    for key in parseJson(path):
+      if key.kind != JString:
+        raise newException(ValueError, "the keys of a path must be strings")
+      result.add(key.getStr())
+  else: result = parseJsonPath(path).memberNames
+
+proc nimyaml_set(text, path, value: cstring): cstring {.exportc.} =
+  ## ``text`` with the member that ``path`` names (see `memberKeys`) set to
+  ## the JSON value ``value``, added with the mappings it needs if it is
+  ## not there; the rest of the text is kept as it is (see `setMember`).
+  envelope:
+    let yamlValue = presented(nodeOf(value), Dumper(), json = false)
+    $(%setMember($text, memberKeys($path), yamlValue))
+
+proc nimyaml_remove(text, path: cstring): cstring {.exportc.} =
+  ## ``text`` without the member that ``path`` names, nor the comments
+  ## about it (see `removeMember`); as it is if there is no such member.
+  envelope($(%removeMember($text, memberKeys($path))))
+
 # the yaml command
 
 proc nimyaml_runCli(args: cstring): int {.exportc.} =

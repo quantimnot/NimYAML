@@ -298,6 +298,23 @@ suite "Serialization":
     assert result[23] == "dreiundzwanzig"
     assert result[42] == "zweiundvierzig"
 
+  test "Load Table and OrderedTable: a duplicate key is an error at the key":
+    try:
+      var t: Table[string, int]
+      load("a: 1\nb: 2\na: 3\n", t)
+      check false
+    except YamlConstructionError as e:
+      check e.msg == "Duplicate table key: \"a\""
+      check e.mark.line == 3
+      check e.mark.column == 1
+    try:
+      var t: OrderedTable[int32, string]
+      load("- 1: a\n- 1: b\n", t)
+      check false
+    except YamlConstructionError as e:
+      check e.msg == "Duplicate table key: 1"
+      check e.mark.line == 2
+
   test "Dump Table[int, string]":
     var input = initTable[int32, string]()
     input[23] = "dreiundzwanzig"

@@ -31,6 +31,17 @@
 ## same way: only the text of each key is rewritten, quoted where the new
 ## name would not read as a string otherwise, and its properties stay.
 ##
+## `setMember` and `removeMember` edit the member that a path of keys names,
+## as a program changes a setting in a config file that a person edits too:
+## a missing member is added with the mappings it needs, and a removed one
+## takes the comments about it along.
+##
+## .. code-block:: nim
+##   setMember("# head\n", ["files", "save-delay"], "10") ==
+##       "# head\nfiles:\n  save-delay: 10\n"
+##   removeMember("# head\nfiles:\n  save-delay: 10\n",
+##       ["files", "save-delay"]) == "# head\n"
+##
 ## The edited text is parsed again and must have the documents that
 ## assigning to (or renaming in) the parsed source gives; otherwise
 ## `YamlEditError` is raised.
@@ -64,7 +75,8 @@ type
 
   Operation = enum
     ## What is being done, for messages.
-    opAssign = "assign to", opRename = "rename"
+    opAssign = "assign to", opRename = "rename", opSet = "set",
+    opRemove = "remove"
 
 proc fail(path, reason: string, op = opAssign) {.noreturn.} =
   raise newException(YamlEditError,
@@ -380,15 +392,26 @@ proc applied(source: string, kept: seq[tuple[doc: int, c: Chosen]],
     result = result[0 ..< e.first] & e.text & result[e.last .. ^1]
     bound = e.first
 
+proc isNull(node: YamlNode): bool =
+  node.kind == yScalar and node.tag in [yTagQuestionMark, yTagNull] and
+      node.content in ["", "~", "null", "Null", "NULL"]
+
 proc verify(text: string, json: bool, docs: seq[Document], op: Operation,
-    start = none(YamlDocumentStart)) =
+    start = none(YamlDocumentStart), emptied = -1) =
   ## Checks that ``text`` has the documents ``docs``, whose roots have been
   ## edited the way the text is supposed to have been. With ``start``,
-  ## ``text`` is the source from that document start on.
+  ## ``text`` is the source from that document start on. The document
+  ## ``emptied``, whose root mapping has lost its last member, may also be
+  ## gone or empty, as its text then has nothing but comments.
   var edited: seq[YamlNode]
   try: edited = roots(readEvents(text, json, start))
   except YamlParserError, YamlConstructionError:
     fail("the edited text is invalid: " & getCurrentExceptionMsg(), op)
+  var docs = docs
+  if emptied >= 0:
+    if edited.len == docs.len - 1: docs.delete(emptied)
+    elif edited.len == docs.len and edited[emptied].isNull:
+      edited[emptied] = docs[emptied].root
   if edited.len != docs.len:
     fail("the edited text has other documents", op)
   for i, doc in docs:
@@ -397,8 +420,11 @@ proc verify(text: string, json: bool, docs: seq[Document], op: Operation,
       fail("the edited text has an alias of an anchor it does not define",
           op)
     if not jsonEquals(edited[i], doc.root):
-      fail("the edited text does not have the " &
-          (if op == opAssign: "assigned values" else: "renamed keys"), op)
+      fail("the edited text does not have the " & (case op
+          of opAssign: "assigned values"
+          of opRename: "renamed keys"
+          of opSet: "value set"
+          of opRemove: "member removed"), op)
 
 proc doAssign(source: string, path: JsonPath, value: string,
     options: PresentationOptions, json: bool, document: int):
@@ -611,6 +637,23 @@ proc assign*(src: YamlSource, path: JsonPath, value: string, output: Stream,
 # non-specific tag ``!`` of quoted scalars for this; the key keeps its own
 # properties, since a ``!!str`` on it says nothing the new name contradicts.
 
+proc keyText(name: string, options: PresentationOptions, json: bool,
+    taken: HashSet[string]): string =
+  ## The key ``name`` as text, quoted where it would not read as a string.
+  ## A name like ``save-delay`` is written plain: the presenter quotes any
+  ## scalar with a ``-`` or ``:`` in flow context, but between letters
+  ## these are plain in flow and block context alike.
+  if not json and name.len > 0 and name[0] notin {'-', '.', '/'} and
+      guessType(name) == yTypeUnknown:
+    var plain = true
+    for c in name:
+      if c notin {'a'..'z', 'A'..'Z', '0'..'9', '_', '-', '.', '/'}:
+        plain = false
+        break
+    if plain: return name
+  render(@[scalarEvent(name, yTagExclamationMark, style = ssDoubleQuoted)],
+      inlineOptions(options, json), json, true, taken)
+
 proc stringKey(parent: YamlNode, name: string): YamlNode =
   ## The key of ``parent`` that names the member ``name``, or nil.
   for key in parent.fields.keys:
@@ -622,9 +665,7 @@ proc doRename(source: string, path: JsonPath, name: string,
   let
     events = readEvents(source, json)
     (docs, taken) = index(source, events)
-    nameText = render(@[scalarEvent(name, yTagExclamationMark,
-        style = ssDoubleQuoted)], inlineOptions(options, json), json, true,
-        taken)
+    nameText = keyText(name, options, json, taken)
   var chosen: seq[tuple[doc: int, c: Chosen]]
   for d, doc in docs:
     if document >= 0 and d != document: continue
@@ -684,3 +725,381 @@ proc rename*(source: string, path: JsonPath, name: string,
   except CatchableError:
     raise newException(YamlEditError,
         "internal error: " & getCurrentExceptionMsg())
+
+# setting and removing members
+#
+# `setMember` and `removeMember` edit the member that a path of keys names,
+# the way a program changes a setting in a config file that a person edits
+# too. A member that is there is assigned to, as `assign` does; one that is
+# not is written after the last member of the deepest mapping of the path
+# that is, with any mappings in between created in block style, so that the
+# text grows the way a person would write it. Removing takes the lines of a
+# member, and with them the comments about it: those directly above it, and
+# those below it that are indented deeper than its key.
+
+proc memberPath(keys: openArray[string], n: int): string =
+  ## The Normalized Path of the member that the first ``n`` keys name.
+  result = "$"
+  for i in 0 ..< n: result.addNameSegment(keys[i])
+
+proc lineStart(src: string, pos: int): int =
+  result = pos
+  while result > 0 and src[result - 1] != '\l': dec(result)
+
+proc nextLine(src: string, pos: int): int =
+  ## The start of the line after the one ``pos`` is on, or the end of
+  ## ``src``.
+  result = pos
+  while result < src.len and src[result] != '\l': inc(result)
+  if result < src.len: inc(result)
+
+proc isBlank(src: string, first, last: int): bool =
+  for i in first ..< last:
+    if src[i] notin {' ', '\t'}: return false
+  true
+
+proc isCommentLine(src: string, first: int): bool =
+  ## Whether the line that begins at ``first`` has nothing but a comment.
+  var i = first
+  while i < src.len and src[i] in {' ', '\t'}: inc(i)
+  i < src.len and src[i] == '#'
+
+proc insertLines(src, text, newline: string, at: int): Edit =
+  ## Inserts the lines ``text`` at ``at``: the start of a line, or the end
+  ## of ``src``, which may lack a final line break.
+  if at >= src.len and src.len > 0 and src[^1] != '\l':
+    (at, at, newline & text)
+  else: (at, at, text & newline)
+
+proc applyEdits(src: string, edits: seq[Edit], op: Operation): string =
+  var edits = edits
+  edits.sort(proc(a, b: Edit): int = cmp(b.first, a.first))
+  result = src
+  var bound = src.len + 1
+  for e in edits:
+    if e.last > bound: fail("the edits overlap", op)
+    result = result[0 ..< e.first] & e.text & result[e.last .. ^1]
+    bound = e.first
+
+
+proc nestedEvents(keys: openArray[string], value: seq[Event]): seq[Event] =
+  ## The events of ``value`` within a mapping for each of ``keys``.
+  for k in keys:
+    result.add(startMapEvent())
+    result.add(scalarEvent(k, yTagExclamationMark, style = ssDoubleQuoted))
+  result.add(value)
+  for k in keys: result.add(endMapEvent())
+
+proc nestedNode(keys: openArray[string], value: YamlNode): YamlNode =
+  result = value
+  for i in countdown(keys.high, 0):
+    result = newYamlNode([(newYamlNode(keys[i], yTagExclamationMark),
+        result)])
+
+proc blockMember(keys: openArray[string], value: YamlNode,
+    valueEvents: seq[Event], options: PresentationOptions,
+    taken: HashSet[string], column: int, newline: string): string =
+  ## The member ``keys[0]`` in block style at ``column``, with a block
+  ## mapping for each further key and ``value`` in the last one.
+  let step = max(options.indentationStep, 1)
+  for i, k in keys:
+    if i > 0: result.add(newline)
+    result.add(repeat(' ', column + i * step) &
+        keyText(k, options, false, taken) & ":")
+  var lines: seq[string]
+  if value.kind != yScalar and options.quoting != sqJson and
+      options.containers != cFlow:
+    lines = blockLines(valueEvents, options, taken)
+  if lines.len == 0:
+    result.add(" " & render(valueEvents, inlineOptions(options, false),
+        false, true, taken))
+  else:
+    let indentation = column + keys.len * step
+    for line in lines:
+      result.add(newline)
+      if line.len > 0: result.add(repeat(' ', indentation) & line)
+
+proc members(doc: Document, parentPath: string):
+    seq[tuple[key, value: Target]] =
+  ## The members of the mapping at ``parentPath`` that paths name.
+  for path, span in doc.spans.nodes.pairs:
+    if span.parentPath == parentPath and span.index < 0 and
+        doc.spans.keys.hasKey(path):
+      result.add((doc.spans.keys.getOrDefault(path), span))
+
+proc flowInsert(src: string, doc: Document, parentPath: string,
+    parent: Target, member, newline: string): seq[Edit] =
+  ## Inserts ``member`` after the last member of the flow mapping
+  ## ``parent``: on a line of its own if that member has one.
+  let close = parent.stop - 1 # the ``}``
+  var
+    lastEnd = -1
+    lastKey = -1
+  for (key, value) in doc.members(parentPath):
+    let stop = max(key.stop, value.stop)
+    if stop > lastEnd: (lastEnd, lastKey) = (stop, key.start)
+  if lastEnd < 0:
+    return @[(parent.content + 1, parent.content + 1, member)]
+  var j = lastEnd
+  while j < close and src[j] in {' ', '\t'}: inc(j)
+  let comma = j < close and src[j] == ','
+  if comma: inc(j)
+  if '\l' in src[j ..< close]:
+    let at = nextLine(src, j)
+    result.add((at, at, repeat(' ', columnOf(src, lastKey)) & member &
+        (if comma: "," else: "") & newline))
+    if not comma: result.add((lastEnd, lastEnd, ","))
+  elif comma: result.add((j, j, " " & member & ","))
+  else: result.add((lastEnd, lastEnd, ", " & member))
+
+proc doSet(source: string, keys: seq[string], value: string,
+    options: PresentationOptions, json: bool, document: int): string =
+  if keys.len == 0: fail("the path names no member", opSet)
+  let
+    newValue = loadValue(value)
+    valueEvents = valueEvents(value)
+    events = readEvents(source, json)
+    (docs, taken) = index(source, events)
+    newline = if "\c\l" in source: "\c\l" else: "\l"
+    inline = inlineOptions(options, json)
+  if docs.len == 0:
+    # nothing but comments: the member goes after them
+    if document > 0: fail("the source has no document " & $document, opSet)
+    let text =
+      if json:
+        render(nestedEvents(keys, valueEvents), inline, json, true, taken)
+      else:
+        blockMember(keys, newValue, valueEvents, options, taken, 0, newline)
+    result = applyEdits(source,
+        @[insertLines(source, text, newline, source.len)], opSet)
+    verify(result, json, @[Document(root: nestedNode(keys, newValue))], opSet)
+    return
+  if document >= docs.len:
+    fail("the source has no document " & $document, opSet)
+  let
+    d = max(document, 0)
+    doc = docs[d]
+  # the deepest member of the path that is there
+  var
+    node = doc.root
+    depth = 0
+  while depth < keys.len and node.kind == yMapping:
+    let key = node.stringKey(keys[depth])
+    if key.isNil: break
+    node = node.fields[key]
+    inc(depth)
+  if depth == keys.len:
+    return assign(source, parseJsonPath(memberPath(keys, depth)), value,
+        options, json, d).text
+  let
+    rest = keys[depth .. ^1]
+    (parentPath, parent) = doc.resolve(memberPath(keys, depth), opSet)
+  var edits: seq[Edit]
+  if node.kind == yMapping:
+    case parent.kind
+    of skBlock:
+      let text = blockMember(rest, newValue, valueEvents, options, taken,
+          columnOf(source, parent.content), newline)
+      edits.add(insertLines(source, text, newline,
+          nextLine(source, parent.stop)))
+    of skFlow:
+      let member = keyText(rest[0], options, json, taken) & ": " &
+          render(nestedEvents(rest[1 .. ^1], valueEvents), inline, json, true,
+              taken)
+      edits.add(flowInsert(source, doc, parentPath, parent, member, newline))
+    else: fail(memberPath(keys, depth), "its text is not a mapping", opSet)
+    node.fields[newYamlNode(rest[0], yTagExclamationMark)] =
+        nestedNode(rest[1 .. ^1], newValue)
+  elif node.isNull and parent.kind in {skEmpty, skScalar} and
+      parent.props.len == 0 and not parent.inFlow and
+      parent.parentMapColumn >= 0 and not json:
+    # an empty or null value of a block mapping: a block mapping takes its
+    # place, on the lines after its key
+    if parent.kind == skScalar:
+      var first = parent.content
+      while first > 0 and source[first - 1] in {' ', '\t'}: dec(first)
+      edits.add((first, parent.stop, ""))
+    let text = blockMember(rest, newValue, valueEvents, options, taken,
+        parent.parentMapColumn + max(options.indentationStep, 1), newline)
+    edits.add(insertLines(source, text, newline,
+        nextLine(source, parent.stop)))
+    node[] = nestedNode(rest, newValue)[]
+  elif node.isNull:
+    # a null in a flow collection, with properties, or the root
+    return assign(source, parseJsonPath(memberPath(keys, depth)),
+        render(nestedEvents(rest, valueEvents), inline, json, true, taken),
+        options, json, d).text
+  else:
+    fail(memberPath(keys, keys.len),
+        memberPath(keys, depth) & " is not a mapping", opSet)
+  result = applyEdits(source, edits, opSet)
+  verify(result, json, docs, opSet)
+
+proc doRemove(source: string, keys: seq[string], json: bool,
+    document: int): string =
+  if keys.len == 0: fail("the path names no member", opRemove)
+  let
+    events = readEvents(source, json)
+    (docs, _) = index(source, events)
+    d = max(document, 0)
+  if d >= docs.len: return source
+  let doc = docs[d]
+  var
+    parents: seq[YamlNode]
+    node = doc.root
+  for k in keys:
+    if node.kind != yMapping: return source
+    let key = node.stringKey(k)
+    if key.isNil: return source
+    parents.add(node)
+    node = node.fields[key]
+  # a mapping that would be left empty goes too, up to the root
+  var n = keys.len
+  while n > 1 and parents[n - 1].fields.len == 1: dec(n)
+  let
+    path = memberPath(keys, n)
+    (resolved, value) = doc.resolve(path, opRemove)
+  if not doc.spans.keys.hasKey(resolved):
+    fail(path, "its key is not in the source", opRemove)
+  let
+    key = doc.spans.keys.getOrDefault(resolved)
+    (_, parent) = doc.resolve(value.parentPath, opRemove)
+    last = max(key.stop, value.stop)
+  var edits: seq[Edit]
+  case parent.kind
+  of skBlock:
+    let ls = lineStart(source, key.start)
+    if not isBlank(source, ls, key.start):
+      fail(path, "its key does not begin a line", opRemove)
+    let column = key.start - ls
+    var stop = nextLine(source, last)
+    # the comments below it that are indented deeper than its key
+    while stop < source.len and isCommentLine(source, stop):
+      var i = stop
+      while source[i] in {' ', '\t'}: inc(i)
+      if i - stop <= column: break
+      stop = nextLine(source, i)
+    # the comments directly above it and not indented deeper (those are
+    # about the member before), but not those above the first member of the
+    # root, which may be the head of the file (a modeline, say)
+    var firstOfRoot = value.parentPath == "$"
+    if firstOfRoot:
+      for (other, _) in doc.members(value.parentPath):
+        if other.start < key.start: firstOfRoot = false
+    var first = ls
+    if not firstOfRoot:
+      while first > 0:
+        let previous = lineStart(source, first - 1)
+        if not isCommentLine(source, previous): break
+        var i = previous
+        while source[i] in {' ', '\t'}: inc(i)
+        if i - previous > column: break
+        first = previous
+    edits.add((first, stop, ""))
+  of skFlow:
+    var j = last
+    while j < source.len and source[j] in {' ', '\t'}: inc(j)
+    if j < source.len and source[j] == ',':
+      inc(j)
+      while j < source.len and source[j] in {' ', '\t'}: inc(j)
+      let ls = lineStart(source, key.start)
+      if isBlank(source, ls, key.start) and
+          (j >= source.len or source[j] in {'\l', '\c'}):
+        edits.add((ls, nextLine(source, j), "")) # the member's line
+      else: edits.add((key.start, j, ""))
+    else:
+      # the last member: the comma before it goes
+      var p = key.start
+      while p > 0 and source[p - 1] in {' ', '\t', '\l', '\c'}: dec(p)
+      if p > 0 and source[p - 1] == ',': edits.add((p - 1, last, ""))
+      else: edits.add((key.start, last, ""))
+  else: fail(path, "its mapping is not in the source", opRemove)
+  result = applyEdits(source, edits, opRemove)
+  let
+    mapping = parents[n - 1]
+    emptied = if n == 1 and mapping.fields.len == 1: d else: -1
+  mapping.fields.del(mapping.stringKey(keys[n - 1]))
+  verify(result, json, docs, opRemove, emptied = emptied)
+
+proc raiseCause(e: ref YamlStreamError) {.noreturn, raises: [
+    YamlParserError, YamlConstructionError, YamlStreamError].} =
+  ## Raises the error of the parser, or of constructing a node, that the
+  ## stream error ``e`` wraps, as it has the position in the source.
+  var cause: ref Exception = e
+  while not cause.parent.isNil and cause of YamlStreamError:
+    cause = cause.parent
+  if cause of YamlParserError: raise (ref YamlParserError)(cause)
+  elif cause of YamlConstructionError: raise (ref YamlConstructionError)(cause)
+  else: raise e
+
+proc setMember*(source: string, keys: openArray[string], value: string,
+    options = PresentationOptions(), json = false, document = 0): string
+    {.raises: [YamlEditError, YamlParserError, YamlConstructionError,
+    YamlStreamError].} =
+  ## Sets the member that ``keys`` name, one key per level, to ``value``, a
+  ## YAML document, and returns the edited text. A member that is there is
+  ## assigned to, as by `assign`. One that is not is added after the last
+  ## member of the deepest mapping of the path that is there, with the
+  ## mappings missing in between: in block style, at that mapping's
+  ## indentation (or in its flow style). A null on the path is replaced by
+  ## a mapping, and a text without a document, empty or only comments, gets
+  ## the member after its comments:
+  ##
+  ## .. code-block:: nim
+  ##   setMember("# head\n", ["files", "save-delay"], "10") ==
+  ##       "# head\nfiles:\n  save-delay: 10\n"
+  ##
+  ## ``options`` say how a new collection is written and how far a new
+  ## level is indented; ``json`` is as for `assign`. Only the ``document``
+  ## with that index is edited.
+  ##
+  ## Raises ``YamlEditError`` if a node on the path is not a mapping or
+  ## ``value`` is invalid, and ``YamlParserError`` (or
+  ## ``YamlConstructionError``, for a duplicate key) with its position if
+  ## ``source`` is invalid.
+  try: result = doSet(source, @keys, value, options, json, document)
+  except YamlEditError as e: raise e
+  except YamlParserError as e: raise e
+  except YamlConstructionError as e: raise e
+  except YamlStreamError as e: raiseCause(e)
+  except CatchableError:
+    raise newException(YamlEditError,
+        "internal error: " & getCurrentExceptionMsg())
+
+proc setMember*(source: string, path: JsonPath, value: string,
+    options = PresentationOptions(), json = false, document = 0): string
+    {.raises: [YamlEditError, YamlParserError, YamlConstructionError,
+    YamlStreamError, YamlJsonPathError].} =
+  ## `setMember` at a path of member names, like ``$.files['save-delay']``
+  ## (see `memberNames <jsonpath.html#memberNames,JsonPath>`_).
+  setMember(source, path.memberNames, value, options, json, document)
+
+proc removeMember*(source: string, keys: openArray[string], json = false,
+    document = 0): string {.raises: [YamlEditError, YamlParserError,
+    YamlConstructionError, YamlStreamError].} =
+  ## Removes the member that ``keys`` name, one key per level, and returns
+  ## the edited text. The lines of the member go, with the comment lines
+  ## directly above it, which are about it, and those below it that are
+  ## indented deeper than its key; but the comments above the first member
+  ## of the root stay, as they may be the head of the file. A mapping left
+  ## empty is removed too, all the way up to the root. A member of a flow
+  ## mapping goes with its comma. Without such a member, ``source`` is
+  ## returned as it is. Only the ``document`` with that index is edited.
+  ##
+  ## Raises ``YamlParserError`` (or ``YamlConstructionError``, for a
+  ## duplicate key) with its position if ``source`` is invalid, and
+  ## ``YamlEditError`` if the member cannot be removed in place.
+  try: result = doRemove(source, @keys, json, document)
+  except YamlEditError as e: raise e
+  except YamlParserError as e: raise e
+  except YamlConstructionError as e: raise e
+  except YamlStreamError as e: raiseCause(e)
+  except CatchableError:
+    raise newException(YamlEditError,
+        "internal error: " & getCurrentExceptionMsg())
+
+proc removeMember*(source: string, path: JsonPath, json = false,
+    document = 0): string {.raises: [YamlEditError, YamlParserError,
+    YamlConstructionError, YamlStreamError, YamlJsonPathError].} =
+  ## `removeMember` at a path of member names.
+  removeMember(source, path.memberNames, json, document)

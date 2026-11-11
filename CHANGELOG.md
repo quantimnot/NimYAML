@@ -2,6 +2,29 @@
 
 Features:
 
+ * `yaml/edit` sets and removes members by path, editing the text in place
+   as a settings page changes a config file a person also edits.
+   `setMember` assigns to a member that is there, keeping its trailing
+   comment, and adds one that is not after the last member of its mapping,
+   with the mappings it needs, in block style; an empty text, or one with
+   only comments, gets it after them. `removeMember` takes a member's lines
+   with the comment block directly above it (except above the root's first
+   member, which may be the file's head) and removes the mappings it
+   leaves empty; a path that is not there changes nothing. Both refuse a
+   text that does not parse, raising the parser's error with its position.
+   The path is a list of keys or a JSONPath of member names (the new
+   `memberNames` of `yaml/jsonpath`). JavaScript: `set(text, path, value)`
+   and `remove(text, path)` of `yaml.mjs`. `yamllsp`: the commands
+   `nimyaml.set` and `nimyaml.remove` of `workspace/executeCommand`, which
+   answer the edits of the open document.
+
+ * `rename` (and `setMember`) write a name like `save-delay` plain rather
+   than quoted.
+
+ * Loading a `Table` or `OrderedTable` with a duplicate key reports the
+   duplicate key's position and names it, rather than the position of the
+   mapping.
+
  * `yamllsp` shows the documentation of a node from the schema of its
    document on hover: the `title`, `description` (VS Code's
    `markdownDescription` where there is one), `deprecated`, `readOnly`,

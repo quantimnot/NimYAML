@@ -72,6 +72,42 @@ test("inferSchema, canonicalize, expandDirectives, assign", () => {
     { text: "# keep\na: 42 # c\nb: 2\n", count: 1 });
 });
 
+test("set: adds or assigns a member, the rest of the text kept", () => {
+  assert.equal(Y.set("# head\n", ["files", "save-delay"], 10),
+    "# head\nfiles:\n  save-delay: 10\n");
+  assert.equal(Y.set("", ["a"], "x"), "a: x\n");
+  const config = "# head\nfiles:\n  save-delay: 5 # fast\n\n# other\nz: 1\n";
+  assert.equal(Y.set(config, ["files", "save-delay"], 10),
+    "# head\nfiles:\n  save-delay: 10 # fast\n\n# other\nz: 1\n");
+  assert.equal(Y.set(config, "$.files.watch", ["a", "b c"]),
+    "# head\nfiles:\n  save-delay: 5 # fast\n  watch: [a, b c]\n\n# other\nz: 1\n");
+  // strings that would read as other types are quoted
+  assert.equal(Y.set("a: 1\n", ["b"], "80"), "a: 1\nb: \"80\"\n");
+  assert.deepEqual(Y.load(Y.set("a: 1\n", ["b", "c"], { d: [1, null] })),
+    { a: 1, b: { c: { d: [1, null] } } });
+});
+
+test("remove: the member and the comments about it", () => {
+  const config = "# head\nfiles:\n  save-delay: 10\n# about z\nz: 1\n";
+  assert.equal(Y.remove(config, ["z"]), "# head\nfiles:\n  save-delay: 10\n");
+  assert.equal(Y.remove(config, "$.files['save-delay']"), "# head\n# about z\nz: 1\n");
+  assert.equal(Y.remove(config, ["nope", "x"]), config);
+  assert.equal(Y.remove(Y.set("# head\n", ["files", "save-delay"], 10),
+    ["files", "save-delay"]), "# head\n");
+});
+
+test("set and remove refuse text that does not parse, with its position", () => {
+  for (const edit of [(t) => Y.set(t, ["c"], 1), (t) => Y.remove(t, ["a"])]) {
+    assert.throws(() => edit("a: 1\nb: [\n"), (e) =>
+      e instanceof Y.YamlError && e.kind === "YamlParserError" && e.line === 3);
+    assert.throws(() => edit("a: 1\nb: 2\na: 3\n"), (e) =>
+      e instanceof Y.YamlError && e.kind === "YamlConstructionError" &&
+      e.line === 3 && e.column === 1);
+  }
+  assert.throws(() => Y.set("a: 1\n", "$.a[0]", 1), Y.YamlError);
+  assert.throws(() => Y.set("a: 1\n", ["a", "b"], 1), /not a mapping/);
+});
+
 test("the yaml command on an in-memory host", () => {
   const host = memoryHost({ cwd: "/w", files: { "/w/a.yaml": "a: 1  # one\nb: {c: [1, 2]}\n" } });
   assert.equal(run(["$.b.c[1]", "a.yaml"], { host }), 0);
